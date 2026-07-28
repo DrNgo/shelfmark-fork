@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from shelfmark.metadata_providers import BookMetadata
 
 from shelfmark.core.config import config
+from shelfmark.core.languages import normalize_language
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.request_helpers import normalize_optional_text
 from shelfmark.core.search_plan import ReleaseSearchVariant
@@ -226,50 +227,6 @@ AUDIOBOOK_FORMATS = ["m4b", "mp3", "m4a", "flac", "ogg", "wma", "aac", "wav", "o
 # Combined list for format detection (audiobook formats first for priority)
 ALL_BOOK_FORMATS = AUDIOBOOK_FORMATS + EBOOK_FORMATS
 
-# Map 3-char MAM language codes to 2-char ISO codes used by frontend color maps
-MAM_LANGUAGE_MAP = {
-    "eng": "en",
-    "ita": "it",
-    "spa": "es",
-    "fra": "fr",
-    "fre": "fr",
-    "ger": "de",
-    "deu": "de",
-    "por": "pt",
-    "rus": "ru",
-    "jpn": "ja",
-    "jap": "ja",
-    "chi": "zh",
-    "zho": "zh",
-    "dut": "nl",
-    "nld": "nl",
-    "swe": "sv",
-    "nor": "no",
-    "dan": "da",
-    "fin": "fi",
-    "pol": "pl",
-    "cze": "cs",
-    "ces": "cs",
-    "hun": "hu",
-    "kor": "ko",
-    "ara": "ar",
-    "heb": "he",
-    "tur": "tr",
-    "gre": "el",
-    "ell": "el",
-    "hin": "hi",
-    "tha": "th",
-    "vie": "vi",
-    "ind": "id",
-    "ukr": "uk",
-    "rom": "ro",
-    "ron": "ro",
-    "bul": "bg",
-    "cat": "ca",
-    "hrv": "hr",
-    "slv": "sl",
-    "srp": "sr",
-}
 
 # Backend safeguard: cap total Prowlarr search time per request.
 PROWLARR_SEARCH_TIMEOUT_SECONDS = 120.0
@@ -317,8 +274,9 @@ def _extract_mam_language(raw_title: str) -> str | None:
 
         for token in tokens:
             lang_code = token.lower()
-            if lang_code in MAM_LANGUAGE_MAP:
-                return MAM_LANGUAGE_MAP[lang_code]
+            resolved = normalize_language(lang_code)
+            if resolved is not None:
+                return resolved
 
     return None
 

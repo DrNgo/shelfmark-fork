@@ -15,6 +15,7 @@ from shelfmark.release_sources.prowlarr.source import (
     _collapse_duplicate_indexer_results,
     _detect_content_type_from_categories,
     _extract_format,
+    _extract_mam_language,
     _fetch_indexer_seed_settings,
     _last_known_seed_settings,
     _parse_size,
@@ -729,6 +730,52 @@ class TestFetchIndexerSeedSettingsFallback:
         assert _fetch_indexer_seed_settings(FailingClient(), None) == {}
 
 
+class TestMamLanguageCoverage:
+    """MyAnonamouse offers 62 languages; an unmapped code is dropped entirely,
+    which would leave {Language} empty and different-language editions colliding."""
+
+    def test_unmapped_language_is_dropped_not_passed_through(self):
+        # Documents why coverage matters: there is no raw fallback.
+        assert _extract_mam_language("Some Book [XYZ / EPUB]") is None
+
+    def test_maps_the_common_three_letter_codes(self):
+        cases = {
+            "ENG": "en",
+            "SWE": "sv",
+            "GER": "de",
+            "DEU": "de",
+            "FRE": "fr",
+            "FRA": "fr",
+            "CZE": "cs",
+            "CES": "cs",
+        }
+        for tag, expected in cases.items():
+            assert _extract_mam_language(f"Book [{tag} / EPUB]") == expected, tag
+
+    def test_maps_languages_added_for_mam_parity(self):
+        cases = {
+            "LAT": "la",
+            "PER": "fa",
+            "FAS": "fa",
+            "TAM": "ta",
+            "URD": "ur",
+            "EST": "et",
+            "ICE": "is",
+            "ISL": "is",
+            "GLE": "ga",
+            "TGL": "fil",
+            "BEN": "bn",
+            "BOS": "bs",
+            "SAN": "sa",
+            "GLA": "gd",
+            "GLV": "gv",
+            "MAY": "ms",
+            "MSA": "ms",
+            "BUR": "my",
+            "MYA": "my",
+        }
+        for tag, expected in cases.items():
+            assert _extract_mam_language(f"Book [{tag} / M4B]") == expected, tag
 class _MultiIndexerClient:
     """Torznab client where each indexer entry returns its own result set.
 
