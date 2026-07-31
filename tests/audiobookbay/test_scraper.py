@@ -2,6 +2,7 @@
 Tests for AudiobookBay scraper functions.
 """
 
+import base64
 from unittest.mock import patch
 
 from shelfmark.release_sources.audiobookbay import scraper
@@ -47,6 +48,45 @@ SAMPLE_SEARCH_HTML = """
 EMPTY_SEARCH_HTML = """
 <html>
 <body>
+</body>
+</html>
+"""
+
+# ABB started serving post markup base64-encoded inside hidden .post divs,
+# decoded client-side by JavaScript. The decoded payload is the classic markup.
+_BASE64_POST_INNER_HTML = (
+    '<div class="postTitle"><h2><a href="/abss/encoded-book-title/" rel="bookmark">'
+    "Encoded Book Title - Encoded Author</a></h2></div>"
+    '<div class="postInfo">Category: Crime&nbsp; <br>Language: English'
+    '<span style="margin-left:100px;">Keywords: Test&nbsp;</span><br></div>'
+    '<div class="postContent">'
+    '<div class="center">'
+    '<p class="center"><a href="https://audiobookbay.lu/abss/encoded-book-title/">'
+    '<img src="https://example.com/encoded-cover.jpg" alt="Cover" width="250"></a></p>'
+    "</div>"
+    '<p style="text-align:center;">Posted: 12 Jul 2026<br>'
+    'Format: <span style="color:#a00;">M4B</span> / '
+    'Bitrate: <span style="color:#a00;">64 Kbps</span><br>'
+    'File Size: <span style="color:#00f;">1.55</span> GBs</p>'
+    "</div>"
+)
+
+_BASE64_POST_PAYLOAD = base64.b64encode(_BASE64_POST_INNER_HTML.encode("utf-8")).decode("ascii")
+
+BASE64_SEARCH_HTML = f"""
+<html>
+<body>
+<div class="post re-ab" style="display:none;">{_BASE64_POST_PAYLOAD}</div>
+</body>
+</html>
+"""
+
+# .post elements whose content is neither valid base64 nor classic markup.
+UNPARSEABLE_SEARCH_HTML = """
+<html>
+<body>
+<div class="post re-ab" style="display:none;">this is not base64 and has no postTitle markup!</div>
+<div class="post re-ab" style="display:none;">another opaque blob without any known structure</div>
 </body>
 </html>
 """
@@ -340,6 +380,56 @@ class TestSearchAudiobookbay:
         assert all(
             url == "https://audiobookbay.lu/?s=test&cat=undefined%2Cundefined"
             for url in search_urls
+        )
+
+
+class TestSearchAudiobookbayBase64Posts:
+    """Tests for ABB's base64-encoded post markup (anti-scraping measure)."""
+
+    @patch("shelfmark.release_sources.audiobookbay.scraper.downloader.html_get_page")
+    @patch("shelfmark.release_sources.audiobookbay.scraper.config.get")
+    def test_search_decodes_base64_encoded_posts(self, mock_config_get, mock_html_get):
+        """Posts served base64-encoded in hidden divs are decoded and parsed normally."""
+        mock_config_get.return_value = 0.0
+        mock_html_get.return_value = (
+            BASE64_SEARCH_HTML,
+            "https://audiobookbay.lu/?s=test&cat=undefined%2Cundefined",
+        )
+
+        results = scraper.search_audiobookbay("test", max_pages=1, hostname="audiobookbay.lu")
+
+        assert len(results) == 1
+        assert results[0]["title"] == "Encoded Book Title - Encoded Author"
+        assert results[0]["link"] == "https://audiobookbay.lu/abss/encoded-book-title/"
+        assert results[0]["language"] == "English"
+        assert results[0]["format"] == "M4B"
+        assert results[0]["bitrate"] == "64 Kbps"
+        assert results[0]["size"] == "1.55 GB"
+        assert results[0]["posted_date"] == "12 Jul 2026"
+        assert results[0]["cover"] == "https://example.com/encoded-cover.jpg"
+
+    @patch("shelfmark.release_sources.audiobookbay.scraper.downloader.html_get_page")
+    @patch("shelfmark.release_sources.audiobookbay.scraper.config.get")
+    def test_search_warns_when_posts_found_but_none_parsed(self, mock_config_get, mock_html_get):
+        """A page with .post elements yielding zero results logs a loud WARNING."""
+        mock_config_get.return_value = 0.0
+        mock_html_get.return_value = (
+            UNPARSEABLE_SEARCH_HTML,
+            "https://audiobookbay.lu/?s=test&cat=undefined%2Cundefined",
+        )
+
+        # setup_logger builds parentless loggers (no propagation), so caplog
+        # can't see them — spy on the module logger instead.
+        with patch.object(scraper.logger, "warning") as mock_warning:
+            results = scraper.search_audiobookbay("test", max_pages=1, hostname="audiobookbay.lu")
+
+        assert results == []
+        warning_texts = [
+            (call.args[0] % tuple(call.args[1:])) if len(call.args) > 1 else call.args[0]
+            for call in mock_warning.call_args_list
+        ]
+        assert any("2 .post elements" in text and "parsed 0" in text for text in warning_texts), (
+            f"expected a 'found 2 posts, parsed 0' warning, got: {warning_texts}"
         )
 
 
