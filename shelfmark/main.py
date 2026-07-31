@@ -23,6 +23,7 @@ from werkzeug.wrappers import Response
 
 from shelfmark.api.websocket import ws_manager
 from shelfmark.audiobookshelf.destinations import authorize_destination_key
+from shelfmark.audiobookshelf.library_sync import start_library_index_sync
 from shelfmark.config.env import (
     BUILD_VERSION,
     CONFIG_DIR,
@@ -201,6 +202,10 @@ except (sqlite3.OperationalError, OSError) as e:
 
 # Start download coordinator
 backend.start()
+
+# Start the Audiobookshelf library index refresher. It idles until
+# Audiobookshelf is both enabled and configured, so this is safe unconditionally.
+start_library_index_sync()
 
 # Rate limiting for login attempts
 # Map usernames to their failed-attempt counters and lockout timestamps.
@@ -521,7 +526,7 @@ if user_db is not None:
         from shelfmark.core.activity_routes import register_activity_routes
         from shelfmark.core.request_routes import register_request_routes
 
-        register_audiobookshelf_routes(app)
+        register_audiobookshelf_routes(app, resolve_auth_mode=_resolve_auth_mode_for_routes)
         register_request_routes(
             app,
             user_db,

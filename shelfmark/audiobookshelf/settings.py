@@ -3,12 +3,17 @@
 from typing import TYPE_CHECKING, Any
 
 from shelfmark.audiobookshelf.destinations import DESTINATION_MAP_KEY
+from shelfmark.audiobookshelf.library_sync import (
+    LIBRARY_INDEX_ENABLED_KEY,
+    LIBRARY_INDEX_INTERVAL_KEY,
+)
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.request_helpers import normalize_optional_text
 from shelfmark.core.settings_registry import (
     ActionButton,
     CheckboxField,
     HeadingField,
+    NumberField,
     PasswordField,
     SettingsField,
     TableField,
@@ -227,6 +232,25 @@ def check_audiobook_destinations(current_values: dict[str, Any] | None = None) -
     }
 
 
+def sync_library_index_now(current_values: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Refresh the library index on demand and report what happened.
+
+    Never raises: a settings button that returns a 500 tells the admin nothing
+    about their setup, which is the only thing they are here to find out.
+    """
+    del current_values
+
+    from shelfmark.audiobookshelf import library_sync
+    from shelfmark.audiobookshelf.client import ABS_CLIENT_ERRORS
+
+    try:
+        result = library_sync.run_sync_now()
+    except (*ABS_CLIENT_ERRORS, *_SETTINGS_ERRORS) as e:
+        return {"success": False, "message": f"Library sync failed: {e!s}"}
+
+    return {"success": result.success, "message": result.message}
+
+
 def on_save_audiobookshelf(values: dict[str, Any]) -> dict[str, Any]:
     """Stamp library names onto destination rows as they are saved.
 
@@ -346,5 +370,41 @@ def audiobookshelf_settings() -> list[SettingsField]:
             description="Check that every mapped path exists and is writable",
             callback=check_audiobook_destinations,
             show_when={"field": "AUDIOBOOKSHELF_ENABLED", "value": True},
+        ),
+        HeadingField(
+            key="audiobookshelf_library_index_heading",
+            title="Already In Library",
+            description=(
+                "Shelfmark keeps a local index of every book-type Audiobookshelf "
+                "library and flags search results you already own. The flag is "
+                "advisory — re-acquiring a better edition is still one click away."
+            ),
+            show_when={"field": "AUDIOBOOKSHELF_ENABLED", "value": True},
+        ),
+        CheckboxField(
+            key=LIBRARY_INDEX_ENABLED_KEY,
+            label="Flag books already in your library",
+            default=True,
+            description="Turn off to stop indexing and hide the badges.",
+            show_when={"field": "AUDIOBOOKSHELF_ENABLED", "value": True},
+        ),
+        NumberField(
+            key=LIBRARY_INDEX_INTERVAL_KEY,
+            label="Refresh interval (hours)",
+            default=1,
+            min_value=1,
+            max_value=168,
+            description=(
+                "How often the index is rebuilt. Books added to Audiobookshelf "
+                "since the last refresh will not be flagged yet."
+            ),
+            show_when={"field": LIBRARY_INDEX_ENABLED_KEY, "value": True},
+        ),
+        ActionButton(
+            key="sync_audiobookshelf_library_index",
+            label="Sync Library Now",
+            description="Rebuild the index immediately instead of waiting for the next refresh",
+            callback=sync_library_index_now,
+            show_when={"field": LIBRARY_INDEX_ENABLED_KEY, "value": True},
         ),
     ]

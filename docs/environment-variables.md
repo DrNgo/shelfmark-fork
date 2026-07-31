@@ -1512,6 +1512,8 @@ How long to keep cached search results before they expire.
 | `AUDIOBOOKSHELF_URL` | Base URL Shelfmark uses to reach Audiobookshelf. This is a server-to-server address and may differ from the browser link set as the Audiobook Library URL under General. | string | _none_ |
 | `AUDIOBOOKSHELF_API_TOKEN` | Found in Audiobookshelf: Settings > Users > (your user) > API Token | string (secret) | _none_ |
 | `AUDIOBOOK_DESTINATIONS` | Only libraries with a path can be chosen when approving a request. Skip a library to keep it out of the picker. | string | _empty list_ |
+| `AUDIOBOOKSHELF_LIBRARY_INDEX_ENABLED` | Turn off to stop indexing and hide the badges. | boolean | `true` |
+| `AUDIOBOOKSHELF_INDEX_INTERVAL_HOURS` | How often the index is rebuilt. Books added to Audiobookshelf since the last refresh will not be flagged yet. | number | `1` |
 
 <details>
 <summary>Detailed descriptions</summary>
@@ -1553,6 +1555,25 @@ Only libraries with a path can be chosen when approving a request. Skip a librar
 
 - **Type:** string
 - **Default:** _empty list_
+
+#### `AUDIOBOOKSHELF_LIBRARY_INDEX_ENABLED`
+
+**Flag books already in your library**
+
+Turn off to stop indexing and hide the badges.
+
+- **Type:** boolean
+- **Default:** `true`
+
+#### `AUDIOBOOKSHELF_INDEX_INTERVAL_HOURS`
+
+**Refresh interval (hours)**
+
+How often the index is rebuilt. Books added to Audiobookshelf since the last refresh will not be flagged yet.
+
+- **Type:** number
+- **Default:** `1`
+- **Constraints:** min: 1, max: 168
 
 </details>
 

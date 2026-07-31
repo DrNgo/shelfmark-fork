@@ -28,6 +28,7 @@ import {
   transformReleaseToDirectBook,
   transformSourceRecordToBook,
 } from '../utils/bookTransformers';
+import type { LibraryLookupBook, LibraryMatchesResponse } from '../utils/libraryMatches';
 import { isRecord, toStringValue } from '../utils/objectHelpers';
 import type { FulfilAdminRequestBody, RejectAdminRequestBody } from './requestApiHelpers';
 import {
@@ -633,6 +634,15 @@ export const getAudiobookDestinations = async (): Promise<AudiobookDestination[]
     `${API_BASE}/audiobook-destinations`,
   );
   return response.destinations ?? [];
+};
+
+export const getLibraryMatches = async (
+  books: LibraryLookupBook[],
+): Promise<LibraryMatchesResponse> => {
+  return fetchJSON<LibraryMatchesResponse>(`${API_BASE}/library-matches`, {
+    method: 'POST',
+    body: JSON.stringify({ books }),
+  });
 };
 
 export const rejectAdminRequest = async (

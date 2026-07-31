@@ -3,9 +3,10 @@ import { useState } from 'react';
 import { useSearchMode } from '../../contexts/SearchModeContext';
 import type { Book, ButtonStateInfo } from '../../types';
 import { bookSupportsTargets } from '../../utils/bookTargetLoader';
+import type { LibraryMatch } from '../../utils/libraryMatches';
 import { BookActionButton } from '../BookActionButton';
 import { BookTargetDropdown } from '../BookTargetDropdown';
-import { DisplayFieldBadges, DisplayFieldIcon } from '../shared';
+import { DisplayFieldBadges, DisplayFieldIcon, InLibraryBadge } from '../shared';
 
 const SkeletonLoader = () => (
   <div className="h-full w-full animate-pulse bg-linear-to-r from-gray-300 via-gray-200 to-gray-300 dark:from-gray-700 dark:via-gray-600 dark:to-gray-700" />
@@ -21,6 +22,7 @@ interface CompactViewProps {
   animationDelay?: number;
   showSeriesPosition?: boolean;
   onShowToast?: (message: string, type: 'success' | 'error' | 'info') => void;
+  libraryMatch?: LibraryMatch;
 }
 
 export const CompactView = ({
@@ -33,6 +35,7 @@ export const CompactView = ({
   animationDelay = 0,
   showSeriesPosition = false,
   onShowToast,
+  libraryMatch,
 }: CompactViewProps) => {
   const { searchMode } = useSearchMode();
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
@@ -192,6 +195,7 @@ export const CompactView = ({
           <div className="text-xs opacity-70">
             <span>{book.year || '-'}</span>
           </div>
+          {libraryMatch && <InLibraryBadge match={libraryMatch} />}
         </div>
 
         <div className="mt-auto flex flex-col gap-2">

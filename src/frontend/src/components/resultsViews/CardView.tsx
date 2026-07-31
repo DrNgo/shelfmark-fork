@@ -3,9 +3,10 @@ import { useState } from 'react';
 import { useSearchMode } from '../../contexts/SearchModeContext';
 import type { Book, ButtonStateInfo } from '../../types';
 import { bookSupportsTargets } from '../../utils/bookTargetLoader';
+import type { LibraryMatch } from '../../utils/libraryMatches';
 import { BookActionButton } from '../BookActionButton';
 import { BookTargetDropdown } from '../BookTargetDropdown';
-import { DisplayFieldBadges } from '../shared';
+import { DisplayFieldBadges, InLibraryBadge } from '../shared';
 
 const SkeletonLoader = () => (
   <div className="h-full w-full animate-pulse bg-linear-to-r from-gray-300 via-gray-200 to-gray-300 dark:from-gray-700 dark:via-gray-600 dark:to-gray-700" />
@@ -20,6 +21,7 @@ interface CardViewProps {
   animationDelay?: number;
   showSeriesPosition?: boolean;
   onShowToast?: (message: string, type: 'success' | 'error' | 'info') => void;
+  libraryMatch?: LibraryMatch;
 }
 
 export const CardView = ({
@@ -31,6 +33,7 @@ export const CardView = ({
   animationDelay = 0,
   showSeriesPosition = false,
   onShowToast,
+  libraryMatch,
 }: CardViewProps) => {
   const { searchMode } = useSearchMode();
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
@@ -189,6 +192,7 @@ export const CardView = ({
           <p className="truncate text-sm opacity-80 max-sm:min-w-0 max-sm:text-xs">
             {book.author || 'Unknown author'}
           </p>
+          {libraryMatch && <InLibraryBadge match={libraryMatch} />}
           {searchMode === 'universal' && book.display_fields && book.display_fields.length > 0 ? (
             <div className="flex flex-wrap gap-2 text-xs opacity-70 max-sm:gap-1 max-sm:text-[10px]">
               <span>{book.year || '-'}</span>

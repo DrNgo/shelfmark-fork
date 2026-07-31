@@ -1,8 +1,10 @@
-"""Tests for the audiobook destinations API used by the approve dialog."""
+"""Tests for the Audiobookshelf HTTP API."""
 
 import pytest
 from flask import Flask
 
+from shelfmark.audiobookshelf import library_index
+from shelfmark.audiobookshelf.library_index import LibraryItem
 from shelfmark.audiobookshelf.routes import register_audiobookshelf_routes
 from tests.audiobookshelf.test_destinations import patch_config
 
@@ -13,19 +15,58 @@ DESTINATIONS = {
     ]
 }
 
+INDEX_ENABLED = {"AUDIOBOOKSHELF_ENABLED": True, "AUDIOBOOKSHELF_LIBRARY_INDEX_ENABLED": True}
+
+
+def build_client(auth_mode: str = "builtin"):
+    app = Flask(__name__)
+    app.secret_key = "test-secret"
+    register_audiobookshelf_routes(app, resolve_auth_mode=lambda: auth_mode)
+    return app.test_client()
+
 
 @pytest.fixture
 def client():
-    app = Flask(__name__)
-    app.secret_key = "test-secret"
-    register_audiobookshelf_routes(app)
-    return app.test_client()
+    return build_client()
+
+
+@pytest.fixture
+def indexed_library(tmp_path, monkeypatch):
+    """Point the process-wide index at a temp database holding one book."""
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(library_index, "_index", None)
+
+    index = library_index.get_library_index()
+    index.replace_items(
+        [
+            LibraryItem(
+                item_id="li_1",
+                library_id="lib_books",
+                library_name="Audiobooks",
+                title="The Housemaid",
+                subtitle="",
+                author="Freida McFadden",
+                asin="B0BSHZ1234",
+            )
+        ]
+    )
+    yield index
+    library_index._index = None
 
 
 def as_admin(client, *, is_admin: bool = True):
     with client.session_transaction() as session:
         session["is_admin"] = is_admin
         session["db_user_id"] = 1
+        session["user_id"] = "admin"
+    return client
+
+
+def as_user(client):
+    with client.session_transaction() as session:
+        session["is_admin"] = False
+        session["db_user_id"] = 2
+        session["user_id"] = "ada"
     return client
 
 
@@ -69,3 +110,87 @@ class TestListAudiobookDestinations:
             response = client.get("/api/audiobook-destinations")
 
         assert "/audiobooks/fiction" not in response.get_data(as_text=True)
+
+
+class TestLookupLibraryMatches:
+    """`POST /api/library-matches` is what puts the badge on a search result."""
+
+    def test_reports_a_book_already_in_the_library(self, client, indexed_library):
+        del indexed_library
+        as_user(client)
+
+        with patch_config(INDEX_ENABLED):
+            response = client.post(
+                "/api/library-matches",
+                json={
+                    "books": [
+                        {"id": "bk1", "title": "The Housemaid", "author": "Freida McFadden"},
+                        {"id": "bk2", "title": "The Coworker", "author": "Freida McFadden"},
+                    ]
+                },
+            )
+
+        assert response.status_code == 200
+        payload = response.get_json()
+        assert payload["enabled"] is True
+        assert payload["matches"]["bk1"]["libraries"] == ["Audiobooks"]
+        assert "bk2" not in payload["matches"]
+
+    def test_is_available_to_requesters_not_just_admins(self, client, indexed_library):
+        """The point is that a requester sees "you already have this" first."""
+        del indexed_library
+        as_user(client)
+
+        with patch_config(INDEX_ENABLED):
+            response = client.post(
+                "/api/library-matches",
+                json={"books": [{"id": "bk1", "title": "The Housemaid", "author": "F. McFadden"}]},
+            )
+
+        assert response.status_code == 200
+
+    def test_requires_a_session_when_auth_is_configured(self, indexed_library):
+        del indexed_library
+        client = build_client(auth_mode="builtin")
+
+        with patch_config(INDEX_ENABLED):
+            response = client.post("/api/library-matches", json={"books": []})
+
+        assert response.status_code == 401
+
+    def test_allows_anonymous_access_in_no_auth_mode(self, indexed_library):
+        del indexed_library
+        client = build_client(auth_mode="none")
+
+        with patch_config(INDEX_ENABLED):
+            response = client.post("/api/library-matches", json={"books": []})
+
+        assert response.status_code == 200
+
+    def test_rejects_a_body_that_is_not_an_object(self, client, indexed_library):
+        del indexed_library
+        as_user(client)
+
+        with patch_config(INDEX_ENABLED):
+            response = client.post("/api/library-matches", json=["nope"])
+
+        assert response.status_code == 400
+
+    def test_reports_disabled_rather_than_failing(self, client, indexed_library):
+        """Audiobookshelf off must return a clean "no badges", not an error."""
+        del indexed_library
+        as_user(client)
+
+        with patch_config({"AUDIOBOOKSHELF_ENABLED": False}):
+            response = client.post(
+                "/api/library-matches",
+                json={"books": [{"id": "bk1", "title": "The Housemaid", "author": "F. McFadden"}]},
+            )
+
+        assert response.status_code == 200
+        assert response.get_json() == {
+            "enabled": False,
+            "stale": False,
+            "last_sync_at": None,
+            "matches": {},
+        }

@@ -4,9 +4,10 @@ import { useSearchMode } from '../../contexts/SearchModeContext';
 import type { Book, ButtonStateInfo, DisplayField } from '../../types';
 import { bookSupportsTargets } from '../../utils/bookTargetLoader';
 import { getFormatColor, getLanguageColor } from '../../utils/colorMaps';
+import type { LibraryMatch } from '../../utils/libraryMatches';
 import { BookActionButton } from '../BookActionButton';
 import { BookTargetDropdown } from '../BookTargetDropdown';
-import { DisplayFieldIcon, DisplayFieldBadge } from '../shared';
+import { DisplayFieldIcon, DisplayFieldBadge, InLibraryBadge } from '../shared';
 
 interface ListViewProps {
   books: Book[];
@@ -17,7 +18,10 @@ interface ListViewProps {
   getUniversalButtonState: (bookId: string) => ButtonStateInfo;
   showSeriesPosition?: boolean;
   onShowToast?: (message: string, type: 'success' | 'error' | 'info') => void;
+  libraryMatches?: Record<string, LibraryMatch>;
 }
+
+const NO_LIBRARY_MATCHES: Record<string, LibraryMatch> = {};
 
 const getKeyedDisplayFields = (fields: DisplayField[]) => {
   const signatureCounts = new Map<string, number>();
@@ -88,6 +92,7 @@ export const ListView = ({
   getUniversalButtonState,
   showSeriesPosition = false,
   onShowToast,
+  libraryMatches = NO_LIBRARY_MATCHES,
 }: ListViewProps) => {
   const { searchMode } = useSearchMode();
   const [detailsLoadingId, setDetailsLoadingId] = useState<string | null>(null);
@@ -197,6 +202,9 @@ export const ListView = ({
                       </span>
                     )}
                     <span className="truncate">{book.title || 'Untitled'}</span>
+                    {libraryMatches[book.id] && (
+                      <InLibraryBadge match={libraryMatches[book.id]} className="shrink-0" />
+                    )}
                   </h3>
                   <p className="truncate text-[10px] text-gray-600 min-[400px]:text-xs sm:text-sm dark:text-gray-300">
                     {book.author || 'Unknown author'}

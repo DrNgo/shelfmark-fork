@@ -2,6 +2,7 @@ import { useState } from 'react';
 
 import { useSearchMode } from '../contexts/SearchModeContext';
 import { SORT_OPTIONS } from '../data/filterOptions';
+import { useLibraryMatches } from '../hooks/useLibraryMatches';
 import { useMediaQuery } from '../hooks/useMediaQuery';
 import type { Book, ButtonStateInfo, SortOption } from '../types';
 import { Dropdown } from './Dropdown';
@@ -57,6 +58,8 @@ export const ResultsSection = ({
   resultsSourceUrl,
 }: ResultsSectionProps) => {
   const { searchMode } = useSearchMode();
+  // One lookup for the whole result set, not one per card.
+  const libraryMatches = useLibraryMatches(books);
   const activeViewClasses =
     searchMode === 'universal'
       ? 'bg-emerald-600 text-white hover:bg-emerald-700'
@@ -208,6 +211,7 @@ export const ResultsSection = ({
           getUniversalButtonState={getUniversalButtonState}
           showSeriesPosition={sortValue === 'series_order'}
           onShowToast={onShowToast}
+          libraryMatches={libraryMatches}
         />
       ) : (
         <div
@@ -234,6 +238,7 @@ export const ResultsSection = ({
                 animationDelay={animationDelay}
                 showSeriesPosition={sortValue === 'series_order'}
                 onShowToast={onShowToast}
+                libraryMatch={libraryMatches[book.id]}
               />
             ) : (
               <CompactView
@@ -247,6 +252,7 @@ export const ResultsSection = ({
                 animationDelay={animationDelay}
                 showSeriesPosition={sortValue === 'series_order'}
                 onShowToast={onShowToast}
+                libraryMatch={libraryMatches[book.id]}
               />
             );
           })}

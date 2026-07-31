@@ -2,12 +2,15 @@ import type { ReactNode } from 'react';
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { useAudiobookDestinations } from '../../hooks/useAudiobookDestinations';
+import { useLibraryMatches } from '../../hooks/useLibraryMatches';
 import type { RequestRecord } from '../../types';
 import {
   resolveDefaultDestinationKey,
   shouldShowDestinationPicker,
 } from '../../utils/audiobookDestinations';
 import { withBasePath } from '../../utils/basePath';
+import { singleBookLookup } from '../../utils/libraryMatches';
+import { InLibraryBadge } from '../shared/InLibraryBadge';
 import { Tooltip } from '../shared/Tooltip';
 import type { ActivityCardAction } from './activityCardModel';
 import { buildActivityCardModel } from './activityCardModel';
@@ -302,6 +305,20 @@ const ReviewInlinePanel = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [destinationKey, setDestinationKey] = useState('');
 
+  // The approving admin is the last person who can catch a duplicate, so the
+  // badge belongs here too — not only on the requester's side.
+  const reviewBookData = asRecord(reviewRecord.book_data);
+  const lookupBooks = useMemo(
+    () =>
+      singleBookLookup(
+        `review-${reviewRecord.id}`,
+        toOptionalText(reviewBookData.title),
+        toOptionalText(reviewBookData.author),
+      ),
+    [reviewRecord.id, reviewBookData.title, reviewBookData.author],
+  );
+  const libraryMatch = useLibraryMatches(lookupBooks)[`review-${reviewRecord.id}`];
+
   const destinations = useAudiobookDestinations(reviewRecord.content_type === 'audiobook');
   const showDestinationPicker = shouldShowDestinationPicker(
     reviewRecord.content_type,
@@ -369,6 +386,8 @@ const ReviewInlinePanel = ({
         <DetailField label="Type" value={requestType} />
         {showSourceField && <DetailField label="Source" value={sourceLabel} />}
       </div>
+
+      {libraryMatch && <InLibraryBadge match={libraryMatch} />}
 
       {hasAttachedRelease ? (
         <div className="space-y-2">
