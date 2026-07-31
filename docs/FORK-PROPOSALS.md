@@ -37,8 +37,48 @@ people running Audiobookshelf (#3). Item #1 is a genuine feature gap.
 | 3 | No awareness of what's already in the library | feature | medium | stops re-downloading owned books |
 | 1 | One destination, five ABS libraries | feature | medium–large | routes each approval to the right library |
 
-Suggested order: **2 → 3 → 1**. #2 is nearly free. #3 is the one that changes daily use. #1 is
-the largest and benefits from #3 existing (both need an ABS client).
+Suggested order: ~~2 → 3 → 1~~ **superseded — see Locked decisions below.**
+
+### Locked decisions (2026-07-31 review)
+
+Every open question below was resolved in a design review on 2026-07-31. Where a decision
+below contradicts the original proposal text, **the decision wins.**
+
+**Build order: #2 → shared ABS client → #1 → #3.** The ABS client became a shared
+foundation once #1 went hybrid, and #3's matching needed rethinking (see below), so #1 —
+deterministic plumbing once the client exists — lands before #3.
+
+- **#2**: implement in fork now, then open an **upstream PR** (fix + fixture tests).
+  `tests/audiobookbay/` already exists to host the fixtures.
+- **#1 is hybrid, seerr-style**: the ABS client (`GET /api/libraries`) fetches and names
+  libraries in settings, but each library row still gets a locally-confirmed writable path —
+  ABS reports paths as *its* container sees them; Shelfmark writes files, seerr never does.
+  Selector on the approve dialog and admin-initiated downloads only (**admin-only**, no
+  requester-side picker in v1; the schema doesn't foreclose adding it later).
+- **#1 scope: audiobooks only.** The ebook lane (`DESTINATION`/`INGEST_DIR`) is untouched.
+- **#1 precedence**: explicit approval choice > per-user override > global default.
+  `{User}` expansion applies inside whichever path wins. A dangling `destination_key`
+  falls back down the chain with a WARNING — never an error, never a wrong write.
+- **#1 mechanics**: the destination map is stored config — the approve dialog never
+  queries ABS live, so ABS being down can't break approvals. Podcasts are excluded by
+  simply never configuring a path for them. Selector hides when ≤1 destination.
+  Nullable `destination_key` on requests; admin direct downloads pass the key straight
+  through `queue_release`. Each entry gets the `check_audiobook_destination` hardlink test.
+- **#3 matching: strict, not fuzzy — and ASIN-first is dead on arrival.** Verified:
+  no metadata provider surfaces an ASIN (`grep -rni asin shelfmark/metadata/` = zero hits),
+  so normalised title+author is the *only* matcher, not the fallback. v1 uses exact match
+  after normalisation (casefold, strip punctuation/diacritics/leading articles/bracketed
+  edition noise; **keep subtitles** — the four *Housemaid* titles differ only by suffix).
+  Rationale: the badge is advisory, so a miss costs today's status quo, but a false
+  "in library" silently suppresses a legitimate request. Store the matched ABS item id +
+  ASIN so the badge names the edition and library.
+- **#3 index scope: ALL book-type ABS libraries**, not just destination-mapped ones — an
+  owned book in an unmapped library is still owned. Hourly refresh + manual "sync now".
+- **Publishing**: keep the inherited workflow (already multi-arch amd64+arm64) and the
+  `ghcr.io/<owner>/shelfmark` image name; version tags are `v<upstream>-fork.N`; **delete
+  the `create-aliases` legacy job** (namespace pollution in a fork); pin the k3s manifest
+  to the semver tag, never `latest`. GitHub disables cron on inactive forks after 60 days —
+  tag-push and manual dispatch are the real triggers.
 
 ---
 
