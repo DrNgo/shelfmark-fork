@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS download_requests (
     release_data   TEXT,
     note           TEXT,
     admin_note     TEXT,
+    destination_key TEXT,
     reviewed_by    INTEGER REFERENCES users(id),
     created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     reviewed_at    TIMESTAMP,
@@ -201,6 +202,7 @@ class UserDB:
                 conn.executescript(_CREATE_TABLES_SQL)
                 self._migrate_auth_source_column(conn)
                 self._migrate_request_delivery_columns(conn)
+                self._migrate_request_destination_key(conn)
                 self._migrate_download_history_queued_at(conn)
                 self._migrate_download_history_retry_payload(conn)
                 conn.commit()
@@ -252,6 +254,18 @@ class UserDB:
             WHERE delivery_state != 'none' AND delivery_updated_at IS NULL
             """
         )
+
+    def _migrate_request_destination_key(self, conn: sqlite3.Connection) -> None:
+        """Ensure download_requests.destination_key exists for multi-library routing.
+
+        Historical rows stay NULL, which reads as "no library was chosen" and
+        routes them to the default audiobook destination exactly as before.
+        """
+        columns = conn.execute("PRAGMA table_info(download_requests)").fetchall()
+        column_names = {str(col["name"]) for col in columns}
+
+        if "destination_key" not in column_names:
+            conn.execute("ALTER TABLE download_requests ADD COLUMN destination_key TEXT")
 
     def _migrate_download_history_queued_at(self, conn: sqlite3.Connection) -> None:
         """Ensure download_history.queued_at exists for queue-time recording."""
@@ -519,6 +533,7 @@ class UserDB:
         reviewed_at: str | None = None,
         delivery_state: str = DELIVERY_STATE_NONE,
         delivery_updated_at: str | None = None,
+        destination_key: str | None = None,
     ) -> dict[str, Any]:
         cursor = conn.execute(
             """
@@ -536,9 +551,10 @@ class UserDB:
                 admin_note,
                 reviewed_by,
                 reviewed_at,
-                delivery_updated_at
+                delivery_updated_at,
+                destination_key
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -555,6 +571,7 @@ class UserDB:
                 reviewed_by,
                 reviewed_at,
                 delivery_updated_at,
+                destination_key,
             ),
         )
         request_id = cursor.lastrowid
@@ -585,6 +602,7 @@ class UserDB:
         reviewed_at: str | None = None,
         delivery_state: str = DELIVERY_STATE_NONE,
         delivery_updated_at: str | None = None,
+        destination_key: str | None = None,
     ) -> dict[str, Any]:
         """Create a download request row and return the created record."""
         if not isinstance(book_data, dict):
@@ -621,6 +639,7 @@ class UserDB:
                     reviewed_at=reviewed_at,
                     delivery_state=normalized_delivery_state,
                     delivery_updated_at=delivery_updated_at,
+                    destination_key=destination_key,
                 )
                 conn.commit()
                 return created
@@ -713,6 +732,7 @@ class UserDB:
             "delivery_state",
             "delivery_updated_at",
             "last_failure_reason",
+            "destination_key",
         }
     )
     _REQUEST_UPDATE_STATEMENTS: ClassVar[dict[str, str]] = {
@@ -730,6 +750,7 @@ class UserDB:
         "delivery_state": "UPDATE download_requests SET delivery_state = ? WHERE id = ?",
         "delivery_updated_at": "UPDATE download_requests SET delivery_updated_at = ? WHERE id = ?",
         "last_failure_reason": "UPDATE download_requests SET last_failure_reason = ? WHERE id = ?",
+        "destination_key": "UPDATE download_requests SET destination_key = ? WHERE id = ?",
     }
 
     def update_request(

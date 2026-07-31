@@ -136,6 +136,11 @@ class DownloadTask:
         default_factory=dict
     )  # Per-output parameters (e.g. email recipient)
 
+    # Audiobookshelf library chosen at approval time (audiobooks only).
+    # Captured at queue time like output_mode, so editing the destination map
+    # later cannot redirect a download that is already in flight.
+    destination_key: str | None = None
+
     # User association (multi-user support)
     user_id: int | None = None  # DB user ID who queued this download
     username: str | None = None  # Username for {User} template variable

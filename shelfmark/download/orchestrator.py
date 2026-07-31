@@ -253,6 +253,11 @@ def queue_release(
         subtitle = release_data.get("subtitle") or extra.get("subtitle")
         language = release_data.get("language") or extra.get("language")
 
+        # Explicit audiobook library chosen by an admin on the approve dialog.
+        destination_key = normalize_optional_text(
+            release_data.get("destination_key") or extra.get("destination_key")
+        )
+
         books_output_mode = (
             str(config.get("BOOKS_OUTPUT_MODE", "folder", user_id=user_id) or "folder")
             .strip()
@@ -290,6 +295,7 @@ def queue_release(
             search_mode=search_mode,
             output_mode=output_mode,
             output_args=output_args,
+            destination_key=destination_key,
             priority=priority,
             user_id=user_id,
             username=username,

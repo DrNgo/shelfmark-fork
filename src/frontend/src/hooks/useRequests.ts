@@ -17,6 +17,7 @@ interface UseRequestsReturn {
     releaseData?: Record<string, unknown>,
     adminNote?: string,
     manualApproval?: boolean,
+    destinationKey?: string,
   ) => Promise<void>;
   rejectRequest: (id: number, adminNote?: string) => Promise<void>;
 }
@@ -44,6 +45,7 @@ export const useRequests = ({ isAdmin }: UseRequestsOptions): UseRequestsReturn 
       releaseData?: Record<string, unknown>,
       adminNote?: string,
       manualApproval?: boolean,
+      destinationKey?: string,
     ) => {
       if (!isAdmin) {
         throw new Error('Admin access required');
@@ -54,6 +56,7 @@ export const useRequests = ({ isAdmin }: UseRequestsOptions): UseRequestsReturn 
           release_data: releaseData,
           admin_note: adminNote,
           manual_approval: manualApproval,
+          destination_key: destinationKey,
         });
       } catch (err) {
         const message = toErrorMessage(err, 'Failed to fulfil request');

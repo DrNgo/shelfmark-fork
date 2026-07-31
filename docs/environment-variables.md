@@ -1511,6 +1511,7 @@ How long to keep cached search results before they expire.
 | `AUDIOBOOKSHELF_ENABLED` | Turn on library-aware routing and duplicate detection. | boolean | `false` |
 | `AUDIOBOOKSHELF_URL` | Base URL Shelfmark uses to reach Audiobookshelf. This is a server-to-server address and may differ from the browser link set as the Audiobook Library URL under General. | string | _none_ |
 | `AUDIOBOOKSHELF_API_TOKEN` | Found in Audiobookshelf: Settings > Users > (your user) > API Token | string (secret) | _none_ |
+| `AUDIOBOOK_DESTINATIONS` | Only libraries with a path can be chosen when approving a request. Skip a library to keep it out of the picker. | string | _empty list_ |
 
 <details>
 <summary>Detailed descriptions</summary>
@@ -1543,6 +1544,15 @@ Found in Audiobookshelf: Settings > Users > (your user) > API Token
 - **Type:** string (secret)
 - **Default:** _none_
 - **Required:** Yes
+
+#### `AUDIOBOOK_DESTINATIONS`
+
+**Library destinations**
+
+Only libraries with a path can be chosen when approving a request. Skip a library to keep it out of the picker.
+
+- **Type:** string
+- **Default:** _empty list_
 
 </details>
 

@@ -514,6 +514,7 @@ function App() {
     requestId: number;
     book: Book;
     contentType: ContentType;
+    destinationKey?: string;
   } | null>(null);
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
   const [releaseBook, setReleaseBook] = useState<Book | null>(null);
@@ -1800,6 +1801,7 @@ function App() {
       options?: {
         browseOnly?: boolean;
         manualApproval?: boolean;
+        destinationKey?: string;
       },
     ) => {
       if (!requestRoleIsAdmin) {
@@ -1822,7 +1824,13 @@ function App() {
 
       if (!shouldBrowse && record.request_level === 'release') {
         try {
-          await fulfilSidebarRequest(requestId, record.release_data || undefined);
+          await fulfilSidebarRequest(
+            requestId,
+            record.release_data || undefined,
+            undefined,
+            undefined,
+            options?.destinationKey,
+          );
           await refreshActivitySnapshot();
           showToast('Request approved', 'success');
           await fetchStatus();
@@ -1837,6 +1845,9 @@ function App() {
         requestId,
         book: bookFromRequestData(record.book_data),
         contentType: record.content_type,
+        // Carried through the browse detour so picking a library and then
+        // browsing for a release does not silently discard the choice.
+        destinationKey: options?.destinationKey,
       });
       void refreshRequestPolicy({ force: true });
     },
@@ -1860,6 +1871,9 @@ function App() {
         await fulfilSidebarRequest(
           fulfillingRequest.requestId,
           buildReleaseDataFromMetadataRelease(book, release, toContentType(releaseContentType)),
+          undefined,
+          undefined,
+          fulfillingRequest.destinationKey,
         );
         await refreshActivitySnapshot();
         showToast(`Request approved: ${book.title || 'Untitled'}`, 'success');

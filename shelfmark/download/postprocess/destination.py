@@ -6,6 +6,7 @@ import contextlib
 import uuid
 from typing import TYPE_CHECKING
 
+from shelfmark.audiobookshelf.destinations import resolve_destination_path
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.utils import (
     get_destination,
@@ -77,6 +78,17 @@ def validate_destination(
 def get_final_destination(task: DownloadTask) -> Path:
     """Get final destination directory, with content-type routing support."""
     is_audiobook = check_audiobook(task.content_type)
+
+    # An explicit library chosen at approval time outruns every other rule,
+    # including the per-user override and any source-specific routing.
+    if is_audiobook:
+        chosen = resolve_destination_path(
+            task.destination_key,
+            user_id=task.user_id,
+            username=task.username,
+        )
+        if chosen:
+            return chosen
 
     try:
         override = get_source(task.source).get_destination_override(task)

@@ -10,6 +10,7 @@ export interface FulfilAdminRequestBody {
   release_data?: Record<string, unknown>;
   admin_note?: string;
   manual_approval?: boolean;
+  destination_key?: string;
 }
 
 export interface RejectAdminRequestBody {
@@ -52,6 +53,9 @@ export const buildFulfilAdminRequestBody = (
   }
   if (body.manual_approval !== undefined) {
     payload.manual_approval = body.manual_approval;
+  }
+  if (body.destination_key !== undefined) {
+    payload.destination_key = body.destination_key;
   }
   return payload;
 };

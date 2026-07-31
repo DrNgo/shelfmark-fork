@@ -20,6 +20,7 @@ import type {
   SettingsTab,
   UpdateResult,
 } from '../types/settings';
+import type { AudiobookDestination } from '../utils/audiobookDestinations';
 import { getApiBase, withBasePath } from '../utils/basePath';
 import type { MetadataBookData, SourceRecordData } from '../utils/bookTransformers';
 import {
@@ -625,6 +626,13 @@ export const fulfilAdminRequest = async (
     method: 'POST',
     body: JSON.stringify(buildFulfilAdminRequestBody(body)),
   });
+};
+
+export const getAudiobookDestinations = async (): Promise<AudiobookDestination[]> => {
+  const response = await fetchJSON<{ destinations?: AudiobookDestination[] }>(
+    `${API_BASE}/audiobook-destinations`,
+  );
+  return response.destinations ?? [];
 };
 
 export const rejectAdminRequest = async (

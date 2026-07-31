@@ -22,6 +22,7 @@ from werkzeug.security import check_password_hash
 from werkzeug.wrappers import Response
 
 from shelfmark.api.websocket import ws_manager
+from shelfmark.audiobookshelf.destinations import authorize_destination_key
 from shelfmark.config.env import (
     BUILD_VERSION,
     CONFIG_DIR,
@@ -516,9 +517,11 @@ def _queue_status_for_routes(user_id: int | None = None) -> dict[str, dict[str, 
 
 if user_db is not None:
     try:
+        from shelfmark.audiobookshelf.routes import register_audiobookshelf_routes
         from shelfmark.core.activity_routes import register_activity_routes
         from shelfmark.core.request_routes import register_request_routes
 
+        register_audiobookshelf_routes(app)
         register_request_routes(
             app,
             user_db,
@@ -1069,6 +1072,11 @@ def api_download_release() -> Response | tuple[Response, int]:
         if inferred_content_type and data.get("content_type") is None:
             release_payload = dict(data)
             release_payload["content_type"] = resolved_content_type
+
+        release_payload = authorize_destination_key(
+            release_payload,
+            is_admin=bool(session.get("is_admin", False)),
+        )
 
         priority = data.get("priority", 0)
         # Per-user download overrides

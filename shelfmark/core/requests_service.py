@@ -145,6 +145,16 @@ def _normalize_admin_note(admin_note: object) -> str | None:
     return admin_note.strip() or None
 
 
+def _normalize_destination_key(destination_key: object) -> str | None:
+    """Normalize the audiobook library chosen at approval time."""
+    if destination_key is None:
+        return None
+    if not isinstance(destination_key, str):
+        msg = "destination_key must be a string"
+        raise RequestServiceError(msg, status_code=400)
+    return destination_key.strip() or None
+
+
 def _prepare_request_create(
     *,
     user_id: int,
@@ -505,6 +515,7 @@ def fulfil_request(
     release_data: object = None,
     admin_note: object = None,
     manual_approval: object = False,
+    destination_key: object = None,
 ) -> dict[str, Any]:
     """Fulfil a pending request and queue the release under requesting-user identity."""
     request_row = ensure_request_access(
@@ -516,6 +527,7 @@ def fulfil_request(
     _require_pending(request_row)
 
     normalized_admin_note = _normalize_admin_note(admin_note)
+    normalized_destination_key = _normalize_destination_key(destination_key)
 
     if not isinstance(manual_approval, bool):
         msg = "manual_approval must be a boolean"
@@ -574,6 +586,7 @@ def fulfil_request(
             admin_note=normalized_admin_note,
             reviewed_by=admin_user_id,
             reviewed_at=_now_timestamp(),
+            destination_key=normalized_destination_key,
         )
     except TypeError as exc:
         raise RequestServiceError(str(exc), status_code=400) from exc
@@ -582,6 +595,7 @@ def fulfil_request(
 
     queued_release_data = dict(selected_release_data)
     queued_release_data["_request_id"] = request_id
+    queued_release_data["destination_key"] = normalized_destination_key
 
     try:
         success, error = queue_release(

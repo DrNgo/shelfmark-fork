@@ -964,6 +964,7 @@ def register_request_routes(
                 release_data=data.get("release_data"),
                 admin_note=data.get("admin_note"),
                 manual_approval=data.get("manual_approval", False),
+                destination_key=data.get("destination_key"),
             )
         except RequestServiceError as exc:
             return _error_response(str(exc), exc.status_code, code=exc.code)

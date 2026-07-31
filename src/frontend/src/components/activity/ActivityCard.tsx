@@ -1,7 +1,12 @@
 import type { ReactNode } from 'react';
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 
+import { useAudiobookDestinations } from '../../hooks/useAudiobookDestinations';
 import type { RequestRecord } from '../../types';
+import {
+  resolveDefaultDestinationKey,
+  shouldShowDestinationPicker,
+} from '../../utils/audiobookDestinations';
 import { withBasePath } from '../../utils/basePath';
 import { Tooltip } from '../shared/Tooltip';
 import type { ActivityCardAction } from './activityCardModel';
@@ -12,6 +17,7 @@ import type { ActivityItem } from './activityTypes';
 interface RequestApproveOptions {
   browseOnly?: boolean;
   manualApproval?: boolean;
+  destinationKey?: string;
 }
 
 type RequestApproveHandler = (
@@ -294,6 +300,16 @@ const ReviewInlinePanel = ({
   reviewApproveHandler,
 }: ReviewInlinePanelProps) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [destinationKey, setDestinationKey] = useState('');
+
+  const destinations = useAudiobookDestinations(reviewRecord.content_type === 'audiobook');
+  const showDestinationPicker = shouldShowDestinationPicker(
+    reviewRecord.content_type,
+    destinations,
+  );
+  // Drop a selection whose library disappeared from settings mid-review, so an
+  // approval can never carry a key that no longer routes anywhere.
+  const selectedDestinationKey = resolveDefaultDestinationKey(destinationKey, destinations);
 
   const handleReviewApprove = async () => {
     if (isSubmitting) {
@@ -303,11 +319,16 @@ const ReviewInlinePanel = ({
     setIsSubmitting(true);
     try {
       if (requiresBrowseBeforeApprove) {
-        await reviewApproveHandler(reviewRecord.id, reviewRecord, { browseOnly: true });
+        await reviewApproveHandler(reviewRecord.id, reviewRecord, {
+          browseOnly: true,
+          destinationKey: selectedDestinationKey || undefined,
+        });
         return;
       }
 
-      await reviewApproveHandler(reviewRecord.id, reviewRecord);
+      await reviewApproveHandler(reviewRecord.id, reviewRecord, {
+        destinationKey: selectedDestinationKey || undefined,
+      });
     } finally {
       setIsSubmitting(false);
     }
@@ -364,6 +385,31 @@ const ReviewInlinePanel = ({
         </div>
       ) : (
         <p className="text-xs opacity-70">{missingAttachedReleaseMessage}</p>
+      )}
+
+      {showDestinationPicker && (
+        <div className="space-y-1">
+          <label
+            htmlFor={`destination-${reviewRecord.id}`}
+            className="text-[11px] font-medium tracking-wide uppercase opacity-70"
+          >
+            Library
+          </label>
+          <select
+            id={`destination-${reviewRecord.id}`}
+            value={selectedDestinationKey}
+            onChange={(event) => setDestinationKey(event.target.value)}
+            disabled={isSubmitting}
+            className="w-full rounded-md border border-(--border-muted) bg-(--bg-soft) px-2 py-1.5 text-xs disabled:opacity-60"
+          >
+            <option value="">Default audiobook destination</option>
+            {destinations.map((destination) => (
+              <option key={destination.key} value={destination.key}>
+                {destination.name}
+              </option>
+            ))}
+          </select>
+        </div>
       )}
 
       <div className="flex flex-wrap items-center gap-2">
