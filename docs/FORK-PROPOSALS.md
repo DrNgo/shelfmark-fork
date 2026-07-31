@@ -1,0 +1,269 @@
+# Shelfmark fork — issues and feature proposals
+
+## Overview
+
+**Purpose**: capture three changes worth making in a fork of
+[calibrain/shelfmark](https://github.com/calibrain/shelfmark), with the evidence behind each
+so the work can start without re-deriving it.
+**Audience**: whoever picks up the fork (human or agent).
+**Prerequisites**: familiarity with the codebase. Every claim below was measured against a
+live deployment (Audiobookshelf + Prowlarr + qBittorrent/SABnzbd on k3s), not inferred from
+reading alone.
+
+**You are reading this inside the fork.** `origin` is `DrNgo/shelfmark-fork`; `upstream` is
+`calibrain/shelfmark`, so `git fetch upstream` still pulls any future upstream commits.
+
+All line references are against commit **`cdd156e`**, the fork point, and were read from the
+tree rather than recalled. Behavioural claims were measured against a live deployment on
+**2026-07-31** — each is labelled where it matters, so nothing here rests on inference alone.
+
+> **Building the fork:** upstream publishes `ghcr.io/calibrain/shelfmark:latest` (multi-arch,
+> amd64 + arm64). A fork has to build and publish its own image and repoint whatever deploys
+> it. If the target is an ARM board (RK3588 here), the build **must** produce an arm64
+> manifest or it fails to pull with "no match for platform in manifest".
+
+### Why a fork at all
+
+Upstream states it is **"in a stable state as of May 2026 but is not under active
+maintenance."** Two of the three items below are things upstream would plausibly never ship:
+one is a bug fix with a short shelf life (#2), the other is an integration only useful to
+people running Audiobookshelf (#3). Item #1 is a genuine feature gap.
+
+### Effort / value summary
+
+| # | Item | Type | Effort | Value here |
+|---|---|---|---|---|
+| 2 | AudioBook Bay ingestion is broken | bug | **~4 lines** + a guard | restores a source that is otherwise dead |
+| 3 | No awareness of what's already in the library | feature | medium | stops re-downloading owned books |
+| 1 | One destination, five ABS libraries | feature | medium–large | routes each approval to the right library |
+
+Suggested order: **2 → 3 → 1**. #2 is nearly free. #3 is the one that changes daily use. #1 is
+the largest and benefits from #3 existing (both need an ABS client).
+
+---
+
+## 1. Multiple library support when approving requests
+
+### Problem
+
+Shelfmark has exactly **one** audiobook destination. Audiobookshelf here has **five**
+libraries — `fiction`, `nonfiction`, `smutty`, `light-novels`, `podcasts` — each a separate
+mount. Every approved audiobook therefore lands in whichever single library
+`DESTINATION_AUDIOBOOK` points at (currently `fiction`), and anything that belongs elsewhere
+has to be moved afterwards with a separate tool that preserves listening progress.
+
+An admin approving a request is exactly the person who knows which library it belongs in, and
+exactly the moment the information is available — but the approval path has nowhere to put it.
+
+### Evidence
+
+- `shelfmark/core/utils.py:209` — `get_destination(*, is_audiobook, user_id, username)`. The
+  only branch is the boolean `is_audiobook`; there is no notion of *which* audiobook library.
+- `shelfmark/core/requests_service.py:499` — `fulfil_request(...)` takes `release_data`,
+  `admin_note`, `manual_approval`. No destination parameter.
+- `shelfmark/core/requests_service.py:587` — the hand-off:
+  ```python
+  success, error = queue_release(
+      queued_release_data, 0,
+      user_id=request_row["user_id"],
+      username=requester.get("username"),
+  )
+  ```
+  Identity is threaded through; destination is not.
+
+### The seam that already exists
+
+`get_destination` resolves through `config.get("DESTINATION_AUDIOBOOK", "", user_id=user_id)`
+— i.e. the setting is **already per-user overridable**, and it already supports a `{User}`
+placeholder expanded by `_expand_user_destination_placeholder`. So the plumbing for "this
+download resolves its destination from context rather than a global" is in place; it is keyed
+on user rather than on a chosen target.
+
+That makes the change smaller than it first looks: add a second dimension to the same lookup
+rather than inventing a new mechanism.
+
+### Proposed design
+
+1. **A named-destination map.** New setting `DESTINATIONS_AUDIOBOOK`, a list of
+   `{key, label, path}` (a `TableField`, the same shape `PROWLARR_REMOTE_PATH_MAPPINGS`
+   already uses — see `shelfmark/config/settings.py:1830` for a working precedent).
+   `DESTINATION_AUDIOBOOK` stays as the default/fallback so existing installs are unaffected.
+2. **Carry a key on the request.** Add a nullable `destination_key` column to the requests
+   table, set at approval time.
+3. **Thread it through**: `fulfil_request(..., destination_key=...)` → `queue_release(...)` →
+   the download task → `get_destination(..., destination_key=...)`, which resolves the map
+   first and falls back to today's behaviour when the key is absent or unknown.
+4. **UI**: a select on the approve dialog, defaulting to the configured default. When only one
+   destination is configured, hide it entirely so nothing changes for single-library users.
+
+### Risks / notes
+
+- **Resolve unknown keys to the default, never to an error or an empty path.** A deleted
+  destination must not strand a queued request or write to `/`.
+- Each destination must satisfy the same hardlink constraint as today: it has to be on the
+  **same mount** as the download client's completed dir, or the transfer silently falls back
+  to copying. A "Test Destination" action already exists (`check_audiobook_destination`) and
+  should be run per entry.
+- Per-user overrides and per-destination routing can conflict. Decide precedence explicitly
+  and write it down — suggested: explicit approval choice > per-user override > global default.
+
+---
+
+## 2. Fix AudioBook Bay ingestion
+
+### Problem
+
+The bundled AudioBook Bay source returns **zero results for every query**, even though the
+site is up and well stocked. It is currently disabled in this deployment (`ABB_ENABLED=false`)
+because an enabled source that cannot return rows is pure latency — it costs a rate-limited
+fetch per page for nothing.
+
+### Root cause (measured, not inferred)
+
+AudioBook Bay now serves post content **base64-encoded inside a hidden div**, decoded
+client-side by JavaScript:
+
+```html
+<div class="post re-ab" style="display:none;">PGRpdiBjbGFzcz0icG9zdFRpdGxlIj48aDI+PGEg…</div>
+```
+
+Decoding one of those payloads by hand yields the *original* markup intact:
+
+```html
+<div class="postTitle"><h2><a href="/abss/the-divorce-freida-mcfadden/">The Divorce - Freida McFadden</a></h2></div><div class="postInfo">Category: Crime…
+```
+
+The scraper looks for that markup in the live DOM:
+
+- `shelfmark/release_sources/audiobookbay/scraper.py:233` — `posts = soup.select(".post")`
+  → still matches (the wrapper keeps `class="post re-ab"`), so it finds 9 "posts"…
+- `shelfmark/release_sources/audiobookbay/scraper.py:241` —
+  `title_elem = post.select_one(".postTitle > h2 > a")` → matches **nothing**, because
+  `.postTitle` only exists inside the base64 blob. Every post is skipped via the
+  `if not title_elem: continue` guard, so the function returns `[]` with no error.
+
+`grep -rn "b64decode\|base64" shelfmark/` confirms the ABB scraper has **no base64 handling**
+anywhere (the hits are cover-URL encoding in `core/utils.py` and NZBGet payloads).
+
+Measured 2026-07-31 against `audiobookbay.lu`: a search for *freida mcfadden* returned HTTP
+200, 38,183 bytes, `9x class="post re-ab"`, 11 mentions of "mcfadden", and **0 parsed
+results**. Decoding the 9 payloads by hand produced 9 real titles (*The Divorce*, *The
+Intruder*, *The Tenant*, *The Gift*, …), several of which no other configured indexer carries.
+
+> The same bug kills the standalone `audiobookbay-automated` project, which uses the identical
+> `.post` → `.postTitle > h2 > a` selector pair, and is broken the same way.
+
+### Proposed fix
+
+Decode each `.post` element's text before parsing it, falling back to the element itself when
+it is not base64. Roughly, at `scraper.py:233`:
+
+```python
+import base64
+from bs4 import BeautifulSoup
+
+def _decode_post(post):
+    """ABB serves post markup base64-encoded in a hidden div; decode when present."""
+    raw = post.get_text(strip=True)
+    if not raw or len(raw) < 32:
+        return post                       # plain markup, nothing to decode
+    try:
+        html = base64.b64decode(raw, validate=True).decode("utf-8", "replace")
+    except Exception:
+        return post                       # not base64 — leave as-is
+    if "postTitle" not in html:
+        return post                       # decoded to something unexpected
+    return BeautifulSoup(html, "html.parser")
+
+posts = [_decode_post(p) for p in soup.select(".post")]
+```
+
+Everything downstream (`.postTitle > h2 > a`, `.postInfo`, `.postContent`, the cover, the
+info-hash page) then works unchanged, because the decoded payload *is* the old markup.
+
+### Risks / notes
+
+- **This is an anti-scraping measure and will change again.** Treat the fix as disposable.
+- **Add a loud signal for "site reachable but nothing parsed."** The failure mode that cost
+  real time here was silence: 200 OK, posts found, zero results, no error. Log
+  `found N .post elements, parsed 0` at WARNING — that single line turns the next breakage
+  from an investigation into a glance.
+- A regression test with a **saved fixture** of one base64 page (and one plain page, as a
+  negative control) is worth more than the fix itself, since the fix will need redoing.
+- Keep the decode defensive: a plain-markup mirror must keep working, so never assume base64.
+
+---
+
+## 3. Track books/audiobooks already in the library
+
+### Problem
+
+Shelfmark has **no idea what you already own**. It will happily present, and let a user
+request, a book that is already on the shelf. In this library that is not hypothetical: nine
+Freida McFadden audiobooks were already present, and every one of them was still offered as a
+fresh download.
+
+Contrast Jellyseerr — the app whose workflow Shelfmark is otherwise imitating — which reads
+Jellyfin and marks matching items **Available**, so users request only what is missing.
+
+### Evidence
+
+- `grep -rni "audiobookshelf" shelfmark/` returns **one** hit:
+  `shelfmark/config/settings.py:400` — a `placeholder="http://audiobookshelf:8080"` for a
+  cosmetic **nav-link button**. There is no client, no sync, no import of library state.
+- The only de-duplication that exists is:
+  - `shelfmark/core/queue.py` — de-dupes queue entries by task id;
+  - `shelfmark/core/requests_service.py:111` — `_find_duplicate_pending_request(...)`, which
+    blocks a second *pending request* for the same title/author/content_type.
+
+  Both are about not doing the same thing twice **inside Shelfmark**. Neither looks at a
+  library.
+
+### Current mitigation (and why it isn't enough)
+
+Requests here default to `request_book`, so a human approves every one — the operator *is* the
+duplicate check. That works while the operator remembers the library, and fails quietly as it
+grows. It also puts the work in the wrong place: the requesting user should see "you already
+have this" before asking.
+
+### Proposed design
+
+1. **A read-only Audiobookshelf client.** Base URL + API token settings, mirroring the
+   existing Prowlarr integration (`release_sources/prowlarr/` is the model to copy — it already
+   does URL normalisation, token handling, and a connection test).
+2. **A periodic index**, not a live query per card. `GET /api/libraries` then
+   `GET /api/libraries/<id>/items` — note that endpoint is **minified and omits `series`**, so
+   pass `?expanded=1` or use `/filterdata` if series matters. Cache to the local DB with a
+   configurable refresh (hourly is plenty) plus a manual "sync now".
+3. **Match on ASIN first, then normalised title+author.** ASIN is exact when present; fall
+   back to a case/punctuation-normalised title plus a normalised primary author. Do **not**
+   match on title alone — this library holds four distinct *Housemaid* titles that differ only
+   by suffix.
+4. **Surface it in three places**: an "In library" badge on search results; a soft warning on
+   the request form; and the same badge on the admin approve dialog.
+5. **Never hard-block.** Re-acquiring a better edition is legitimate. Warn, don't refuse.
+
+### Risks / notes
+
+- **Do not conflate "in library" with "same recording."** A 2021 rip and a 2024 re-recording
+  are both *The Locked Door*; treating them as one hides a real upgrade. Store the matched
+  ASIN so the badge can say *which* edition is held.
+- Multi-library ABS means the badge should say **which** library, which is also exactly what
+  feature #1 needs — build the client once and let both use it.
+- Handle the ABS token being absent or wrong by degrading to today's behaviour with a visible
+  warning, not by failing search.
+
+---
+
+## Deployment context these were found in
+
+Useful when judging whether a proposal generalises or is specific to one setup:
+
+- Shelfmark driving **Prowlarr** (4 usenet + 4 torrent indexers) into **qBittorrent** and
+  **SABnzbd**, hardlinking into **Audiobookshelf**.
+- A single `/media` mount covering both the download dir and the library, because hardlinking
+  across separate bind mounts of the same filesystem returns `EXDEV` and silently degrades to
+  copying.
+- Five separate ABS libraries, which is what motivates proposal #1.
+- An existing external filing pipeline (hardlink + tag-based worklist + an m4b normaliser) that
+  a fork should complement rather than duplicate.
