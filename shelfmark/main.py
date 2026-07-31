@@ -161,6 +161,7 @@ logger.info("Socket.IO CORS allowed origins: %s", socketio_cors_allowed_origins)
 try:
     import_module("shelfmark.metadata_providers")
     import_module("shelfmark.release_sources")
+    import_module("shelfmark.audiobookshelf")
     logger.debug("Plugin modules loaded successfully")
 except ImportError as e:
     logger.warning("Failed to import plugin modules: %s", e)

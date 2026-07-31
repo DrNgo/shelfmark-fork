@@ -18,6 +18,7 @@ This document lists all configuration options that can be set via environment va
 - [Newznab](#newznab)
 - [AudiobookBay](#audiobookbay)
 - [IRC](#irc)
+- [Audiobookshelf](#audiobookshelf)
 - [Download Clients](#download-clients)
 - [Metadata Providers](#metadata-providers)
   - [Hardcover](#metadata-providers-hardcover)
@@ -1503,11 +1504,55 @@ How long to keep cached search results before they expire.
 
 </details>
 
+## Audiobookshelf
+
+| Variable | Description | Type | Default |
+|----------|-------------|------|---------|
+| `AUDIOBOOKSHELF_ENABLED` | Turn on library-aware routing and duplicate detection. | boolean | `false` |
+| `AUDIOBOOKSHELF_URL` | Base URL Shelfmark uses to reach Audiobookshelf. This is a server-to-server address and may differ from the browser link set as the Audiobook Library URL under General. | string | _none_ |
+| `AUDIOBOOKSHELF_API_TOKEN` | Found in Audiobookshelf: Settings > Users > (your user) > API Token | string (secret) | _none_ |
+
+<details>
+<summary>Detailed descriptions</summary>
+
+#### `AUDIOBOOKSHELF_ENABLED`
+
+**Enable Audiobookshelf integration**
+
+Turn on library-aware routing and duplicate detection.
+
+- **Type:** boolean
+- **Default:** `false`
+
+#### `AUDIOBOOKSHELF_URL`
+
+**Audiobookshelf URL**
+
+Base URL Shelfmark uses to reach Audiobookshelf. This is a server-to-server address and may differ from the browser link set as the Audiobook Library URL under General.
+
+- **Type:** string
+- **Default:** _none_
+- **Required:** Yes
+
+#### `AUDIOBOOKSHELF_API_TOKEN`
+
+**API Token**
+
+Found in Audiobookshelf: Settings > Users > (your user) > API Token
+
+- **Type:** string (secret)
+- **Default:** _none_
+- **Required:** Yes
+
+</details>
+
 ## Download Clients
 
 | Variable | Description | Type | Default |
 |----------|-------------|------|---------|
 | `PROWLARR_TORRENT_CLIENT` | Choose which torrent client to use | string (choice) | _empty string_ |
+| `ALLDEBRID_API_KEY` | AllDebrid API Key (apiv4) from your AllDebrid account settings | string (secret) | _none_ |
+| `REALDEBRID_API_KEY` | Real-Debrid API Key (Secret Token) from your Real-Debrid account settings | string (secret) | _none_ |
 | `QBITTORRENT_URL` | Web UI URL of your qBittorrent instance | string | _none_ |
 | `QBITTORRENT_USERNAME` | qBittorrent Web UI username | string | _none_ |
 | `QBITTORRENT_PASSWORD` | qBittorrent Web UI password | string (secret) | _none_ |
@@ -1559,7 +1604,25 @@ Choose which torrent client to use
 
 - **Type:** string (choice)
 - **Default:** _empty string_
-- **Options:** `""` (None), `qbittorrent` (qBittorrent), `transmission` (Transmission), `deluge` (Deluge), `rtorrent` (rTorrent)
+- **Options:** `""` (None), `alldebrid` (AllDebrid), `qbittorrent` (qBittorrent), `realdebrid` (Real-Debrid), `transmission` (Transmission), `deluge` (Deluge), `rtorrent` (rTorrent)
+
+#### `ALLDEBRID_API_KEY`
+
+**API Key**
+
+AllDebrid API Key (apiv4) from your AllDebrid account settings
+
+- **Type:** string (secret)
+- **Default:** _none_
+
+#### `REALDEBRID_API_KEY`
+
+**API Key**
+
+Real-Debrid API Key (Secret Token) from your Real-Debrid account settings
+
+- **Type:** string (secret)
+- **Default:** _none_
 
 #### `QBITTORRENT_URL`
 

@@ -348,6 +348,7 @@ def _generate_egress_env_docs() -> list[str]:
 def generate_env_docs() -> str:
     """Generate markdown documentation for all environment variables."""
     # Import settings modules to ensure all settings are registered
+    import shelfmark.audiobookshelf.settings
     import shelfmark.config.security
     import shelfmark.config.settings
     import shelfmark.metadata_providers.googlebooks
