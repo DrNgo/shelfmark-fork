@@ -138,6 +138,16 @@ export const CompactView = ({
             className="pointer-events-none absolute inset-0 bg-white transition-opacity duration-300"
             style={{ opacity: isHovered || dropdownOpen ? 0.02 : 0 }}
           />
+
+          {/* Status badges live in a fixed cover-corner slot: they arrive
+              asynchronously (library lookup), and here their appearance can
+              never reflow the card text. */}
+          {(libraryMatch || isRequested) && (
+            <div className="absolute top-2 right-2 z-10 flex flex-col items-end gap-1">
+              {libraryMatch && <InLibraryBadge match={libraryMatch} variant="overlay" />}
+              {isRequested && <RequestedBadge variant="overlay" />}
+            </div>
+          )}
         </div>
 
         {!showDetailsButton && (
@@ -198,12 +208,8 @@ export const CompactView = ({
             {book.title || 'Untitled'}
           </h3>
           <p className="min-w-0 truncate text-xs opacity-80">{book.author || 'Unknown author'}</p>
-          {/* Badges share the year row: the card is a fixed 180px, so an extra
-              block row here pushes the action buttons out the bottom. */}
-          <div className="flex items-center gap-1.5 text-xs opacity-70">
+          <div className="text-xs opacity-70">
             <span>{book.year || '-'}</span>
-            {libraryMatch && <InLibraryBadge match={libraryMatch} className="shrink-0" />}
-            {isRequested && <RequestedBadge className="shrink-0" />}
           </div>
         </div>
 

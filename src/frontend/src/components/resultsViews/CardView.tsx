@@ -138,6 +138,16 @@ export const CardView = ({
             className="pointer-events-none absolute inset-0 bg-white transition-opacity duration-300"
             style={{ opacity: isHovered || dropdownOpen ? 0.02 : 0 }}
           />
+
+          {/* Status badges live in a fixed cover-corner slot: they arrive
+              asynchronously (library lookup), and here their appearance can
+              never reflow the card text. */}
+          {(libraryMatch || isRequested) && (
+            <div className="absolute top-2 right-2 z-10 flex flex-col items-end gap-1">
+              {libraryMatch && <InLibraryBadge match={libraryMatch} variant="overlay" />}
+              {isRequested && <RequestedBadge variant="overlay" />}
+            </div>
+          )}
         </div>
 
         <div
@@ -193,15 +203,9 @@ export const CardView = ({
           >
             {book.title || 'Untitled'}
           </h3>
-          {/* Badges share the author row: the mobile card is a fixed 180px, so
-              an extra block row here pushes the action buttons out the bottom. */}
-          <div className="flex items-center gap-1.5 max-sm:min-w-0">
-            <p className="min-w-0 truncate text-sm opacity-80 max-sm:text-xs">
-              {book.author || 'Unknown author'}
-            </p>
-            {libraryMatch && <InLibraryBadge match={libraryMatch} className="shrink-0" />}
-            {isRequested && <RequestedBadge className="shrink-0" />}
-          </div>
+          <p className="truncate text-sm opacity-80 max-sm:min-w-0 max-sm:text-xs">
+            {book.author || 'Unknown author'}
+          </p>
           {searchMode === 'universal' && book.display_fields && book.display_fields.length > 0 ? (
             // max-sm:max-h-8 = two mobile lines; a long field (e.g. a full-cast
             // reader list) clips instead of growing past the fixed card height.

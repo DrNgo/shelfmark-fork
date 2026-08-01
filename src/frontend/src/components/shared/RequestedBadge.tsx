@@ -1,5 +1,7 @@
 interface RequestedBadgeProps {
   className?: string;
+  /** 'overlay' renders solid, for a fixed spot on cover artwork. */
+  variant?: 'inline' | 'overlay';
 }
 
 const LABEL = 'Already requested — waiting on a decision';
@@ -12,10 +14,15 @@ const LABEL = 'Already requested — waiting on a decision';
  * undecided requests reach here — a rejected one is precisely when asking
  * again makes sense.
  */
-export function RequestedBadge({ className = '' }: RequestedBadgeProps) {
+export function RequestedBadge({ className = '', variant = 'inline' }: RequestedBadgeProps) {
+  const palette =
+    variant === 'overlay'
+      ? 'border-amber-700 bg-amber-600 text-white shadow-md'
+      : 'border-amber-600/40 bg-amber-600/15 text-amber-700 dark:text-amber-300';
+
   return (
     <span
-      className={`inline-flex items-center justify-center rounded-full border border-amber-600/40 bg-amber-600/15 p-1 text-amber-700 dark:text-amber-300 ${className}`}
+      className={`inline-flex items-center justify-center rounded-full border p-1 ${palette} ${className}`}
       title={LABEL}
       aria-label={LABEL}
       role="img"
