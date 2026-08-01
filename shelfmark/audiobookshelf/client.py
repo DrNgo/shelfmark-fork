@@ -2,6 +2,7 @@
 
 Only GET endpoints are used: Shelfmark writes audiobook files to disk and lets
 Audiobookshelf scan them, so nothing here should ever mutate an ABS library.
+verify_abs_login is the one exception: an unauthenticated POST /login used by the abs auth source.
 """
 
 from collections.abc import Mapping
@@ -223,3 +224,84 @@ class AudiobookshelfClient:
             page += 1
 
         return items
+
+
+_ABS_LOGIN_MAX_BYTES = 1_000_000
+_ABS_LOGIN_REJECTED_STATUSES = (401, 403)
+_HTTP_STATUS_OK = 200
+
+
+@dataclass(frozen=True)
+class AbsLoginUser:
+    """Identity fields Shelfmark needs from a successful ABS login."""
+
+    id: str
+    username: str
+    type: str
+    is_active: bool
+
+
+def verify_abs_login(
+    url: str,
+    username: str,
+    password: str,
+    *,
+    timeout: int = 30,
+) -> AbsLoginUser | None:
+    """Validate ABS credentials via the unauthenticated ``POST /login``.
+
+    Unlike ``AudiobookshelfClient`` (bearer-token, read-only GETs), this is a
+    fresh request carrying only the end user's credentials: no Authorization
+    header, no shared session, no redirect following.
+
+    Returns ``None`` when ABS rejects the credentials or returns an unusable
+    user payload. Raises ``ValueError`` on unexpected statuses or malformed
+    bodies and lets ``requests.exceptions.RequestException`` propagate, so
+    callers can tell "wrong password" from "ABS is down".
+    """
+    base_url = normalize_http_url(url)
+    if not base_url:
+        msg = "Audiobookshelf URL is not configured"
+        raise ValueError(msg)
+
+    response = requests.post(
+        base_url + "/login",
+        json={"username": username, "password": password},
+        headers={"Accept": "application/json"},
+        timeout=timeout,
+        verify=get_ssl_verify(base_url),
+        allow_redirects=False,
+    )
+
+    if response.status_code in _ABS_LOGIN_REJECTED_STATUSES:
+        return None
+    if response.status_code != _HTTP_STATUS_OK:
+        msg = f"Unexpected Audiobookshelf login status: {response.status_code}"
+        raise ValueError(msg)
+    if len(response.content) > _ABS_LOGIN_MAX_BYTES:
+        msg = "Audiobookshelf login response exceeded the size limit"
+        raise ValueError(msg)
+
+    try:
+        payload = response.json()
+    except requests.exceptions.JSONDecodeError as e:
+        msg = "Invalid JSON in Audiobookshelf login response"
+        raise ValueError(msg) from e
+
+    user = payload.get("user") if isinstance(payload, dict) else None
+    if not isinstance(user, dict):
+        logger.warning("Audiobookshelf login response carried no user object")
+        return None
+
+    user_id = str(user.get("id") or "").strip()
+    abs_username = str(user.get("username") or "").strip()
+    if not user_id or not abs_username:
+        logger.warning("Audiobookshelf login user is missing id or username")
+        return None
+
+    return AbsLoginUser(
+        id=user_id,
+        username=abs_username,
+        type=str(user.get("type") or "").strip().lower(),
+        is_active=user.get("isActive") is True,
+    )
