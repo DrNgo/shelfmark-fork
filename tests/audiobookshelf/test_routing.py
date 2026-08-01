@@ -132,3 +132,45 @@ class TestQueueReleasePassesDestinationKey:
         )
 
         assert task.destination_key is None
+
+
+class TestDestinationKeySurvivesRetry:
+    """A retry must land in the library the admin picked the first time.
+
+    `DownloadTask` is not rebuilt from `dataclasses.fields()`, so every field
+    has to be carried explicitly through both halves of the retry round trip.
+    Dropping it here is silent: the retry succeeds, and the audiobook lands in
+    the default destination instead of the chosen one.
+    """
+
+    def test_roundtrip_preserves_the_destination_key(self):
+        task = audiobook_task(destination_key="lib-kids")
+
+        restored = orchestrator._restore_task_from_retry_payload(
+            orchestrator.serialize_task_for_retry(task)
+        )
+
+        assert restored is not None
+        assert restored.destination_key == "lib-kids"
+
+    def test_a_retry_still_routes_to_the_chosen_library(self):
+        """The round trip is only worth anything if routing agrees."""
+        task = audiobook_task(destination_key="lib-kids")
+
+        restored = orchestrator._restore_task_from_retry_payload(
+            orchestrator.serialize_task_for_retry(task)
+        )
+
+        assert restored is not None
+        with patch_config(DESTINATION_CONFIG):
+            assert get_final_destination(restored) == Path("/audiobooks/kids")
+
+    def test_legacy_payload_without_the_key_restores_cleanly(self):
+        """History rows written before this field existed must still retry."""
+        payload = orchestrator.serialize_task_for_retry(audiobook_task(destination_key="lib-kids"))
+        del payload["destination_key"]
+
+        restored = orchestrator._restore_task_from_retry_payload(payload)
+
+        assert restored is not None
+        assert restored.destination_key is None

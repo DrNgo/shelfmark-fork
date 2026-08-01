@@ -434,6 +434,9 @@ def serialize_task_for_retry(task: DownloadTask) -> dict[str, Any]:
         "search_mode": search_mode,
         "output_mode": getattr(task, "output_mode", None),
         "output_args": dict(raw_output_args) if isinstance(raw_output_args, dict) else {},
+        # Captured for the same reason as output_mode: the retry must land where
+        # the admin originally chose, not wherever the default points by then.
+        "destination_key": getattr(task, "destination_key", None),
         "user_id": getattr(task, "user_id", None),
         "username": getattr(task, "username", None),
         "request_id": getattr(task, "request_id", None),
@@ -492,6 +495,7 @@ def _restore_task_from_retry_payload(payload: object) -> DownloadTask | None:
         search_mode=search_mode,
         output_mode=normalize_optional_text(payload.get("output_mode")),
         output_args=dict(output_args) if isinstance(output_args, dict) else {},
+        destination_key=normalize_optional_text(payload.get("destination_key")),
         user_id=normalize_positive_int(payload.get("user_id")),
         username=normalize_optional_text(payload.get("username")),
         request_id=normalize_positive_int(payload.get("request_id")),
