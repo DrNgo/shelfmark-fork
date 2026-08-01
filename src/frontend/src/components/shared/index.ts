@@ -2,3 +2,4 @@ export { DisplayFieldIcon, DisplayFieldBadge, DisplayFieldBadges } from './Displ
 export { CircularProgress } from './CircularProgress';
 export { ToggleSwitch } from './ToggleSwitch';
 export { InLibraryBadge } from './InLibraryBadge';
+export { RequestedBadge } from './RequestedBadge';

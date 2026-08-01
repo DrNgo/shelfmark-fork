@@ -5,9 +5,10 @@ import type { Book, ButtonStateInfo, DisplayField } from '../../types';
 import { bookSupportsTargets } from '../../utils/bookTargetLoader';
 import { getFormatColor, getLanguageColor } from '../../utils/colorMaps';
 import type { LibraryMatch } from '../../utils/libraryMatches';
+import { isBookRequested } from '../../utils/requestedBooks';
 import { BookActionButton } from '../BookActionButton';
 import { BookTargetDropdown } from '../BookTargetDropdown';
-import { DisplayFieldIcon, DisplayFieldBadge, InLibraryBadge } from '../shared';
+import { DisplayFieldIcon, DisplayFieldBadge, InLibraryBadge, RequestedBadge } from '../shared';
 
 interface ListViewProps {
   books: Book[];
@@ -19,9 +20,11 @@ interface ListViewProps {
   showSeriesPosition?: boolean;
   onShowToast?: (message: string, type: 'success' | 'error' | 'info') => void;
   libraryMatches?: Record<string, LibraryMatch>;
+  openRequestKeys?: Set<string>;
 }
 
 const NO_LIBRARY_MATCHES: Record<string, LibraryMatch> = {};
+const NO_OPEN_REQUESTS: Set<string> = new Set();
 
 const getKeyedDisplayFields = (fields: DisplayField[]) => {
   const signatureCounts = new Map<string, number>();
@@ -93,6 +96,7 @@ export const ListView = ({
   showSeriesPosition = false,
   onShowToast,
   libraryMatches = NO_LIBRARY_MATCHES,
+  openRequestKeys = NO_OPEN_REQUESTS,
 }: ListViewProps) => {
   const { searchMode } = useSearchMode();
   const [detailsLoadingId, setDetailsLoadingId] = useState<string | null>(null);
@@ -204,6 +208,9 @@ export const ListView = ({
                     <span className="truncate">{book.title || 'Untitled'}</span>
                     {libraryMatches[book.id] && (
                       <InLibraryBadge match={libraryMatches[book.id]} className="shrink-0" />
+                    )}
+                    {isBookRequested(book, openRequestKeys) && (
+                      <RequestedBadge className="shrink-0" />
                     )}
                   </h3>
                   <p className="truncate text-[10px] text-gray-600 min-[400px]:text-xs sm:text-sm dark:text-gray-300">

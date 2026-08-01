@@ -6,7 +6,7 @@ import { bookSupportsTargets } from '../../utils/bookTargetLoader';
 import type { LibraryMatch } from '../../utils/libraryMatches';
 import { BookActionButton } from '../BookActionButton';
 import { BookTargetDropdown } from '../BookTargetDropdown';
-import { DisplayFieldBadges, InLibraryBadge } from '../shared';
+import { DisplayFieldBadges, InLibraryBadge, RequestedBadge } from '../shared';
 
 const SkeletonLoader = () => (
   <div className="h-full w-full animate-pulse bg-linear-to-r from-gray-300 via-gray-200 to-gray-300 dark:from-gray-700 dark:via-gray-600 dark:to-gray-700" />
@@ -22,6 +22,7 @@ interface CardViewProps {
   showSeriesPosition?: boolean;
   onShowToast?: (message: string, type: 'success' | 'error' | 'info') => void;
   libraryMatch?: LibraryMatch;
+  isRequested?: boolean;
 }
 
 export const CardView = ({
@@ -34,6 +35,7 @@ export const CardView = ({
   showSeriesPosition = false,
   onShowToast,
   libraryMatch,
+  isRequested = false,
 }: CardViewProps) => {
   const { searchMode } = useSearchMode();
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
@@ -193,6 +195,7 @@ export const CardView = ({
             {book.author || 'Unknown author'}
           </p>
           {libraryMatch && <InLibraryBadge match={libraryMatch} />}
+          {isRequested && <RequestedBadge />}
           {searchMode === 'universal' && book.display_fields && book.display_fields.length > 0 ? (
             <div className="flex flex-wrap gap-2 text-xs opacity-70 max-sm:gap-1 max-sm:text-[10px]">
               <span>{book.year || '-'}</span>

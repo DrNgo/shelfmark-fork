@@ -94,6 +94,7 @@ import { isRecord } from './utils/objectHelpers';
 import { policyTrace } from './utils/policyTrace';
 import { buildQueryTargets, getDefaultQueryTargetKey } from './utils/queryTargets';
 import { applyRequestNoteToPayload } from './utils/requestConfirmation';
+import { buildOpenRequestKeys } from './utils/requestedBooks';
 import { bookFromRequestData } from './utils/requestFulfil';
 import {
   buildDirectRequestPayload,
@@ -2369,6 +2370,17 @@ function App() {
     updateAdvancedFilters,
   ]);
 
+  // Reuses the records the activity sidebar already keeps live over the socket,
+  // so flagging a requested result costs no extra call and updates the moment a
+  // request is approved or rejected.
+  const openRequestKeys = useMemo(
+    () =>
+      buildOpenRequestKeys(
+        requestItems.map((item) => item.requestRecord).filter((record) => record !== undefined),
+      ),
+    [requestItems],
+  );
+
   const isBrowseFulfilMode = fulfillingRequest !== null;
   const activeReleaseBook = fulfillingRequest?.book ?? releaseBook;
   const activeReleaseContentType =
@@ -2564,6 +2576,7 @@ function App() {
             onGetReleases={handleGetReleases}
             getButtonState={getDirectActionButtonState}
             getUniversalButtonState={getUniversalActionButtonState}
+            openRequestKeys={openRequestKeys}
             sortValue={visibleResultsSort}
             showSortControl={
               !activeQueryUsesSeriesBrowse && !activeQueryUsesListBrowse && !resultsSourceUrl

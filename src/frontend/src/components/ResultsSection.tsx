@@ -5,6 +5,7 @@ import { SORT_OPTIONS } from '../data/filterOptions';
 import { useLibraryMatches } from '../hooks/useLibraryMatches';
 import { useMediaQuery } from '../hooks/useMediaQuery';
 import type { Book, ButtonStateInfo, SortOption } from '../types';
+import { isBookRequested } from '../utils/requestedBooks';
 import { Dropdown } from './Dropdown';
 import { CardView } from './resultsViews/CardView';
 import { CompactView } from './resultsViews/CompactView';
@@ -36,7 +37,11 @@ interface ResultsSectionProps {
   totalFound?: number;
   onShowToast?: (message: string, type: 'success' | 'error' | 'info') => void;
   resultsSourceUrl?: string;
+  /** Identities with a request still awaiting a decision, from the sidebar's records. */
+  openRequestKeys?: Set<string>;
 }
+
+const NO_OPEN_REQUESTS: Set<string> = new Set();
 
 export const ResultsSection = ({
   books,
@@ -56,6 +61,7 @@ export const ResultsSection = ({
   totalFound,
   onShowToast,
   resultsSourceUrl,
+  openRequestKeys = NO_OPEN_REQUESTS,
 }: ResultsSectionProps) => {
   const { searchMode } = useSearchMode();
   // One lookup for the whole result set, not one per card.
@@ -212,6 +218,7 @@ export const ResultsSection = ({
           showSeriesPosition={sortValue === 'series_order'}
           onShowToast={onShowToast}
           libraryMatches={libraryMatches}
+          openRequestKeys={openRequestKeys}
         />
       ) : (
         <div
@@ -239,6 +246,7 @@ export const ResultsSection = ({
                 showSeriesPosition={sortValue === 'series_order'}
                 onShowToast={onShowToast}
                 libraryMatch={libraryMatches[book.id]}
+                isRequested={isBookRequested(book, openRequestKeys)}
               />
             ) : (
               <CompactView
@@ -253,6 +261,7 @@ export const ResultsSection = ({
                 showSeriesPosition={sortValue === 'series_order'}
                 onShowToast={onShowToast}
                 libraryMatch={libraryMatches[book.id]}
+                isRequested={isBookRequested(book, openRequestKeys)}
               />
             );
           })}
