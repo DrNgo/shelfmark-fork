@@ -194,11 +194,13 @@ export const CompactView = ({
             {book.title || 'Untitled'}
           </h3>
           <p className="min-w-0 truncate text-xs opacity-80">{book.author || 'Unknown author'}</p>
-          <div className="text-xs opacity-70">
+          {/* Badges share the year row: the card is a fixed 180px, so an extra
+              block row here pushes the action buttons out the bottom. */}
+          <div className="flex items-center gap-1.5 text-xs opacity-70">
             <span>{book.year || '-'}</span>
+            {libraryMatch && <InLibraryBadge match={libraryMatch} className="shrink-0" />}
+            {isRequested && <RequestedBadge className="shrink-0" />}
           </div>
-          {libraryMatch && <InLibraryBadge match={libraryMatch} />}
-          {isRequested && <RequestedBadge />}
         </div>
 
         <div className="mt-auto flex flex-col gap-2">

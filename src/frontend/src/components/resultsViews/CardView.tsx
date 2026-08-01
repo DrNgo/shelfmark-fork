@@ -191,11 +191,15 @@ export const CardView = ({
           >
             {book.title || 'Untitled'}
           </h3>
-          <p className="truncate text-sm opacity-80 max-sm:min-w-0 max-sm:text-xs">
-            {book.author || 'Unknown author'}
-          </p>
-          {libraryMatch && <InLibraryBadge match={libraryMatch} />}
-          {isRequested && <RequestedBadge />}
+          {/* Badges share the author row: the mobile card is a fixed 180px, so
+              an extra block row here pushes the action buttons out the bottom. */}
+          <div className="flex items-center gap-1.5 max-sm:min-w-0">
+            <p className="min-w-0 truncate text-sm opacity-80 max-sm:text-xs">
+              {book.author || 'Unknown author'}
+            </p>
+            {libraryMatch && <InLibraryBadge match={libraryMatch} className="shrink-0" />}
+            {isRequested && <RequestedBadge className="shrink-0" />}
+          </div>
           {searchMode === 'universal' && book.display_fields && book.display_fields.length > 0 ? (
             <div className="flex flex-wrap gap-2 text-xs opacity-70 max-sm:gap-1 max-sm:text-[10px]">
               <span>{book.year || '-'}</span>
