@@ -46,6 +46,7 @@ from shelfmark.core.auth_modes import (
     get_auth_check_admin_status,
     is_settings_or_onboarding_path,
     load_active_auth_mode,
+    normalize_auth_source,
     requires_admin_for_settings_access,
 )
 from shelfmark.core.config import config as app_config
@@ -2055,7 +2056,8 @@ def _failed_login_response(username: str, ip_address: str) -> tuple[Response, in
 def api_login() -> Response | tuple[Response, int]:
     """Login endpoint that validates credentials and creates a session.
 
-    Supports both built-in credentials and CWA database authentication.
+    Supports built-in credentials, CWA database authentication, and
+    Audiobookshelf (abs) authentication with a builtin-password fallback.
     Includes rate limiting: 10 failed attempts = 30 minute lockout.
 
     Request Body:
@@ -2219,6 +2221,132 @@ def api_login() -> Response | tuple[Response, int]:
             except _OPERATIONAL_ERRORS as e:
                 logger.error_trace(f"CWA database error during login: {e}")
                 return jsonify({"error": "Authentication system error"}), 500
+
+        # Audiobookshelf authentication mode
+        if auth_mode == "abs":
+            # Canonical rate-limit key: case/whitespace variants of one
+            # identifier must share a lockout counter (username is already
+            # stripped above).
+            rate_key = username.lower()
+            if is_account_locked(rate_key):
+                return jsonify(
+                    {
+                        "error": f"Account temporarily locked due to multiple failed login attempts. Try again in {LOCKOUT_DURATION_MINUTES} minutes."
+                    }
+                ), 429
+
+            # Local builtin path first: builtin passwords never leave
+            # Shelfmark, and builtin admins keep working while ABS is down.
+            # DISABLE_LOCAL_AUTH switches local passwords off here exactly
+            # as it does for builtin/oidc modes.
+            if not DISABLE_LOCAL_AUTH and user_db is not None:
+                try:
+                    local_user = user_db.get_user(username=username)
+                except _OPERATIONAL_ERRORS as e:
+                    logger.error_trace(f"ABS-mode local user lookup failed: {e}")
+                    local_user = None
+                if (
+                    local_user
+                    and normalize_auth_source(
+                        local_user.get("auth_source"), local_user.get("oidc_subject")
+                    )
+                    == "builtin"
+                    and local_user.get("password_hash")
+                    and check_password_hash(local_user["password_hash"], password)
+                ):
+                    session["user_id"] = local_user["username"]
+                    session["db_user_id"] = local_user["id"]
+                    session["is_admin"] = local_user["role"] == "admin"
+                    session.permanent = remember_me
+                    clear_failed_logins(rate_key)
+                    logger.info(
+                        "Login successful for user '%s' from IP %s (abs mode, builtin fallback, is_admin=%s)",
+                        username,
+                        ip_address,
+                        session["is_admin"],
+                    )
+                    return jsonify({"success": True})
+
+            abs_url = ""
+            if app_config.get("AUDIOBOOKSHELF_ENABLED", False):
+                abs_url = str(app_config.get("AUDIOBOOKSHELF_URL", "") or "").strip()
+            if not abs_url:
+                logger.error("AUTH_METHOD=abs but the Audiobookshelf connection is not configured")
+                return jsonify({"error": "Authentication service unavailable"}), 503
+
+            import requests as _requests
+
+            from shelfmark.audiobookshelf.client import verify_abs_login
+
+            try:
+                abs_user = verify_abs_login(abs_url, username, password)
+            except (_requests.exceptions.RequestException, ValueError) as e:
+                logger.error_trace(f"Audiobookshelf login check failed: {e}")
+                return jsonify({"error": "Authentication service unavailable"}), 503
+
+            if (
+                abs_user is None
+                or abs_user.type not in ("root", "admin", "user")
+                or not abs_user.is_active
+            ):
+                return _failed_login_response(rate_key, ip_address)
+
+            if user_db is None:
+                logger.error("User database not available for abs auth")
+                return jsonify({"error": "Authentication service unavailable"}), 503
+
+            # Never take over the builtin admin account: converting it to an
+            # external identity would demote the only admin.
+            collision_strategy = "takeover"
+            try:
+                collision_target = user_db.get_user(username=abs_user.username)
+            except _OPERATIONAL_ERRORS:
+                collision_target = None
+            if (
+                collision_target
+                and collision_target.get("role") == "admin"
+                and normalize_auth_source(
+                    collision_target.get("auth_source"),
+                    collision_target.get("oidc_subject"),
+                )
+                == "builtin"
+            ):
+                collision_strategy = "suffix"
+
+            try:
+                db_user, action = upsert_external_user(
+                    user_db,
+                    auth_source="abs",
+                    username=abs_user.username,
+                    role="user",
+                    subject_field="abs_subject",
+                    subject=abs_user.id,
+                    collision_strategy=collision_strategy,
+                    context="abs_login",
+                )
+            except _OPERATIONAL_ERRORS as e:
+                # ValueError is already a member of _OPERATIONAL_ERRORS
+                # (main.py:99), so no extra tuple composition is needed.
+                logger.error_trace(f"ABS user provisioning failed: {e}")
+                return jsonify({"error": "Authentication system error"}), 500
+            if db_user is None or action == "not_found":
+                logger.error("ABS user provisioning returned no user (action=%s)", action)
+                return jsonify({"error": "Authentication system error"}), 500
+
+            session["user_id"] = db_user["username"]
+            session["db_user_id"] = db_user["id"]
+            session["is_admin"] = db_user["role"] == "admin"
+            session.permanent = remember_me
+            clear_failed_logins(rate_key)
+            logger.info(
+                "Login successful for user '%s' from IP %s (ABS auth, local_username=%s, action=%s, remember_me=%s)",
+                username,
+                ip_address,
+                db_user["username"],
+                action,
+                remember_me,
+            )
+            return jsonify({"success": True})
 
         # Should not reach here, but handle gracefully
         return jsonify({"error": "Unknown authentication mode"}), 500

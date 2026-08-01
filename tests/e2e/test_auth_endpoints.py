@@ -14,7 +14,21 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from shelfmark.audiobookshelf.client import AbsLoginUser
+
 pytestmark = pytest.mark.e2e
+
+_ABS_CONFIG = {"AUDIOBOOKSHELF_ENABLED": True, "AUDIOBOOKSHELF_URL": "http://abs.test"}
+
+
+def _abs_config_get(key, default=None):
+    return _ABS_CONFIG.get(key, default)
+
+
+def _abs_user(**overrides):
+    fields = {"id": "abs-1", "username": "listener", "type": "user", "is_active": True}
+    fields.update(overrides)
+    return AbsLoginUser(**fields)
 
 
 def _as_response(result: Any):
@@ -336,6 +350,271 @@ class TestLoginEndpoint:
             if user.get("auth_source") == "cwa" and user.get("email") == external_email
         )
         assert provisioned_cwa_user["username"].startswith(f"{username}__cwa")
+
+
+class TestLoginAbsMode:
+    def _login(self, main_module, verify_result, json_body, *, verify_side_effect=None):
+        verify_patch = patch(
+            "shelfmark.audiobookshelf.client.verify_abs_login",
+            side_effect=verify_side_effect,
+            **({} if verify_side_effect else {"return_value": verify_result}),
+        )
+        with (
+            patch.object(main_module, "get_auth_mode", return_value="abs"),
+            patch.object(main_module, "is_account_locked", return_value=False),
+            patch.object(main_module.app_config, "get", side_effect=_abs_config_get),
+            verify_patch,
+            main_module.app.test_request_context("/api/auth/login", method="POST", json=json_body),
+        ):
+            resp = _as_response(main_module.api_login())
+            return resp, resp.get_json(), dict(main_module.session)
+
+    def test_provisions_user_role_account_on_first_login(self, main_module):
+        resp, data, session_data = self._login(
+            main_module,
+            _abs_user(),
+            {"username": "listener", "password": "pw", "remember_me": False},
+        )
+        assert resp.status_code == 200
+        assert data == {"success": True}
+        assert session_data.get("user_id") == "listener"
+        assert session_data.get("is_admin") is False
+        db_user = main_module.user_db.get_user(abs_subject="abs-1")
+        assert db_user is not None
+        assert db_user["auth_source"] == "abs"
+        assert db_user["role"] == "user"
+
+    def test_relinks_by_subject_after_abs_rename(self, main_module):
+        self._login(main_module, _abs_user(), {"username": "listener", "password": "pw"})
+        first = main_module.user_db.get_user(abs_subject="abs-1")
+        resp, _, session_data = self._login(
+            main_module,
+            _abs_user(username="renamed"),
+            {"username": "renamed", "password": "pw"},
+        )
+        assert resp.status_code == 200
+        relinked = main_module.user_db.get_user(abs_subject="abs-1")
+        assert relinked["id"] == first["id"]
+        # Local username intentionally unchanged; session uses the local name.
+        assert relinked["username"] == "listener"
+        assert session_data.get("user_id") == "listener"
+
+    def test_guest_type_rejected(self, main_module):
+        resp, _, session_data = self._login(
+            main_module,
+            _abs_user(type="guest"),
+            {"username": "listener", "password": "pw"},
+        )
+        assert resp.status_code == 401
+        assert "user_id" not in session_data
+
+    def test_unknown_type_rejected(self, main_module):
+        resp, _, _ = self._login(
+            main_module,
+            _abs_user(type="superuser"),
+            {"username": "listener", "password": "pw"},
+        )
+        assert resp.status_code == 401
+
+    def test_inactive_user_rejected(self, main_module):
+        resp, _, _ = self._login(
+            main_module,
+            _abs_user(is_active=False),
+            {"username": "listener", "password": "pw"},
+        )
+        assert resp.status_code == 401
+
+    def test_bad_credentials_rejected(self, main_module):
+        resp, _, _ = self._login(main_module, None, {"username": "listener", "password": "wrong"})
+        assert resp.status_code == 401
+
+    def test_abs_unreachable_returns_503_for_non_builtin_user(self, main_module):
+        import requests as requests_lib
+
+        resp, data, session_data = self._login(
+            main_module,
+            None,
+            {"username": "listener", "password": "pw"},
+            verify_side_effect=requests_lib.exceptions.ConnectionError("down"),
+        )
+        assert resp.status_code == 503
+        assert data == {"error": "Authentication service unavailable"}
+        assert "user_id" not in session_data
+
+    def test_builtin_fallback_works_while_abs_down(self, main_module):
+        import requests as requests_lib
+
+        main_module.user_db.create_user(
+            username="localadmin", password_hash="hash", auth_source="builtin", role="admin"
+        )
+        with patch.object(main_module, "check_password_hash", return_value=True):
+            resp, data, session_data = self._login(
+                main_module,
+                None,
+                {"username": "localadmin", "password": "pw"},
+                verify_side_effect=requests_lib.exceptions.ConnectionError("down"),
+            )
+        assert resp.status_code == 200
+        assert data == {"success": True}
+        assert session_data.get("is_admin") is True
+
+    def test_disable_local_auth_blocks_builtin_fallback_not_abs(self, main_module):
+        main_module.user_db.create_user(
+            username="localonly", password_hash="hash", auth_source="builtin"
+        )
+        with (
+            patch.object(main_module, "DISABLE_LOCAL_AUTH", True),
+            patch.object(main_module, "check_password_hash", return_value=True),
+        ):
+            # Local password is valid, but the fallback step is disabled, so the
+            # attempt is forwarded to ABS which rejects it.
+            resp, _, _ = self._login(main_module, None, {"username": "localonly", "password": "pw"})
+        assert resp.status_code == 401
+
+        # ABS validation itself must still work under the flag.
+        with patch.object(main_module, "DISABLE_LOCAL_AUTH", True):
+            resp, data, session_data = self._login(
+                main_module, _abs_user(), {"username": "listener", "password": "pw"}
+            )
+        assert resp.status_code == 200
+        assert data == {"success": True}
+        assert session_data.get("user_id") == "listener"
+
+    def test_builtin_admin_collision_suffixes_instead_of_takeover(self, main_module):
+        admin = main_module.user_db.create_user(
+            username="admin", password_hash="hash", auth_source="builtin", role="admin"
+        )
+        resp, _, session_data = self._login(
+            main_module,
+            _abs_user(username="admin", id="abs-admin"),
+            {"username": "admin", "password": "pw"},
+        )
+        assert resp.status_code == 200
+        untouched = main_module.user_db.get_user(user_id=admin["id"])
+        assert untouched["auth_source"] == "builtin"
+        assert untouched["role"] == "admin"
+        provisioned = main_module.user_db.get_user(abs_subject="abs-admin")
+        assert provisioned["username"] == "admin_1"
+        assert session_data.get("user_id") == "admin_1"
+        assert session_data.get("is_admin") is False
+
+    def test_non_admin_builtin_collision_takes_over(self, main_module):
+        local = main_module.user_db.create_user(
+            username="bob", password_hash="oldhash", auth_source="builtin"
+        )
+        resp, _, _ = self._login(
+            main_module,
+            _abs_user(username="bob", id="abs-bob"),
+            {"username": "bob", "password": "pw"},
+        )
+        assert resp.status_code == 200
+        taken = main_module.user_db.get_user(user_id=local["id"])
+        assert taken["auth_source"] == "abs"
+        assert taken["abs_subject"] == "abs-bob"
+
+    def test_taken_over_row_old_password_no_longer_authenticates(self, main_module):
+        # Full takeover sequence: builtin row with a password hash gets taken
+        # over by an ABS login, keeping the stale hash on the row.
+        local = main_module.user_db.create_user(
+            username="carol", password_hash="oldhash", auth_source="builtin"
+        )
+        resp, _, _ = self._login(
+            main_module,
+            _abs_user(username="carol", id="abs-carol"),
+            {"username": "carol", "password": "abspw"},
+        )
+        assert resp.status_code == 200
+        taken = main_module.user_db.get_user(user_id=local["id"])
+        assert taken["auth_source"] == "abs"
+        assert taken["password_hash"] == "oldhash"  # takeover must not touch the hash
+
+        # The stale hash is now inert: builtin-first step skips abs-source rows
+        # even when the hash would match, and ABS rejects the old password.
+        with patch.object(main_module, "check_password_hash", return_value=True):
+            resp2, _, session_data = self._login(
+                main_module, None, {"username": "carol", "password": "old"}
+            )
+        assert resp2.status_code == 401
+        assert "user_id" not in session_data
+
+    def test_abs_unconfigured_fails_closed_with_503(self, main_module):
+        with (
+            patch.object(main_module, "get_auth_mode", return_value="abs"),
+            patch.object(main_module, "is_account_locked", return_value=False),
+            patch.object(
+                main_module.app_config,
+                "get",
+                side_effect=lambda key, default=None: default,
+            ),
+            main_module.app.test_request_context(
+                "/api/auth/login",
+                method="POST",
+                json={"username": "listener", "password": "pw"},
+            ),
+        ):
+            resp = _as_response(main_module.api_login())
+            session_data = dict(main_module.session)
+        assert resp.status_code == 503
+        assert "user_id" not in session_data
+
+    def test_provisioning_failure_returns_500_without_session(self, main_module):
+        with patch.object(main_module, "upsert_external_user", side_effect=ValueError("boom")):
+            resp, data, session_data = self._login(
+                main_module, _abs_user(), {"username": "listener", "password": "pw"}
+            )
+        assert resp.status_code == 500
+        assert data == {"error": "Authentication system error"}
+        assert "user_id" not in session_data
+
+    def test_not_found_provisioning_result_returns_500(self, main_module):
+        with patch.object(main_module, "upsert_external_user", return_value=(None, "not_found")):
+            resp, data, session_data = self._login(
+                main_module, _abs_user(), {"username": "listener", "password": "pw"}
+            )
+        assert resp.status_code == 500
+        assert data == {"error": "Authentication system error"}
+        assert "user_id" not in session_data
+
+    def test_rate_limit_key_is_casefolded_and_trimmed(self, main_module):
+        # Case/whitespace variants of one identifier must share a lockout
+        # counter (the route strips, the abs branch lowercases).
+        main_module.failed_login_attempts.clear()
+        self._login(main_module, None, {"username": " Alice ", "password": "bad"})
+        self._login(main_module, None, {"username": "ALICE", "password": "bad"})
+        assert main_module.failed_login_attempts["alice"]["count"] == 2
+
+    def test_eligibility_rejections_count_as_failed_logins(self, main_module):
+        main_module.failed_login_attempts.clear()
+        self._login(
+            main_module, _abs_user(type="guest"), {"username": "listener", "password": "pw"}
+        )
+        self._login(
+            main_module,
+            _abs_user(is_active=False),
+            {"username": "listener", "password": "pw"},
+        )
+        assert main_module.failed_login_attempts["listener"]["count"] == 2
+
+    @pytest.mark.parametrize("abs_type", ["root", "admin"])
+    def test_root_and_admin_types_accepted_but_never_local_admin(self, main_module, abs_type):
+        resp, _, session_data = self._login(
+            main_module,
+            _abs_user(type=abs_type, id=f"abs-{abs_type}", username=f"u_{abs_type}"),
+            {"username": f"u_{abs_type}", "password": "pw"},
+        )
+        assert resp.status_code == 200
+        assert session_data.get("is_admin") is False
+        db_user = main_module.user_db.get_user(abs_subject=f"abs-{abs_type}")
+        assert db_user is not None
+        assert db_user["role"] == "user"
+
+    def test_data_endpoint_requires_session_in_abs_mode(self, main_module):
+        # Fail-closed proof: abs mode (even with ABS unconfigured) must gate
+        # data endpoints exactly like any authenticated mode.
+        with patch.object(main_module, "get_auth_mode", return_value="abs"):
+            resp = main_module.app.test_client().get("/api/status")
+        assert resp.status_code == 401
+        assert resp.get_json() == {"error": "Unauthorized"}
 
 
 class TestLogoutEndpoint:
