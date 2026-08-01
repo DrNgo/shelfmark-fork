@@ -167,7 +167,7 @@ def security_settings() -> list[SettingsField]:
             label="Go to Users",
             description="Configure local users and admin access in the Users tab.",
             style="primary",
-            show_when={"field": "AUTH_METHOD", "value": ["builtin", "oidc"]},
+            show_when={"field": "AUTH_METHOD", "value": ["builtin", "oidc", "abs"]},
         ),
         _auth_field(
             TextField,

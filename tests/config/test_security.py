@@ -412,7 +412,7 @@ class TestSecuritySettings:
         action = next((f for f in fields if f.key == "open_users_tab"), None)
         assert action is not None
         assert action.label == "Go to Users"
-        assert action.show_when == {"field": "AUTH_METHOD", "value": ["builtin", "oidc"]}
+        assert action.show_when == {"field": "AUTH_METHOD", "value": ["builtin", "oidc", "abs"]}
 
 
 class TestSecurityOnSave:
@@ -645,3 +645,7 @@ class TestOnSaveSecurityAbs:
         auth_field = next(f for f in tab.fields if getattr(f, "key", "") == "AUTH_METHOD")
         values = [opt["value"] for opt in auth_field.options]
         assert "abs" in values
+
+        # Verify Go to Users button is shown for abs auth
+        users_button = next(f for f in tab.fields if getattr(f, "key", "") == "open_users_tab")
+        assert "abs" in users_button.show_when["value"]
