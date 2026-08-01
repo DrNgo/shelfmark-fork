@@ -86,6 +86,7 @@ def security_settings() -> list[SettingsField]:
         {"label": "Proxy Authentication", "value": "proxy"},
         {"label": "OIDC (OpenID Connect)", "value": "oidc"},
         {"label": "Calibre-Web Database", "value": "cwa"},
+        {"label": "Audiobookshelf", "value": "abs"},
     ]
 
     fields = [
@@ -136,12 +137,37 @@ def security_settings() -> list[SettingsField]:
                 ),
             ]
         ),
+        CustomComponentField(
+            key="abs_auth_requirement",
+            component="oidc_admin_hint",
+            label=(
+                "Audiobookshelf users sign in with their ABS credentials and are "
+                "created as regular users on first login. Requires the "
+                "Audiobookshelf connection (Audiobookshelf tab)."
+            ),
+            show_when=_auth_condition("abs"),
+        ),
+        *(
+            []
+            if DISABLE_LOCAL_AUTH
+            else [
+                CustomComponentField(
+                    key="abs_admin_requirement",
+                    component="oidc_admin_hint",
+                    label=(
+                        "A local admin account with a password is required for "
+                        "fallback access while Audiobookshelf is unavailable."
+                    ),
+                    show_when=_auth_condition("abs"),
+                ),
+            ]
+        ),
         ActionButton(
             key="open_users_tab",
             label="Go to Users",
             description="Configure local users and admin access in the Users tab.",
             style="primary",
-            show_when={"field": "AUTH_METHOD", "value": ["builtin", "oidc"]},
+            show_when={"field": "AUTH_METHOD", "value": ["builtin", "oidc", "abs"]},
         ),
         _auth_field(
             TextField,

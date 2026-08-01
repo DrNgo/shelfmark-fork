@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS users (
     display_name  TEXT,
     password_hash TEXT,
     oidc_subject  TEXT UNIQUE,
+    abs_subject   TEXT,
     auth_source   TEXT NOT NULL DEFAULT 'builtin',
     role          TEXT NOT NULL DEFAULT 'user',
     created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -201,6 +202,7 @@ class UserDB:
             try:
                 conn.executescript(_CREATE_TABLES_SQL)
                 self._migrate_auth_source_column(conn)
+                self._migrate_abs_subject_column(conn)
                 self._migrate_request_delivery_columns(conn)
                 self._migrate_request_destination_key(conn)
                 self._migrate_download_history_queued_at(conn)
@@ -224,6 +226,16 @@ class UserDB:
         # Defensive cleanup for any legacy null/blank values.
         conn.execute(
             "UPDATE users SET auth_source = 'builtin' WHERE auth_source IS NULL OR auth_source = ''"
+        )
+
+    def _migrate_abs_subject_column(self, conn: sqlite3.Connection) -> None:
+        """Ensure users.abs_subject exists with a unique index (ABS identity link)."""
+        columns = conn.execute("PRAGMA table_info(users)").fetchall()
+        column_names = {str(col["name"]) for col in columns}
+        if "abs_subject" not in column_names:
+            conn.execute("ALTER TABLE users ADD COLUMN abs_subject TEXT")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_abs_subject ON users(abs_subject)"
         )
 
     def _migrate_request_delivery_columns(self, conn: sqlite3.Connection) -> None:
@@ -291,10 +303,11 @@ class UserDB:
         display_name: str | None = None,
         password_hash: str | None = None,
         oidc_subject: str | None = None,
+        abs_subject: str | None = None,
         auth_source: str = "builtin",
         role: str = "user",
     ) -> dict[str, Any]:
-        """Create a new user. Raises ValueError if username or oidc_subject already exists."""
+        """Create a new user. Raises ValueError if username, oidc_subject, or abs_subject already exists."""
         if auth_source not in self._VALID_AUTH_SOURCES:
             msg = f"Invalid auth_source: {auth_source}"
             raise ValueError(msg)
@@ -303,15 +316,17 @@ class UserDB:
             try:
                 cursor = conn.execute(
                     """INSERT INTO users (
-                           username, email, display_name, password_hash, oidc_subject, auth_source, role
+                           username, email, display_name, password_hash, oidc_subject,
+                           abs_subject, auth_source, role
                        )
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         username,
                         email,
                         display_name,
                         password_hash,
                         oidc_subject,
+                        abs_subject,
                         auth_source,
                         role,
                     ),
@@ -334,8 +349,9 @@ class UserDB:
         user_id: int | None = None,
         username: str | None = None,
         oidc_subject: str | None = None,
+        abs_subject: str | None = None,
     ) -> dict[str, Any] | None:
-        """Get a user by id, username, or oidc_subject. Returns None if not found."""
+        """Get a user by id, username, oidc_subject, or abs_subject. Returns None if not found."""
         conn = self._connect()
         try:
             if user_id is not None:
@@ -345,6 +361,10 @@ class UserDB:
             elif oidc_subject is not None:
                 row = conn.execute(
                     "SELECT * FROM users WHERE oidc_subject = ?", (oidc_subject,)
+                ).fetchone()
+            elif abs_subject is not None:
+                row = conn.execute(
+                    "SELECT * FROM users WHERE abs_subject = ?", (abs_subject,)
                 ).fetchone()
             else:
                 return None
@@ -362,6 +382,7 @@ class UserDB:
             "display_name",
             "password_hash",
             "oidc_subject",
+            "abs_subject",
             "auth_source",
             "role",
         }
@@ -371,6 +392,7 @@ class UserDB:
         "display_name": "UPDATE users SET display_name = ? WHERE id = ?",
         "password_hash": "UPDATE users SET password_hash = ? WHERE id = ?",
         "oidc_subject": "UPDATE users SET oidc_subject = ? WHERE id = ?",
+        "abs_subject": "UPDATE users SET abs_subject = ? WHERE id = ?",
         "auth_source": "UPDATE users SET auth_source = ? WHERE id = ?",
         "role": "UPDATE users SET role = ? WHERE id = ?",
     }

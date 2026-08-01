@@ -14,11 +14,13 @@ AUTH_SOURCE_BUILTIN = "builtin"
 AUTH_SOURCE_OIDC = "oidc"
 AUTH_SOURCE_PROXY = "proxy"
 AUTH_SOURCE_CWA = "cwa"
+AUTH_SOURCE_ABS = "abs"
 AUTH_SOURCES = (
     AUTH_SOURCE_BUILTIN,
     AUTH_SOURCE_OIDC,
     AUTH_SOURCE_PROXY,
     AUTH_SOURCE_CWA,
+    AUTH_SOURCE_ABS,
 )
 AUTH_SOURCE_SET = frozenset(AUTH_SOURCES)
 _ALWAYS_ADMIN_SETTINGS_TABS = frozenset({"security", "users"})
@@ -80,6 +82,13 @@ def determine_auth_mode(
     if auth_mode == AUTH_SOURCE_CWA and cwa_db_path:
         return AUTH_SOURCE_CWA
 
+    if auth_mode == AUTH_SOURCE_ABS and local_admin_available:
+        # Deliberately NOT gated on the ABS connection being configured:
+        # a missing ABS config must fail closed (mode stays "abs", ABS
+        # logins get 503, builtin fallback still works) rather than
+        # degrade to the wide-open "none" mode like oidc/proxy/cwa do.
+        return AUTH_SOURCE_ABS
+
     if auth_mode == AUTH_SOURCE_BUILTIN and local_admin_available:
         return AUTH_SOURCE_BUILTIN
 
@@ -127,7 +136,7 @@ def is_user_active_for_auth_mode(user: Mapping[str, Any], auth_mode: str) -> boo
     """Return whether a user can authenticate under the current auth mode."""
     source = normalize_auth_source(user.get("auth_source"), user.get("oidc_subject"))
     if source == AUTH_SOURCE_BUILTIN:
-        return auth_mode in (AUTH_SOURCE_BUILTIN, AUTH_SOURCE_OIDC)
+        return auth_mode in (AUTH_SOURCE_BUILTIN, AUTH_SOURCE_OIDC, AUTH_SOURCE_ABS)
     return source == auth_mode
 
 

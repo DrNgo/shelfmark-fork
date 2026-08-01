@@ -1,11 +1,17 @@
 """Tests for the read-only Audiobookshelf API client."""
 
+from dataclasses import FrozenInstanceError
 from typing import Any
+from unittest.mock import Mock, patch
 
 import pytest
 import requests
 
-from shelfmark.audiobookshelf.client import AudiobookshelfClient
+from shelfmark.audiobookshelf.client import (
+    AbsLoginUser,
+    AudiobookshelfClient,
+    verify_abs_login,
+)
 
 TOKEN = "abs_0123456789abcdef"
 
@@ -203,3 +209,115 @@ class TestGetLibraryItems:
 
         assert [item["id"] for item in items] == ["a"]
         assert len(session.calls) == 2
+
+
+def _login_response(status_code=200, payload=None, content=b"{}"):
+    response = Mock()
+    response.status_code = status_code
+    response.content = content
+    response.json.return_value = payload if payload is not None else {}
+    return response
+
+
+_VALID_PAYLOAD = {"user": {"id": "usr_123", "username": "alice", "type": "user", "isActive": True}}
+
+
+class TestVerifyAbsLogin:
+    @patch("shelfmark.audiobookshelf.client.requests.post")
+    def test_success_returns_normalized_user(self, mock_post):
+        mock_post.return_value = _login_response(payload=_VALID_PAYLOAD)
+        user = verify_abs_login("http://abs.local", "alice", "pw")
+        assert user == AbsLoginUser(id="usr_123", username="alice", type="user", is_active=True)
+
+    @patch("shelfmark.audiobookshelf.client.requests.post")
+    def test_request_carries_no_auth_header_and_no_redirects(self, mock_post):
+        mock_post.return_value = _login_response(payload=_VALID_PAYLOAD)
+        verify_abs_login("http://abs.local", "alice", "pw", timeout=7)
+        kwargs = mock_post.call_args.kwargs
+        assert "Authorization" not in kwargs.get("headers", {})
+        assert kwargs["allow_redirects"] is False
+        assert kwargs["timeout"] == 7
+        assert kwargs["json"] == {"username": "alice", "password": "pw"}
+        assert mock_post.call_args.args[0] == "http://abs.local/login"
+
+    @pytest.mark.parametrize("status", [401, 403])
+    @patch("shelfmark.audiobookshelf.client.requests.post")
+    def test_invalid_credentials_return_none(self, mock_post, status):
+        mock_post.return_value = _login_response(status_code=status)
+        assert verify_abs_login("http://abs.local", "alice", "bad") is None
+
+    @pytest.mark.parametrize("status", [302, 500, 502])
+    @patch("shelfmark.audiobookshelf.client.requests.post")
+    def test_unexpected_status_raises_value_error(self, mock_post, status):
+        mock_post.return_value = _login_response(status_code=status)
+        with pytest.raises(ValueError):
+            verify_abs_login("http://abs.local", "alice", "pw")
+
+    @patch("shelfmark.audiobookshelf.client.requests.post")
+    def test_transport_error_propagates(self, mock_post):
+        mock_post.side_effect = requests.exceptions.ConnectionError("down")
+        with pytest.raises(requests.exceptions.RequestException):
+            verify_abs_login("http://abs.local", "alice", "pw")
+
+    @patch("shelfmark.audiobookshelf.client.requests.post")
+    def test_malformed_json_raises_value_error(self, mock_post):
+        response = _login_response()
+        response.json.side_effect = requests.exceptions.JSONDecodeError("bad", "doc", 0)
+        mock_post.return_value = response
+        with pytest.raises(ValueError):
+            verify_abs_login("http://abs.local", "alice", "pw")
+
+    @patch("shelfmark.audiobookshelf.client.requests.post")
+    def test_oversized_body_raises_value_error(self, mock_post):
+        mock_post.return_value = _login_response(content=b"x" * 1_000_001)
+        with pytest.raises(ValueError):
+            verify_abs_login("http://abs.local", "alice", "pw")
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {},
+            {"user": "not-a-dict"},
+            {"user": {"id": "", "username": "alice", "type": "user", "isActive": True}},
+            {"user": {"id": "usr_1", "username": "", "type": "user", "isActive": True}},
+        ],
+    )
+    @patch("shelfmark.audiobookshelf.client.requests.post")
+    def test_unusable_user_payload_returns_none(self, mock_post, payload):
+        mock_post.return_value = _login_response(payload=payload)
+        assert verify_abs_login("http://abs.local", "alice", "pw") is None
+
+    @patch("shelfmark.audiobookshelf.client.requests.post")
+    def test_missing_is_active_normalizes_to_false(self, mock_post):
+        payload = {"user": {"id": "usr_1", "username": "alice", "type": "user"}}
+        mock_post.return_value = _login_response(payload=payload)
+        user = verify_abs_login("http://abs.local", "alice", "pw")
+        assert user is not None
+        assert user.is_active is False
+
+    @pytest.mark.parametrize("raw_is_active", [None, "yes", "true", 1])
+    @patch("shelfmark.audiobookshelf.client.requests.post")
+    def test_non_boolean_is_active_normalizes_to_false(self, mock_post, raw_is_active):
+        # Only a strict boolean True counts as active — strings/ints from a
+        # weird or hostile payload must not pass the eligibility check.
+        payload = {
+            "user": {
+                "id": "usr_1",
+                "username": "alice",
+                "type": "user",
+                "isActive": raw_is_active,
+            }
+        }
+        mock_post.return_value = _login_response(payload=payload)
+        user = verify_abs_login("http://abs.local", "alice", "pw")
+        assert user is not None
+        assert user.is_active is False
+
+    def test_blank_url_raises_value_error(self):
+        with pytest.raises(ValueError):
+            verify_abs_login("", "alice", "pw")
+
+    def test_abs_login_user_is_frozen(self):
+        user = AbsLoginUser(id="a", username="b", type="user", is_active=True)
+        with pytest.raises(FrozenInstanceError):
+            user.id = "c"  # type: ignore[misc]
