@@ -163,12 +163,29 @@ def _resolve_create_username(
     requested_username: str,
     strategy: CollisionStrategy,
     alias_suffix: str,
+    protect_builtin_admin_takeover: bool = False,
 ) -> tuple[str | None, dict[str, Any] | None, str]:
     existing = user_db.get_user(username=requested_username)
     if not existing:
         return requested_username, None, "new_username_available"
 
     if strategy == "takeover":
+        if (
+            protect_builtin_admin_takeover
+            and _normalize_role(existing.get("role")) == "admin"
+            and normalize_auth_source(existing.get("auth_source"), existing.get("oidc_subject"))
+            == "builtin"
+        ):
+            # Never take over the builtin admin account: converting it to an
+            # external identity would demote the only admin. This reuses the
+            # SAME `existing` lookup the takeover decision itself is based
+            # on, so there is no separate guard lookup that could fail open
+            # or race against a second, independent lookup.
+            return (
+                _next_suffix_username(user_db, requested_username),
+                None,
+                "username_collision_admin_protected_suffix",
+            )
         return None, existing, "username_collision_takeover"
 
     if strategy == "suffix":
@@ -204,6 +221,7 @@ def upsert_external_user(
     allow_create: bool = True,
     collision_strategy: CollisionStrategy = "takeover",
     alias_suffix: str | None = None,
+    protect_builtin_admin_takeover: bool = False,
     context: str | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
     """Create/update a user from an external auth identity.
@@ -212,6 +230,11 @@ def upsert_external_user(
     - `"updated"`
     - `"created"`
     - `"not_found"` (when `allow_create=False` and no link target exists)
+
+    When `protect_builtin_admin_takeover` is True and `collision_strategy`
+    resolves to `"takeover"`, a collision against a builtin admin account is
+    redirected to a suffixed username instead of taking it over. Defaults to
+    False so existing CWA/OIDC callers are unaffected.
     """
     normalized_username = _normalize_username(username)
     if not normalized_username:
@@ -272,6 +295,7 @@ def upsert_external_user(
         requested_username=normalized_username,
         strategy=collision_strategy,
         alias_suffix=resolved_alias_suffix,
+        protect_builtin_admin_takeover=protect_builtin_admin_takeover,
     )
     if takeover_target is not None:
         user_db.update_user(takeover_target["id"], **updates)

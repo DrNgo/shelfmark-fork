@@ -197,3 +197,68 @@ class TestUpsertExternalUserAbsSubject:
         assert user["id"] == local["id"]
         assert user["auth_source"] == "abs"
         assert user["abs_subject"] == "abs-bob-id"
+
+    def test_protect_builtin_admin_takeover_suffixes_instead_of_converting(self, user_db):
+        # The guard lives inside the linker: it reuses the same `existing`
+        # lookup the takeover decision is based on, so there is no separate
+        # route-level lookup that could fail open or race against a second,
+        # independent lookup.
+        admin = user_db.create_user(
+            username="admin", password_hash="x", auth_source="builtin", role="admin"
+        )
+        user, action = upsert_external_user(
+            user_db,
+            auth_source="abs",
+            username="admin",
+            role="user",
+            subject_field="abs_subject",
+            subject="abs-admin-id",
+            collision_strategy="takeover",
+            protect_builtin_admin_takeover=True,
+            context="test",
+        )
+        assert action == "created"
+        assert user["username"] == "admin_1"
+        untouched = user_db.get_user(user_id=admin["id"])
+        assert untouched["auth_source"] == "builtin"
+        assert untouched["role"] == "admin"
+
+    def test_protect_builtin_admin_takeover_defaults_to_unprotected(self, user_db):
+        # Control: the default (flag omitted) still takes over a builtin
+        # admin collision, documenting that CWA/OIDC callers who never pass
+        # protect_builtin_admin_takeover are completely unaffected.
+        admin = user_db.create_user(
+            username="admin", password_hash="x", auth_source="builtin", role="admin"
+        )
+        user, action = upsert_external_user(
+            user_db,
+            auth_source="abs",
+            username="admin",
+            role="user",
+            subject_field="abs_subject",
+            subject="abs-admin-id",
+            collision_strategy="takeover",
+            context="test",
+        )
+        assert action == "updated"
+        assert user["id"] == admin["id"]
+        assert user["auth_source"] == "abs"
+
+    def test_protect_builtin_admin_takeover_does_not_protect_non_admin(self, user_db):
+        # The flag must only protect admin rows, never non-admin builtin
+        # collisions (mirrors e2e's test_non_admin_builtin_collision_takes_over).
+        local = user_db.create_user(username="bob", password_hash="x", auth_source="builtin")
+        user, action = upsert_external_user(
+            user_db,
+            auth_source="abs",
+            username="bob",
+            role="user",
+            subject_field="abs_subject",
+            subject="abs-bob-id",
+            collision_strategy="takeover",
+            protect_builtin_admin_takeover=True,
+            context="test",
+        )
+        assert action == "updated"
+        assert user["id"] == local["id"]
+        assert user["auth_source"] == "abs"

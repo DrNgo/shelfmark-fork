@@ -2296,36 +2296,22 @@ def api_login() -> Response | tuple[Response, int]:
                 return jsonify({"error": "Authentication service unavailable"}), 503
 
             # Never take over the builtin admin account: converting it to an
-            # external identity would demote the only admin. Normalize once
-            # so the guard lookup and the provisioning call agree on the
-            # same username, independent of whether verify_abs_login strips
-            # (a coupling we should not rely on from another module).
-            abs_username = abs_user.username.strip()
-            collision_strategy = "takeover"
-            try:
-                collision_target = user_db.get_user(username=abs_username)
-            except _OPERATIONAL_ERRORS:
-                collision_target = None
-            if (
-                collision_target
-                and collision_target.get("role") == "admin"
-                and normalize_auth_source(
-                    collision_target.get("auth_source"),
-                    collision_target.get("oidc_subject"),
-                )
-                == "builtin"
-            ):
-                collision_strategy = "suffix"
-
+            # external identity would demote the only admin. The guard lives
+            # inside upsert_external_user (protect_builtin_admin_takeover)
+            # so the takeover decision and the admin-collision check share
+            # the exact same lookup: no separate route-level lookup that
+            # could fail open (e.g. on a DB error) or race against a second,
+            # independent lookup.
             try:
                 db_user, action = upsert_external_user(
                     user_db,
                     auth_source="abs",
-                    username=abs_username,
+                    username=abs_user.username,
                     role="user",
                     subject_field="abs_subject",
                     subject=abs_user.id,
-                    collision_strategy=collision_strategy,
+                    collision_strategy="takeover",
+                    protect_builtin_admin_takeover=True,
                     context="abs_login",
                 )
             except _OPERATIONAL_ERRORS as e:
