@@ -151,6 +151,60 @@ class TestReleaseDownloadEndpointGuardrails:
         assert captured["release_data"] == {**payload, "content_type": "audiobook"}
         assert captured["priority"] == 1
 
+    def test_destination_key_survives_in_no_auth_mode(self, main_module, client):
+        """Auth mode "none" has no accounts, so every caller is a full admin.
+
+        Stripping the key there would silently drop the library the admin picked
+        in the release modal and route the audiobook to the default destination
+        instead — a wrong write, with nothing in the UI to explain it.
+        """
+        captured: dict[str, object] = {}
+
+        def fake_queue_release(release_data, priority, user_id=None, username=None):
+            captured["release_data"] = release_data
+            return True, None
+
+        payload = {
+            "source": "prowlarr",
+            "source_id": "release-audio",
+            "title": "Audio Title",
+            "content_type": "audiobook",
+            "destination_key": "lib-kids",
+        }
+
+        with patch.object(main_module, "get_auth_mode", return_value="none"):
+            with patch.object(main_module.backend, "queue_release", side_effect=fake_queue_release):
+                resp = client.post("/api/releases/download", json=payload)
+
+        assert resp.status_code == 200
+        assert captured["release_data"]["destination_key"] == "lib-kids"
+
+    def test_destination_key_is_stripped_from_a_non_admin_when_auth_is_configured(
+        self, main_module, client
+    ):
+        """The "none" allowance must not weaken a mode that has real users."""
+        captured: dict[str, object] = {}
+
+        def fake_queue_release(release_data, priority, user_id=None, username=None):
+            captured["release_data"] = release_data
+            return True, None
+
+        _set_authenticated_session(client, user_id="ada", db_user_id=23, is_admin=False)
+        payload = {
+            "source": "prowlarr",
+            "source_id": "release-audio",
+            "title": "Audio Title",
+            "content_type": "audiobook",
+            "destination_key": "lib-kids",
+        }
+
+        with patch.object(main_module, "get_auth_mode", return_value="builtin"):
+            with patch.object(main_module.backend, "queue_release", side_effect=fake_queue_release):
+                resp = client.post("/api/releases/download", json=payload)
+
+        assert resp.status_code == 200
+        assert "destination_key" not in captured["release_data"]
+
     def test_non_json_payload_returns_400(self, main_module, client):
         with patch.object(main_module, "get_auth_mode", return_value="none"):
             with patch.object(main_module.backend, "queue_release") as mock_queue_release:

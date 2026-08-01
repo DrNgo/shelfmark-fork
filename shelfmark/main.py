@@ -1078,9 +1078,14 @@ def api_download_release() -> Response | tuple[Response, int]:
             release_payload = dict(data)
             release_payload["content_type"] = resolved_content_type
 
+        # Auth mode "none" has no accounts, so no caller can ever carry the
+        # session flag — yet `/api/auth/check` reports every one of them as a
+        # full admin and the UI offers them the library picker on that basis.
+        # Without this the chosen library would be silently dropped and the
+        # audiobook would land in the default destination.
         release_payload = authorize_destination_key(
             release_payload,
-            is_admin=bool(session.get("is_admin", False)),
+            is_admin=bool(session.get("is_admin", False)) or get_auth_mode() == "none",
         )
 
         priority = data.get("priority", 0)

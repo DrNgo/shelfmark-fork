@@ -111,6 +111,33 @@ class TestListAudiobookDestinations:
 
         assert "/audiobooks/fiction" not in response.get_data(as_text=True)
 
+    def test_serves_an_anonymous_caller_in_no_auth_mode(self):
+        """Auth mode "none" means no accounts exist and every caller is a full
+        admin — `/api/auth/check` says so, and the UI renders admin controls on
+        that basis. Gating on a session flag that no one can have would hide the
+        picker on the most common self-hosted setup.
+        """
+        client = build_client(auth_mode="none")
+
+        with patch_config(DESTINATIONS):
+            response = client.get("/api/audiobook-destinations")
+
+        assert response.status_code == 200
+        assert response.get_json()["destinations"] == [
+            {"key": "lib-fiction", "name": "Fiction"},
+            {"key": "lib-kids", "name": "Kids"},
+        ]
+
+    def test_still_requires_admin_when_auth_is_configured(self):
+        """The "none" allowance must not leak into a mode that has real users."""
+        client = build_client(auth_mode="builtin")
+        as_user(client)
+
+        with patch_config(DESTINATIONS):
+            response = client.get("/api/audiobook-destinations")
+
+        assert response.status_code == 403
+
 
 class TestLookupLibraryMatches:
     """`POST /api/library-matches` is what puts the badge on a search result."""

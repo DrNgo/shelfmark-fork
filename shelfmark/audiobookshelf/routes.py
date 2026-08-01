@@ -24,11 +24,25 @@ def register_audiobookshelf_routes(
     runtime auth-mode change takes effect without re-registering routes.
     """
 
+    def no_auth_configured() -> bool:
+        return resolve_auth_mode is not None and resolve_auth_mode() == "none"
+
     def require_login() -> ResponseReturnValue | None:
-        if resolve_auth_mode is not None and resolve_auth_mode() == "none":
+        if no_auth_configured():
             return None
         if "user_id" not in session:
             return jsonify({"error": "Unauthorized"}), 401
+        return None
+
+    def require_admin() -> ResponseReturnValue | None:
+        # Auth mode "none" means there are no accounts at all and every caller
+        # is a full admin — that is what `/api/auth/check` reports, and the UI
+        # renders admin controls on that basis. Gating on a session flag nobody
+        # can hold would silently hide the picker on that setup.
+        if no_auth_configured():
+            return None
+        if not session.get("is_admin", False):
+            return jsonify({"error": "Admin access required"}), 403
         return None
 
     @app.route("/api/audiobook-destinations", methods=["GET"])
@@ -38,8 +52,9 @@ def register_audiobookshelf_routes(
         Served from stored config, never from a live Audiobookshelf call, so
         approving a request keeps working while Audiobookshelf is down.
         """
-        if not session.get("is_admin", False):
-            return jsonify({"error": "Admin access required"}), 403
+        forbidden = require_admin()
+        if forbidden is not None:
+            return forbidden
 
         return jsonify({"destinations": list_destination_options()})
 
