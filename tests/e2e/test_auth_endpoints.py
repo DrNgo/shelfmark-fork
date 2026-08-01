@@ -583,6 +583,34 @@ class TestLoginAbsMode:
         self._login(main_module, None, {"username": "ALICE", "password": "bad"})
         assert main_module.failed_login_attempts["alice"]["count"] == 2
 
+    def test_locked_account_returns_429_and_skips_abs_verification(self, main_module):
+        # This test deliberately does NOT patch is_account_locked (unlike
+        # _login()), so it actually exercises the abs branch's own lockout
+        # re-check. That re-check is the only lockout enforcement reachable
+        # for non-lowercase usernames, since the route-level check (~line
+        # 2096) keys on the raw-case username while this branch records
+        # failures under username.lower().
+        main_module.failed_login_attempts.clear()
+        main_module.failed_login_attempts["alice"] = {
+            "count": main_module.MAX_LOGIN_ATTEMPTS,
+            "lockout_until": datetime.now(UTC) + timedelta(minutes=30),
+        }
+        verify_mock = Mock()
+        with (
+            patch.object(main_module, "get_auth_mode", return_value="abs"),
+            patch.object(main_module.app_config, "get", side_effect=_abs_config_get),
+            patch("shelfmark.audiobookshelf.client.verify_abs_login", verify_mock),
+            main_module.app.test_request_context(
+                "/api/auth/login",
+                method="POST",
+                json={"username": "ALICE", "password": "x"},
+            ),
+        ):
+            resp = _as_response(main_module.api_login())
+
+        assert resp.status_code == 429
+        verify_mock.assert_not_called()
+
     def test_eligibility_rejections_count_as_failed_logins(self, main_module):
         main_module.failed_login_attempts.clear()
         self._login(

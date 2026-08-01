@@ -2296,10 +2296,14 @@ def api_login() -> Response | tuple[Response, int]:
                 return jsonify({"error": "Authentication service unavailable"}), 503
 
             # Never take over the builtin admin account: converting it to an
-            # external identity would demote the only admin.
+            # external identity would demote the only admin. Normalize once
+            # so the guard lookup and the provisioning call agree on the
+            # same username, independent of whether verify_abs_login strips
+            # (a coupling we should not rely on from another module).
+            abs_username = abs_user.username.strip()
             collision_strategy = "takeover"
             try:
-                collision_target = user_db.get_user(username=abs_user.username)
+                collision_target = user_db.get_user(username=abs_username)
             except _OPERATIONAL_ERRORS:
                 collision_target = None
             if (
@@ -2317,7 +2321,7 @@ def api_login() -> Response | tuple[Response, int]:
                 db_user, action = upsert_external_user(
                     user_db,
                     auth_source="abs",
-                    username=abs_user.username,
+                    username=abs_username,
                     role="user",
                     subject_field="abs_subject",
                     subject=abs_user.id,
