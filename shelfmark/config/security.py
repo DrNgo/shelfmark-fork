@@ -86,6 +86,7 @@ def security_settings() -> list[SettingsField]:
         {"label": "Proxy Authentication", "value": "proxy"},
         {"label": "OIDC (OpenID Connect)", "value": "oidc"},
         {"label": "Calibre-Web Database", "value": "cwa"},
+        {"label": "Audiobookshelf", "value": "abs"},
     ]
 
     fields = [
@@ -133,6 +134,31 @@ def security_settings() -> list[SettingsField]:
                         "back to none until the database is available."
                     ),
                     show_when=_auth_condition("cwa"),
+                ),
+            ]
+        ),
+        CustomComponentField(
+            key="abs_auth_requirement",
+            component="oidc_admin_hint",
+            label=(
+                "Audiobookshelf users sign in with their ABS credentials and are "
+                "created as regular users on first login. Requires the "
+                "Audiobookshelf connection (Audiobookshelf tab)."
+            ),
+            show_when=_auth_condition("abs"),
+        ),
+        *(
+            []
+            if DISABLE_LOCAL_AUTH
+            else [
+                CustomComponentField(
+                    key="abs_admin_requirement",
+                    component="oidc_admin_hint",
+                    label=(
+                        "A local admin account with a password is required for "
+                        "fallback access while Audiobookshelf is unavailable."
+                    ),
+                    show_when=_auth_condition("abs"),
                 ),
             ]
         ),

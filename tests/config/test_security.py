@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from shelfmark.config.security_handlers import on_save_security
 from shelfmark.core.user_db import UserDB
 
 
@@ -567,3 +568,80 @@ class TestSecurityOnSave:
 
         assert result["error"] is False
         assert result["values"]["PROXY_AUTH_LOGOUT_URL"] == "https://auth.example.com/logout"
+
+
+def _abs_app_config(enabled=True, url="https://abs.example.com"):
+    values = {"AUDIOBOOKSHELF_ENABLED": enabled, "AUDIOBOOKSHELF_URL": url}
+    return lambda key, default=None: values.get(key, default)
+
+
+class TestOnSaveSecurityAbs:
+    def test_rejects_abs_without_local_admin(self):
+        with (
+            patch("shelfmark.config.security_handlers.DISABLE_LOCAL_AUTH", False),
+            patch(
+                "shelfmark.config.security_handlers._has_local_password_admin",
+                return_value=False,
+            ),
+        ):
+            result = on_save_security({"AUTH_METHOD": "abs"})
+        assert result["error"] is True
+        assert "local admin" in result["message"].lower()
+
+    def test_rejects_abs_without_abs_connection(self):
+        with (
+            patch("shelfmark.config.security_handlers.DISABLE_LOCAL_AUTH", False),
+            patch(
+                "shelfmark.config.security_handlers._has_local_password_admin",
+                return_value=True,
+            ),
+            patch(
+                "shelfmark.core.config.config.get",
+                side_effect=_abs_app_config(enabled=False, url=""),
+            ),
+        ):
+            result = on_save_security({"AUTH_METHOD": "abs"})
+        assert result["error"] is True
+        assert "audiobookshelf" in result["message"].lower()
+
+    def test_accepts_abs_with_admin_and_connection(self):
+        with (
+            patch("shelfmark.config.security_handlers.DISABLE_LOCAL_AUTH", False),
+            patch(
+                "shelfmark.config.security_handlers._has_local_password_admin",
+                return_value=True,
+            ),
+            patch(
+                "shelfmark.core.config.config.get",
+                side_effect=_abs_app_config(),
+            ),
+        ):
+            result = on_save_security({"AUTH_METHOD": "abs"})
+        assert result["error"] is False
+
+    def test_warns_on_plain_http_abs_url(self):
+        with (
+            patch("shelfmark.config.security_handlers.DISABLE_LOCAL_AUTH", False),
+            patch(
+                "shelfmark.config.security_handlers._has_local_password_admin",
+                return_value=True,
+            ),
+            patch(
+                "shelfmark.core.config.config.get",
+                side_effect=_abs_app_config(url="http://abs.media.svc"),
+            ),
+            patch("shelfmark.config.security_handlers.logger.warning") as mock_warn,
+        ):
+            result = on_save_security({"AUTH_METHOD": "abs"})
+        assert result["error"] is False
+        assert mock_warn.called
+
+    def test_abs_option_registered(self):
+        import shelfmark.config.security  # noqa: F401  (ensures registration ran)
+        from shelfmark.core.settings_registry import get_settings_tab
+
+        tab = get_settings_tab("security")
+        assert tab is not None  # keeps basedpyright clean on the Optional return
+        auth_field = next(f for f in tab.fields if getattr(f, "key", "") == "AUTH_METHOD")
+        values = [opt["value"] for opt in auth_field.options]
+        assert "abs" in values
