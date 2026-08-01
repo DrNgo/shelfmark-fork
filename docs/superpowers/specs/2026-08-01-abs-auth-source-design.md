@@ -170,9 +170,13 @@ ABS user records carry no email → no email linking (`allow_email_link` stays
 ### 5. Settings — security tab registration
 
 - AUTH_METHOD select gains option `abs` labeled "Audiobookshelf".
-- Save-time validation: selecting `abs` requires `AUDIOBOOKSHELF_ENABLED`
-  and a nonempty `AUDIOBOOKSHELF_URL`; otherwise reject the save with a clear
-  message. (`AUDIOBOOKSHELF_API_TOKEN` is **not** required for auth — the
+- Save-time validation: selecting `abs` requires (a) a local password admin
+  unless `DISABLE_LOCAL_AUTH` — without one `determine_auth_mode` resolves to
+  the wide-open `none` mode, so the save must be blocked for
+  lockout/exposure prevention, mirroring the existing OIDC guard — and
+  (b) `AUDIOBOOKSHELF_ENABLED` plus a nonempty `AUDIOBOOKSHELF_URL`;
+  otherwise reject the save with a clear message.
+  (`AUDIOBOOKSHELF_API_TOKEN` is **not** required for auth — the
   verifier is unauthenticated — only for the library-matching features.)
 - Save-time warning (non-blocking) when the configured URL is `http://`
   (decision 8).

@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- **Python 3.14 / PEP 758:** `except A, B:` (no parens, no `as`) is valid syntax used throughout this codebase. NEVER "fix" it. When you need `as e` with multiple types, parenthesize: `except (A, B) as e:`. A tuple variable nests fine: `except (ValueError, _OPERATIONAL_ERRORS) as e:`.
+- **Python 3.14 / PEP 758:** `except A, B:` (no parens, no `as`) is valid syntax used throughout this codebase. NEVER "fix" it. When you need `as e` with multiple types, parenthesize: `except (A, B) as e:`. A tuple *variable* must be STAR-EXPANDED inside a tuple display — `except (ImportError, *_OPERATIONAL_ERRORS) as e:` (the form `main.py:100` already uses). NEVER nest a tuple as a tuple element (`except (ValueError, _OPERATIONAL_ERRORS):`) — that raises `TypeError` at exception-match time.
 - Python tests: `uv run pytest <path> -v` from the repo root.
 - Python lint/format after each task: `uv run ruff check shelfmark tests && uv run ruff format shelfmark tests`.
 - Frontend verification (Task 7 only): `npm run typecheck && npx oxlint src/ && npm run format:check && npm run test:unit && npm run build` from `src/frontend`.
@@ -635,6 +635,24 @@ class TestVerifyAbsLogin:
         assert user is not None
         assert user.is_active is False
 
+    @pytest.mark.parametrize("raw_is_active", [None, "yes", "true", 1])
+    @patch("shelfmark.audiobookshelf.client.requests.post")
+    def test_non_boolean_is_active_normalizes_to_false(self, mock_post, raw_is_active):
+        # Only a strict boolean True counts as active — strings/ints from a
+        # weird or hostile payload must not pass the eligibility check.
+        payload = {
+            "user": {
+                "id": "usr_1",
+                "username": "alice",
+                "type": "user",
+                "isActive": raw_is_active,
+            }
+        }
+        mock_post.return_value = _login_response(payload=payload)
+        user = verify_abs_login("http://abs.local", "alice", "pw")
+        assert user is not None
+        assert user.is_active is False
+
     def test_blank_url_raises_value_error(self):
         with pytest.raises(ValueError):
             verify_abs_login("", "alice", "pw")
@@ -769,6 +787,8 @@ git commit -m "feat(auth): add unauthenticated ABS login verifier"
 Add to `tests/e2e/test_auth_endpoints.py` (same module as `TestLoginEndpoint`; it already imports `patch`, `sqlite3`, `_as_response`, and provides the `main_module` fixture with a real `user_db`):
 
 ```python
+import pytest  # skip if the file already imports it
+
 from shelfmark.audiobookshelf.client import AbsLoginUser
 
 _ABS_CONFIG = {"AUDIOBOOKSHELF_ENABLED": True, "AUDIOBOOKSHELF_URL": "http://abs.test"}
@@ -869,7 +889,7 @@ class TestLoginAbsMode:
     def test_abs_unreachable_returns_503_for_non_builtin_user(self, main_module):
         import requests as requests_lib
 
-        resp, data, _ = self._login(
+        resp, data, session_data = self._login(
             main_module,
             None,
             {"username": "listener", "password": "pw"},
@@ -877,6 +897,7 @@ class TestLoginAbsMode:
         )
         assert resp.status_code == 503
         assert data == {"error": "Authentication service unavailable"}
+        assert "user_id" not in session_data
 
     def test_builtin_fallback_works_while_abs_down(self, main_module):
         import requests as requests_lib
@@ -909,6 +930,15 @@ class TestLoginAbsMode:
                 main_module, None, {"username": "localonly", "password": "pw"}
             )
         assert resp.status_code == 401
+
+        # ABS validation itself must still work under the flag.
+        with patch.object(main_module, "DISABLE_LOCAL_AUTH", True):
+            resp, data, session_data = self._login(
+                main_module, _abs_user(), {"username": "listener", "password": "pw"}
+            )
+        assert resp.status_code == 200
+        assert data == {"success": True}
+        assert session_data.get("user_id") == "listener"
 
     def test_builtin_admin_collision_suffixes_instead_of_takeover(self, main_module):
         admin = main_module.user_db.create_user(
@@ -943,16 +973,29 @@ class TestLoginAbsMode:
         assert taken["abs_subject"] == "abs-bob"
 
     def test_taken_over_row_old_password_no_longer_authenticates(self, main_module):
-        main_module.user_db.create_user(
-            username="carol", password_hash="oldhash", auth_source="abs"
+        # Full takeover sequence: builtin row with a password hash gets taken
+        # over by an ABS login, keeping the stale hash on the row.
+        local = main_module.user_db.create_user(
+            username="carol", password_hash="oldhash", auth_source="builtin"
         )
-        # Row is abs-source: builtin-first step must skip it even though the
-        # stale hash would match, and ABS says the credentials are wrong.
+        resp, _, _ = self._login(
+            main_module,
+            _abs_user(username="carol", id="abs-carol"),
+            {"username": "carol", "password": "abspw"},
+        )
+        assert resp.status_code == 200
+        taken = main_module.user_db.get_user(user_id=local["id"])
+        assert taken["auth_source"] == "abs"
+        assert taken["password_hash"] == "oldhash"  # takeover must not touch the hash
+
+        # The stale hash is now inert: builtin-first step skips abs-source rows
+        # even when the hash would match, and ABS rejects the old password.
         with patch.object(main_module, "check_password_hash", return_value=True):
-            resp, _, _ = self._login(
+            resp2, _, session_data = self._login(
                 main_module, None, {"username": "carol", "password": "old"}
             )
-        assert resp.status_code == 401
+        assert resp2.status_code == 401
+        assert "user_id" not in session_data
 
     def test_abs_unconfigured_fails_closed_with_503(self, main_module):
         with (
@@ -970,7 +1013,9 @@ class TestLoginAbsMode:
             ),
         ):
             resp = _as_response(main_module.api_login())
+            session_data = dict(main_module.session)
         assert resp.status_code == 503
+        assert "user_id" not in session_data
 
     def test_provisioning_failure_returns_500_without_session(self, main_module):
         with patch.object(
@@ -982,6 +1027,52 @@ class TestLoginAbsMode:
         assert resp.status_code == 500
         assert data == {"error": "Authentication system error"}
         assert "user_id" not in session_data
+
+    def test_not_found_provisioning_result_returns_500(self, main_module):
+        with patch.object(
+            main_module, "upsert_external_user", return_value=(None, "not_found")
+        ):
+            resp, data, session_data = self._login(
+                main_module, _abs_user(), {"username": "listener", "password": "pw"}
+            )
+        assert resp.status_code == 500
+        assert data == {"error": "Authentication system error"}
+        assert "user_id" not in session_data
+
+    def test_rate_limit_key_is_casefolded_and_trimmed(self, main_module):
+        # Case/whitespace variants of one identifier must share a lockout
+        # counter (the route strips, the abs branch lowercases).
+        main_module.failed_login_attempts.clear()
+        self._login(main_module, None, {"username": " Alice ", "password": "bad"})
+        self._login(main_module, None, {"username": "ALICE", "password": "bad"})
+        assert main_module.failed_login_attempts["alice"]["count"] == 2
+
+    def test_eligibility_rejections_count_as_failed_logins(self, main_module):
+        main_module.failed_login_attempts.clear()
+        self._login(
+            main_module, _abs_user(type="guest"), {"username": "listener", "password": "pw"}
+        )
+        self._login(
+            main_module,
+            _abs_user(is_active=False),
+            {"username": "listener", "password": "pw"},
+        )
+        assert main_module.failed_login_attempts["listener"]["count"] == 2
+
+    @pytest.mark.parametrize("abs_type", ["root", "admin"])
+    def test_root_and_admin_types_accepted_but_never_local_admin(
+        self, main_module, abs_type
+    ):
+        resp, _, session_data = self._login(
+            main_module,
+            _abs_user(type=abs_type, id=f"abs-{abs_type}", username=f"u_{abs_type}"),
+            {"username": f"u_{abs_type}", "password": "pw"},
+        )
+        assert resp.status_code == 200
+        assert session_data.get("is_admin") is False
+        db_user = main_module.user_db.get_user(abs_subject=f"abs-{abs_type}")
+        assert db_user is not None
+        assert db_user["role"] == "user"
 
     def test_data_endpoint_requires_session_in_abs_mode(self, main_module):
         # Fail-closed proof: abs mode (even with ABS unconfigured) must gate
@@ -995,7 +1086,7 @@ class TestLoginAbsMode:
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/e2e/test_auth_endpoints.py::TestLoginAbsMode -v`
-Expected: FAIL — every test gets `500 {"error": "Unknown authentication mode"}` (no abs branch yet)
+Expected: FAIL — every test hits `500 {"error": "Unknown authentication mode"}` (no abs branch yet) EXCEPT `test_data_endpoint_requires_session_in_abs_mode`, which passes already: the middleware gates every non-`none` mode, so that one is a fail-closed regression guard, not a red test.
 
 - [ ] **Step 3: Implement in `shelfmark/main.py`**
 
@@ -1112,10 +1203,12 @@ from shelfmark.core.external_user_linking import upsert_external_user
                     collision_strategy=collision_strategy,
                     context="abs_login",
                 )
-            except (ValueError, _OPERATIONAL_ERRORS) as e:
+            except _OPERATIONAL_ERRORS as e:
+                # ValueError is already a member of _OPERATIONAL_ERRORS
+                # (main.py:99), so no extra tuple composition is needed.
                 logger.error_trace(f"ABS user provisioning failed: {e}")
                 return jsonify({"error": "Authentication system error"}), 500
-            if db_user is None:
+            if db_user is None or action == "not_found":
                 logger.error("ABS user provisioning returned no user (action=%s)", action)
                 return jsonify({"error": "Authentication system error"}), 500
 
@@ -1248,6 +1341,7 @@ class TestOnSaveSecurityAbs:
         import shelfmark.config.security  # noqa: F401  (ensures registration ran)
 
         tab = get_settings_tab("security")
+        assert tab is not None  # keeps basedpyright clean on the Optional return
         auth_field = next(f for f in tab.fields if getattr(f, "key", "") == "AUTH_METHOD")
         values = [opt["value"] for opt in auth_field.options]
         assert "abs" in values
@@ -1275,7 +1369,7 @@ In `shelfmark/config/security.py`, extend `auth_method_options`:
     ]
 ```
 
-And add a hint after the cwa hint block (reusing the existing `oidc_admin_hint` component and `_auth_condition` helper):
+And add hints after the cwa hint block (reusing the existing `oidc_admin_hint` component and `_auth_condition` helper). The admin-requirement hint is OMITTED under `DISABLE_LOCAL_AUTH`, exactly like the existing OIDC hint at `security.py:111-122` — under that flag no local admin is required, so the hint would be wrong:
 
 ```python
         CustomComponentField(
@@ -1284,10 +1378,24 @@ And add a hint after the cwa hint block (reusing the existing `oidc_admin_hint` 
             label=(
                 "Audiobookshelf users sign in with their ABS credentials and are "
                 "created as regular users on first login. Requires the "
-                "Audiobookshelf connection (Audiobookshelf tab) and a local "
-                "admin account for fallback access."
+                "Audiobookshelf connection (Audiobookshelf tab)."
             ),
             show_when=_auth_condition("abs"),
+        ),
+        *(
+            []
+            if DISABLE_LOCAL_AUTH
+            else [
+                CustomComponentField(
+                    key="abs_admin_requirement",
+                    component="oidc_admin_hint",
+                    label=(
+                        "A local admin account with a password is required for "
+                        "fallback access while Audiobookshelf is unavailable."
+                    ),
+                    show_when=_auth_condition("abs"),
+                ),
+            ]
         ),
 ```
 
