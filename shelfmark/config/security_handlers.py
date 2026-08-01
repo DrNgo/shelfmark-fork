@@ -110,12 +110,17 @@ def on_save_security(
                 "message": _ABS_NOT_CONFIGURED_MESSAGE,
                 "values": normalized_values,
             }
-        if abs_url.lower().startswith("http://"):
+        # Normalize before checking the scheme: a scheme-less value like
+        # "audiobookshelf:13378" has no "http://" prefix to match against
+        # here, but normalize_http_url will turn it into a plain-HTTP URL at
+        # request time, so the warning must be based on that effective URL.
+        effective_abs_url = normalize_http_url(abs_url)
+        if effective_abs_url.lower().startswith("http://"):
             logger.warning(
                 "AUTH_METHOD=abs with a plain-HTTP Audiobookshelf URL (%s): "
                 "credentials are forwarded unencrypted — acceptable only on a "
                 "trusted in-cluster network",
-                abs_url,
+                effective_abs_url,
             )
 
     return {"error": False, "values": normalized_values}

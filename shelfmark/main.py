@@ -2239,39 +2239,56 @@ def api_login() -> Response | tuple[Response, int]:
             # Shelfmark, and builtin admins keep working while ABS is down.
             # DISABLE_LOCAL_AUTH switches local passwords off here exactly
             # as it does for builtin/oidc modes.
+            # builtin_password_failed remembers a wrong local password so it
+            # can still be counted toward the lockout below if ABS turns out
+            # to be unconfigured/unreachable (see the two 503 exits), without
+            # blocking the normal ABS-takeover/collision migration path when
+            # ABS is actually reachable (a different real identity may share
+            # this username with a stale local account).
+            builtin_password_failed = False
             if not DISABLE_LOCAL_AUTH and user_db is not None:
                 try:
                     local_user = user_db.get_user(username=username)
                 except _OPERATIONAL_ERRORS as e:
                     logger.error_trace(f"ABS-mode local user lookup failed: {e}")
                     local_user = None
-                if (
+                is_builtin_candidate = bool(
                     local_user
                     and normalize_auth_source(
                         local_user.get("auth_source"), local_user.get("oidc_subject")
                     )
                     == "builtin"
                     and local_user.get("password_hash")
-                    and check_password_hash(local_user["password_hash"], password)
-                ):
-                    session["user_id"] = local_user["username"]
-                    session["db_user_id"] = local_user["id"]
-                    session["is_admin"] = local_user["role"] == "admin"
-                    session.permanent = remember_me
-                    clear_failed_logins(rate_key)
-                    logger.info(
-                        "Login successful for user '%s' from IP %s (abs mode, builtin fallback, is_admin=%s)",
-                        username,
-                        ip_address,
-                        session["is_admin"],
-                    )
-                    return jsonify({"success": True})
+                )
+                if is_builtin_candidate:
+                    if check_password_hash(local_user["password_hash"], password):
+                        session["user_id"] = local_user["username"]
+                        session["db_user_id"] = local_user["id"]
+                        session["is_admin"] = local_user["role"] == "admin"
+                        session.permanent = remember_me
+                        clear_failed_logins(rate_key)
+                        logger.info(
+                            "Login successful for user '%s' from IP %s (abs mode, builtin fallback, is_admin=%s)",
+                            username,
+                            ip_address,
+                            session["is_admin"],
+                        )
+                        return jsonify({"success": True})
+                    builtin_password_failed = True
 
             abs_url = ""
             if app_config.get("AUDIOBOOKSHELF_ENABLED", False):
                 abs_url = str(app_config.get("AUDIOBOOKSHELF_URL", "") or "").strip()
             if not abs_url:
                 logger.error("AUTH_METHOD=abs but the Audiobookshelf connection is not configured")
+                # A wrong local builtin password must still count toward the
+                # lockout instead of disappearing behind this 503: the caller
+                # did supply a local account's username with a wrong
+                # password, so 401 is both the accurate answer and the one
+                # that counts. A caller with no matching local account still
+                # gets the 503.
+                if builtin_password_failed:
+                    return _failed_login_response(rate_key, ip_address)
                 return jsonify({"error": "Authentication service unavailable"}), 503
 
             import requests as _requests
@@ -2282,6 +2299,11 @@ def api_login() -> Response | tuple[Response, int]:
                 abs_user = verify_abs_login(abs_url, username, password)
             except (_requests.exceptions.RequestException, ValueError) as e:
                 logger.error_trace(f"Audiobookshelf login check failed: {e}")
+                # Same rationale as the unconfigured-ABS branch above: don't
+                # let a transport/parse failure swallow a wrong local
+                # builtin password without counting it toward the lockout.
+                if builtin_password_failed:
+                    return _failed_login_response(rate_key, ip_address)
                 return jsonify({"error": "Authentication service unavailable"}), 503
 
             if (

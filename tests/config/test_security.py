@@ -636,6 +636,44 @@ class TestOnSaveSecurityAbs:
         assert result["error"] is False
         assert mock_warn.called
 
+    def test_does_not_warn_on_https_abs_url(self):
+        with (
+            patch("shelfmark.config.security_handlers.DISABLE_LOCAL_AUTH", False),
+            patch(
+                "shelfmark.config.security_handlers._has_local_password_admin",
+                return_value=True,
+            ),
+            patch(
+                "shelfmark.core.config.config.get",
+                side_effect=_abs_app_config(url="https://abs.example.com"),
+            ),
+            patch("shelfmark.config.security_handlers.logger.warning") as mock_warn,
+        ):
+            result = on_save_security({"AUTH_METHOD": "abs"})
+        assert result["error"] is False
+        assert not mock_warn.called
+
+    def test_warns_on_scheme_less_abs_url(self):
+        # A scheme-less config value (e.g. saved directly, or migrated from an
+        # older config) is normalized to http:// at request time by
+        # normalize_http_url, so the warning must fire even though the raw
+        # persisted value has no "http://" prefix to match against.
+        with (
+            patch("shelfmark.config.security_handlers.DISABLE_LOCAL_AUTH", False),
+            patch(
+                "shelfmark.config.security_handlers._has_local_password_admin",
+                return_value=True,
+            ),
+            patch(
+                "shelfmark.core.config.config.get",
+                side_effect=_abs_app_config(url="audiobookshelf:13378"),
+            ),
+            patch("shelfmark.config.security_handlers.logger.warning") as mock_warn,
+        ):
+            result = on_save_security({"AUTH_METHOD": "abs"})
+        assert result["error"] is False
+        assert mock_warn.called
+
     def test_abs_option_registered(self):
         import shelfmark.config.security  # noqa: F401  (ensures registration ran)
         from shelfmark.core.settings_registry import get_settings_tab

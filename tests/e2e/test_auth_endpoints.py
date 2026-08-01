@@ -458,6 +458,51 @@ class TestLoginAbsMode:
         assert data == {"success": True}
         assert session_data.get("is_admin") is True
 
+    def test_wrong_builtin_password_counts_toward_lockout(self, main_module):
+        # A wrong password against a local builtin account must not silently
+        # fall through to ABS: ABS is unreachable here, and the failure must
+        # still be recorded (401 from _failed_login_response, not a 503 that
+        # bypasses the lockout counter entirely).
+        import requests as requests_lib
+
+        main_module.failed_login_attempts.clear()
+        main_module.user_db.create_user(
+            username="dave", password_hash="hash", auth_source="builtin", role="admin"
+        )
+        with patch.object(main_module, "check_password_hash", return_value=False):
+            resp, _data, session_data = self._login(
+                main_module,
+                None,
+                {"username": "dave", "password": "wrong"},
+                verify_side_effect=requests_lib.exceptions.ConnectionError("down"),
+            )
+        assert resp.status_code == 401
+        assert "user_id" not in session_data
+        assert main_module.failed_login_attempts["dave"]["count"] == 1
+
+    def test_wrong_builtin_password_still_reaches_abs_when_available(self, main_module):
+        # A wrong local builtin password must NOT block the ABS path when ABS
+        # is actually reachable: a different real identity may share this
+        # username with a stale/placeholder local account, and the
+        # takeover/collision migration (see TestLoginAbsMode's collision
+        # tests) depends on that attempt reaching ABS. Only the two 503
+        # exits (ABS unconfigured/unreachable) substitute the failed-login
+        # response for a wrong local password; a reachable ABS is unchanged.
+        main_module.failed_login_attempts.clear()
+        local = main_module.user_db.create_user(
+            username="erin", password_hash="hash", auth_source="builtin", role="user"
+        )
+        with patch.object(main_module, "check_password_hash", return_value=False):
+            resp, data, _session_data = self._login(
+                main_module,
+                _abs_user(username="erin", id="abs-erin"),
+                {"username": "erin", "password": "wrong"},
+            )
+        assert resp.status_code == 200
+        assert data == {"success": True}
+        taken = main_module.user_db.get_user(user_id=local["id"])
+        assert taken["auth_source"] == "abs"
+
     def test_disable_local_auth_blocks_builtin_fallback_not_abs(self, main_module):
         main_module.user_db.create_user(
             username="localonly", password_hash="hash", auth_source="builtin"
