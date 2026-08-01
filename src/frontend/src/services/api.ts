@@ -810,7 +810,7 @@ export const getReleases = async (
 
 // Admin user management API
 
-export type AdminAuthSource = 'builtin' | 'oidc' | 'proxy' | 'cwa';
+export type AdminAuthSource = 'builtin' | 'oidc' | 'proxy' | 'cwa' | 'abs';
 
 export interface AdminUserEditCapabilities {
   authSource: AdminAuthSource;
