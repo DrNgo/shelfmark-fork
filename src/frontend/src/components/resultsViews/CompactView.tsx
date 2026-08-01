@@ -185,10 +185,14 @@ export const CompactView = ({
         )}
       </div>
 
-      <div className="flex min-w-0 flex-1 flex-col p-3 py-2">
-        <div className="min-w-0 space-y-0.5">
+      {/* The card is a fixed 180px, so every variable-length field below is
+          clamped and the column clips as a last resort: the title block may
+          shrink, the footer (fields + buttons) never does. Full values live in
+          title-attribute tooltips. */}
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden p-3 py-2">
+        <div className="min-h-0 min-w-0 space-y-0.5 overflow-hidden">
           <h3
-            className="line-clamp-3 min-w-0 text-base leading-tight font-semibold"
+            className="line-clamp-2 min-w-0 text-base leading-tight font-semibold"
             title={book.title || 'Untitled'}
           >
             {book.title || 'Untitled'}
@@ -203,19 +207,24 @@ export const CompactView = ({
           </div>
         </div>
 
-        <div className="mt-auto flex flex-col gap-2">
+        <div className="mt-auto flex shrink-0 flex-col gap-2 pt-1">
           {searchMode === 'universal' && book.display_fields && book.display_fields.length > 0 ? (
             <>
+              {/* max-h-9 = two text-xs lines; a long field (e.g. a full-cast
+                  reader list in `users`) clips instead of growing the card. */}
               <DisplayFieldBadges
                 fields={book.display_fields.filter(
                   (f) => f.icon !== 'editions' && f.icon !== 'microphone',
                 )}
-                className="text-xs opacity-70"
+                className="max-h-9 overflow-hidden text-xs opacity-70"
               />
               {microphoneField && (
-                <div className="flex items-center gap-0.5 text-xs opacity-70">
-                  <DisplayFieldIcon icon="microphone" />
-                  <span>{microphoneField.value}</span>
+                <div
+                  className="flex min-w-0 items-center gap-0.5 text-xs opacity-70"
+                  title={microphoneField.value}
+                >
+                  <DisplayFieldIcon icon="microphone" className="h-3 w-3 shrink-0" />
+                  <span className="truncate">{microphoneField.value}</span>
                 </div>
               )}
             </>

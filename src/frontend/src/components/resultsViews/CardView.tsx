@@ -183,8 +183,10 @@ export const CardView = ({
         </div>
       </div>
 
-      <div className="flex flex-col gap-3 p-4 max-sm:min-w-0 max-sm:flex-1 max-sm:justify-between max-sm:gap-2 max-sm:p-3 max-sm:py-2 sm:flex sm:flex-1 sm:flex-col sm:justify-end">
-        <div className="space-y-1 max-sm:min-w-0 max-sm:space-y-0.5">
+      {/* max-sm the card is a fixed 180px: clamp variable-length fields and clip
+          as a last resort so long content can't push the buttons out the card. */}
+      <div className="flex flex-col gap-3 p-4 max-sm:min-w-0 max-sm:flex-1 max-sm:justify-between max-sm:gap-2 max-sm:overflow-hidden max-sm:p-3 max-sm:py-2 sm:flex sm:flex-1 sm:flex-col sm:justify-end">
+        <div className="space-y-1 max-sm:min-h-0 max-sm:min-w-0 max-sm:space-y-0.5 max-sm:overflow-hidden">
           <h3
             className="line-clamp-2 text-base leading-tight font-semibold max-sm:line-clamp-3 max-sm:min-w-0"
             title={book.title || 'Untitled'}
@@ -201,7 +203,9 @@ export const CardView = ({
             {isRequested && <RequestedBadge className="shrink-0" />}
           </div>
           {searchMode === 'universal' && book.display_fields && book.display_fields.length > 0 ? (
-            <div className="flex flex-wrap gap-2 text-xs opacity-70 max-sm:gap-1 max-sm:text-[10px]">
+            // max-sm:max-h-8 = two mobile lines; a long field (e.g. a full-cast
+            // reader list) clips instead of growing past the fixed card height.
+            <div className="flex flex-wrap gap-2 text-xs opacity-70 max-sm:max-h-8 max-sm:gap-1 max-sm:overflow-hidden max-sm:text-[10px]">
               <span>{book.year || '-'}</span>
               <span>•</span>
               <DisplayFieldBadges
@@ -225,7 +229,7 @@ export const CardView = ({
           )}
         </div>
 
-        <div className="flex gap-1.5 sm:hidden">
+        <div className="flex shrink-0 gap-1.5 sm:hidden">
           <button
             type="button"
             className="flex flex-1 items-center justify-center gap-1 rounded-sm border px-2 py-1.5 text-xs"
