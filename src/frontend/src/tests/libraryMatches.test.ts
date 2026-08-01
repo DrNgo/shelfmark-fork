@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Book } from '../types';
+import type { Book, ButtonStateInfo } from '../types';
 import {
+  applyInLibraryLock,
   booksLookupSignature,
   buildLibraryLookupPayload,
-  describeLibraryMatch,
   libraryMatchTooltip,
   singleBookLookup,
 } from '../utils/libraryMatches';
@@ -124,29 +124,19 @@ describe('booksLookupSignature', () => {
   });
 });
 
-describe('describeLibraryMatch', () => {
-  it('names the library holding the book', () => {
-    expect(describeLibraryMatch(match())).toBe('In Audiobooks');
-  });
-
-  it('counts the extras when a book is in several libraries', () => {
-    expect(describeLibraryMatch(match({ libraries: ['Audiobooks', 'Kids'] }))).toBe(
-      'In Audiobooks +1',
-    );
-  });
-
-  it('falls back to a generic label when no library is named', () => {
-    expect(describeLibraryMatch(match({ libraries: [] }))).toBe('In library');
-  });
-});
-
 describe('libraryMatchTooltip', () => {
   it('names the edition held, not just the fact of a match', () => {
     // "In library" is not "same recording" — a 2021 rip and a 2024 re-recording
     // are both The Locked Door, and the tooltip is what tells them apart.
     expect(libraryMatchTooltip(match())).toBe(
-      'Audiobooks: The Housemaid — Freida McFadden (ASIN B0BSHZ1234)',
+      'Already in your library: The Housemaid — Freida McFadden (ASIN B0BSHZ1234)',
     );
+  });
+
+  it('never names the library holding it', () => {
+    // Which shelf a book sits on is not the reader's problem — the badge is
+    // there to answer "do I already have this", and nothing more.
+    expect(libraryMatchTooltip(match())).not.toContain('Audiobooks');
   });
 
   it('omits a missing ASIN', () => {
@@ -154,10 +144,12 @@ describe('libraryMatchTooltip', () => {
       items: [{ ...match().items[0], asin: '' }],
     });
 
-    expect(libraryMatchTooltip(withoutAsin)).toBe('Audiobooks: The Housemaid — Freida McFadden');
+    expect(libraryMatchTooltip(withoutAsin)).toBe(
+      'Already in your library: The Housemaid — Freida McFadden',
+    );
   });
 
-  it('lists every edition on its own line', () => {
+  it('lists every edition on its own line, labelling only the first', () => {
     const twoCopies = match({
       libraries: ['Audiobooks', 'Kids'],
       items: [
@@ -166,6 +158,36 @@ describe('libraryMatchTooltip', () => {
       ],
     });
 
-    expect(libraryMatchTooltip(twoCopies).split('\n')).toHaveLength(2);
+    const lines = libraryMatchTooltip(twoCopies).split('\n');
+
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toBe('The Housemaid — Freida McFadden');
+  });
+});
+
+describe('applyInLibraryLock', () => {
+  const GET: ButtonStateInfo = { state: 'download', text: 'Get' };
+
+  it('blocks the action when the book is already held', () => {
+    expect(applyInLibraryLock(GET, true)).toEqual({ state: 'blocked', text: 'In library' });
+  });
+
+  it('leaves the action alone when the book is not held', () => {
+    expect(applyInLibraryLock(GET, false)).toBe(GET);
+  });
+
+  it('does not overwrite a download that is already under way', () => {
+    // The index catches up minutes after a grab finishes, so a completed
+    // download would otherwise flip to "In library" and lose the result the
+    // user was watching for.
+    const complete: ButtonStateInfo = { state: 'complete', text: 'Downloaded' };
+
+    expect(applyInLibraryLock(complete, true)).toBe(complete);
+  });
+
+  it('leaves an existing block untouched rather than relabelling it', () => {
+    const blocked: ButtonStateInfo = { state: 'blocked', text: 'Unavailable' };
+
+    expect(applyInLibraryLock(blocked, true)).toBe(blocked);
   });
 });

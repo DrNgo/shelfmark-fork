@@ -241,6 +241,7 @@ export const CardView = ({
               void handleGetReleases(selectedBook);
             }}
             isLoadingReleases={isLoadingReleases}
+            isInLibrary={Boolean(libraryMatch)}
             size="sm"
             className="flex-1"
           />
@@ -255,6 +256,7 @@ export const CardView = ({
           void handleGetReleases(selectedBook);
         }}
         isLoadingReleases={isLoadingReleases}
+        isInLibrary={Boolean(libraryMatch)}
         className="hidden rounded-none sm:flex"
         fullWidth
         style={{

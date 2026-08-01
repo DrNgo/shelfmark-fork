@@ -1,4 +1,4 @@
-import type { Book } from '../types';
+import type { Book, ButtonStateInfo } from '../types';
 
 interface LibraryMatchItem {
   item_id: string;
@@ -84,24 +84,39 @@ export const booksLookupSignature = (books: Book[]): string =>
     .map((book) => (book.asin ? `${book.id}#${book.asin}` : book.id))
     .join(',');
 
-/** Short badge text naming where the book is held. */
-export const describeLibraryMatch = (match: LibraryMatch): string => {
-  const [first, ...rest] = match.libraries;
-  if (!first) return 'In library';
-  return rest.length > 0 ? `In ${first} +${rest.length}` : `In ${first}`;
-};
-
 /**
  * Full tooltip text, one line per held edition.
  *
- * "In library" is not "same recording": a 2021 rip and a 2024 re-recording are
- * both the same book, so the tooltip names the edition rather than asserting
- * the user already has the thing they were about to download.
+ * Names the edition but never the library holding it: which shelf a book sits
+ * on is the operator's filing concern, not something a reader deciding whether
+ * to grab a copy needs. The edition still matters, because "in library" is not
+ * "same recording" — a 2021 rip and a 2024 re-recording are both the same book.
  */
 export const libraryMatchTooltip = (match: LibraryMatch): string =>
   match.items
-    .map((item) => {
+    .map((item, index) => {
       const asin = item.asin ? ` (ASIN ${item.asin})` : '';
-      return `${item.library_name}: ${item.title} — ${item.author}${asin}`;
+      const prefix = index === 0 ? 'Already in your library: ' : '';
+      return `${prefix}${item.title} — ${item.author}${asin}`;
     })
     .join('\n');
+
+const IN_LIBRARY_BUTTON_STATE: ButtonStateInfo = { state: 'blocked', text: 'In library' };
+
+/**
+ * Turn the acquire action into a block when the book is already held.
+ *
+ * Reuses the existing `blocked` state rather than adding a parallel disabled
+ * path, so both button variants inherit the lock icon, the greyed styling and
+ * the click guard they already apply to a policy block.
+ *
+ * Only an offerable action is replaced. A download that is queued, running,
+ * finished or failed keeps its own state: the index refreshes on a timer, so a
+ * grab that just completed will match itself minutes later, and swapping
+ * "Downloaded" for "In library" would erase the outcome the user was waiting on.
+ */
+export const applyInLibraryLock = (
+  buttonState: ButtonStateInfo,
+  isInLibrary: boolean,
+): ButtonStateInfo =>
+  isInLibrary && buttonState.state === 'download' ? IN_LIBRARY_BUTTON_STATE : buttonState;

@@ -254,6 +254,7 @@ export const CompactView = ({
                   void handleGetReleases(selectedBook);
                 }}
                 isLoadingReleases={isLoadingReleases}
+                isInLibrary={Boolean(libraryMatch)}
                 size="sm"
                 className="flex-1"
               />
@@ -267,6 +268,7 @@ export const CompactView = ({
                 void handleGetReleases(selectedBook);
               }}
               isLoadingReleases={isLoadingReleases}
+              isInLibrary={Boolean(libraryMatch)}
               size="sm"
               fullWidth
             />

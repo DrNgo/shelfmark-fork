@@ -341,6 +341,7 @@ export const ListView = ({
                       void handleGetReleases(selectedBook);
                     }}
                     isLoadingReleases={releasesLoadingId === book.id}
+                    isInLibrary={Boolean(libraryMatches[book.id])}
                     variant="icon"
                     size="md"
                   />
