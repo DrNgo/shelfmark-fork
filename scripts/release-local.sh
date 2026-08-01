@@ -73,14 +73,38 @@ fi
 
 TAG="v$VERSION"
 if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-  echo "error: tag $TAG already exists — a published tag is never rebuilt" >&2
-  echo "       (IfNotPresent-cached nodes would keep the old image). Bump N." >&2
-  exit 1
+  # A tag whose IMAGE was published is never rebuilt (IfNotPresent-cached
+  # nodes would keep the old bytes). But a tag whose build FAILED may be
+  # resumed: same tag, image not on ghcr yet.
+  if docker manifest inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
+    echo "error: $IMAGE:$VERSION is already published — a released image is" >&2
+    echo "       never rebuilt (IfNotPresent-cached nodes keep old bytes). Bump N." >&2
+    exit 1
+  fi
+  if [[ "$(git rev-parse "$TAG^{commit}")" != "$(git rev-parse HEAD)" ]]; then
+    echo "error: tag $TAG exists but points at a different commit than HEAD." >&2
+    exit 1
+  fi
+  echo "note: tag $TAG exists with no published image — resuming its build."
+  RESUME=1
+else
+  RESUME=0
 fi
 
+if ! docker info >/dev/null 2>&1; then
+  echo "error: docker daemon not running (start OrbStack/Docker Desktop first)." >&2
+  exit 1
+fi
 if ! docker buildx version >/dev/null 2>&1; then
   echo "error: docker buildx not available." >&2
   exit 1
+fi
+# docker login succeeds with any valid token, but pushing needs write:packages.
+# One-time setup:  gh auth refresh -s write:packages
+#            then: gh auth token | docker login ghcr.io -u DrNgo --password-stdin
+if ! gh auth status 2>&1 | grep -q "write:packages"; then
+  echo "warning: gh token lacks write:packages — the push will likely 403." >&2
+  echo "         run: gh auth refresh -s write:packages  (one-time, interactive)" >&2
 fi
 
 BUILD_VERSION="$(date +%Y-%m-%d)-$(git rev-parse HEAD)"
@@ -102,8 +126,10 @@ fi
 
 # --- tag, build, push --------------------------------------------------------
 
-git tag -a "$TAG" -m "Fork release $VERSION (built locally)"
-git push origin main "$TAG"
+if [[ "$RESUME" != 1 ]]; then
+  git tag -a "$TAG" -m "Fork release $VERSION (built locally)"
+  git push origin main "$TAG"
+fi
 
 # On auth failure: gh auth refresh -s write:packages, then
 #   gh auth token | docker login ghcr.io -u DrNgo --password-stdin
