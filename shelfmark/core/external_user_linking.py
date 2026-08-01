@@ -56,6 +56,8 @@ def _get_by_subject(
         return None
     if subject_field == "oidc_subject":
         return user_db.get_user(oidc_subject=subject)
+    if subject_field == "abs_subject":
+        return user_db.get_user(abs_subject=subject)
     return None
 
 
@@ -122,6 +124,8 @@ def _build_updates(
         updates["display_name"] = _normalize_display_name(display_name)
     if subject_field == "oidc_subject" and subject:
         updates["oidc_subject"] = subject
+    if subject_field == "abs_subject" and subject:
+        updates["abs_subject"] = subject
     return updates
 
 
@@ -294,6 +298,8 @@ def upsert_external_user(
         create_kwargs["display_name"] = normalized_display_name
     if subject_field == "oidc_subject" and subject:
         create_kwargs["oidc_subject"] = subject
+    if subject_field == "abs_subject" and subject:
+        create_kwargs["abs_subject"] = subject
 
     created = user_db.create_user(**create_kwargs)
     logger.info(

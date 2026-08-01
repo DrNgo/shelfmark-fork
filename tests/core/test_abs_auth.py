@@ -10,6 +10,7 @@ from shelfmark.core.auth_modes import (
     determine_auth_mode,
     is_user_active_for_auth_mode,
 )
+from shelfmark.core.external_user_linking import upsert_external_user
 from shelfmark.core.user_db import UserDB
 
 
@@ -118,3 +119,81 @@ class TestUserDbAbsSubject:
         assert old["abs_subject"] is None
         db.update_user(old["id"], abs_subject="migrated-id")
         assert db.get_user(abs_subject="migrated-id") is not None
+
+
+class TestUpsertExternalUserAbsSubject:
+    def test_create_stores_abs_subject(self, user_db):
+        user, action = upsert_external_user(
+            user_db,
+            auth_source="abs",
+            username="listener",
+            role="user",
+            subject_field="abs_subject",
+            subject="abs-uuid-1",
+            context="test",
+        )
+        assert action == "created"
+        assert user["abs_subject"] == "abs-uuid-1"
+        assert user["auth_source"] == "abs"
+        assert user["role"] == "user"
+
+    def test_subject_match_survives_abs_username_rename(self, user_db):
+        first, _ = upsert_external_user(
+            user_db,
+            auth_source="abs",
+            username="oldname",
+            role="user",
+            subject_field="abs_subject",
+            subject="stable-id",
+            context="test",
+        )
+        second, action = upsert_external_user(
+            user_db,
+            auth_source="abs",
+            username="newname",
+            role="user",
+            subject_field="abs_subject",
+            subject="stable-id",
+            context="test",
+        )
+        assert action == "updated"
+        assert second["id"] == first["id"]
+        # Local username intentionally stays stale (spec decision 7).
+        assert second["username"] == "oldname"
+
+    def test_suffix_collision_leaves_existing_user_untouched(self, user_db):
+        local = user_db.create_user(
+            username="admin", password_hash="x", auth_source="builtin", role="admin"
+        )
+        user, action = upsert_external_user(
+            user_db,
+            auth_source="abs",
+            username="admin",
+            role="user",
+            subject_field="abs_subject",
+            subject="abs-admin-id",
+            collision_strategy="suffix",
+            context="test",
+        )
+        assert action == "created"
+        assert user["username"] == "admin_1"
+        untouched = user_db.get_user(user_id=local["id"])
+        assert untouched["auth_source"] == "builtin"
+        assert untouched["role"] == "admin"
+
+    def test_takeover_collision_converts_existing_user(self, user_db):
+        local = user_db.create_user(username="bob", password_hash="x", auth_source="builtin")
+        user, action = upsert_external_user(
+            user_db,
+            auth_source="abs",
+            username="bob",
+            role="user",
+            subject_field="abs_subject",
+            subject="abs-bob-id",
+            collision_strategy="takeover",
+            context="test",
+        )
+        assert action == "updated"
+        assert user["id"] == local["id"]
+        assert user["auth_source"] == "abs"
+        assert user["abs_subject"] == "abs-bob-id"
