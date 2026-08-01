@@ -2,6 +2,7 @@
 
 Only GET endpoints are used: Shelfmark writes audiobook files to disk and lets
 Audiobookshelf scan them, so nothing here should ever mutate an ABS library.
+
 verify_abs_login is the one exception: an unauthenticated POST /login used by the abs auth source.
 """
 

@@ -307,7 +307,7 @@ class UserDB:
         auth_source: str = "builtin",
         role: str = "user",
     ) -> dict[str, Any]:
-        """Create a new user. Raises ValueError if username or oidc_subject already exists."""
+        """Create a new user. Raises ValueError if username, oidc_subject, or abs_subject already exists."""
         if auth_source not in self._VALID_AUTH_SOURCES:
             msg = f"Invalid auth_source: {auth_source}"
             raise ValueError(msg)

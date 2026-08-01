@@ -35,7 +35,7 @@ login, and keeps its own session. Shelfmark never stores ABS passwords.
    trust model:** this deployment treats ABS as the trusted identity
    authority run by the same operator; an ABS admin can thereby acquire a
    same-named local non-admin account's data. Builtin **admins** are never
-   taken over (security guard below).
+   taken over (security guard below). The same trust model covers external-source rows: after an ABS username rename, re-using the old name for a NEW ABS account will take over the old local row (overwriting its `abs_subject`) — operator-created accounts only, accepted.
 5. **Fail closed, not open:** unlike `oidc`/`proxy`/`cwa` (whose missing
    prerequisites make `determine_auth_mode` return `"none"`, which the
    middleware treats as *no auth required*), `abs` mode must never degrade to
