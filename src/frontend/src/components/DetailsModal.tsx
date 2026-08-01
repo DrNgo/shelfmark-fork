@@ -1,13 +1,15 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { useBodyScrollLock } from '../hooks/useBodyScrollLock';
 import { useEscapeKey } from '../hooks/useEscapeKey';
+import { useLibraryMatches } from '../hooks/useLibraryMatches';
 import { useMountEffect } from '../hooks/useMountEffect';
 import type { Book, ButtonStateInfo } from '../types';
 import { isMetadataBook } from '../types';
 import { bookSupportsTargets } from '../utils/bookTargetLoader';
 import { isUserCancelledError } from '../utils/errors';
+import { applyInLibraryLock, singleBookLookup } from '../utils/libraryMatches';
 import { BookTargetDropdown } from './BookTargetDropdown';
 
 interface DetailsModalProps {
@@ -60,6 +62,15 @@ export const DetailsModal = ({
   useBodyScrollLock(Boolean(book));
   useEscapeKey(Boolean(book), handleClose);
 
+  // The grid's in-library lock lives in BookActionButton, which this modal
+  // bypasses with its own footer button — so without its own lookup, details
+  // was the one door left open to re-acquiring a book already held.
+  const lookupBooks = useMemo(
+    () => singleBookLookup(`details-${book?.id ?? ''}`, book?.title, book?.author, book?.asin),
+    [book?.id, book?.title, book?.author, book?.asin],
+  );
+  const libraryMatch = useLibraryMatches(lookupBooks)[`details-${book?.id ?? ''}`];
+
   const hasBookTargets = Boolean(book && isMetadataBook(book) && bookSupportsTargets(book));
 
   if (!book && !isClosing) return null;
@@ -84,13 +95,14 @@ export const DetailsModal = ({
 
   // Determine if this is a metadata book (Universal mode) vs a release (Direct Download)
   const isMetadata = isMetadataBook(book);
+  const effectiveButtonState = applyInLibraryLock(buttonState, Boolean(libraryMatch));
   const showBookSourceLink = Boolean(book.source_url) && (isMetadata || showReleaseSourceLinks);
   const metadataActionText =
-    isMetadata && buttonState.state === 'download' && buttonState.text === 'Get'
+    isMetadata && effectiveButtonState.state === 'download' && effectiveButtonState.text === 'Get'
       ? 'Find Downloads'
-      : buttonState.text;
+      : effectiveButtonState.text;
   const downloadButtonClassName = (() => {
-    if (buttonState.state === 'blocked') {
+    if (effectiveButtonState.state === 'blocked') {
       return 'bg-gray-500';
     }
     return isMetadata ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-sky-700 hover:bg-sky-800';
@@ -412,13 +424,15 @@ export const DetailsModal = ({
                     void handleDownload();
                   }}
                   disabled={
-                    isMetadata ? buttonState.state === 'blocked' : buttonState.state !== 'download'
+                    isMetadata
+                      ? effectiveButtonState.state === 'blocked'
+                      : effectiveButtonState.state !== 'download'
                   }
                   className={`rounded-lg px-5 py-2 text-sm font-medium text-white transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                     downloadButtonClassName
                   }`}
                 >
-                  {isMetadata ? metadataActionText : buttonState.text}
+                  {isMetadata ? metadataActionText : effectiveButtonState.text}
                 </button>
               </div>
             </div>
