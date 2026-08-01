@@ -52,6 +52,23 @@ describe('buildLibraryLookupPayload', () => {
   it('drops duplicate ids so one card is asked about once', () => {
     expect(buildLibraryLookupPayload([book(), book()])).toHaveLength(1);
   });
+
+  it('forwards an ASIN so the match can be exact', () => {
+    expect(buildLibraryLookupPayload([book({ asin: 'B0BSHZ1234' })])).toEqual([
+      { id: 'bk1', title: 'The Housemaid', author: 'Freida McFadden', asin: 'B0BSHZ1234' },
+    ]);
+  });
+
+  it('keeps a book that has an ASIN but no usable author', () => {
+    // An ASIN is a complete identity where half a title+author key is not.
+    expect(buildLibraryLookupPayload([book({ author: '', asin: 'B0BSHZ1234' })])).toEqual([
+      { id: 'bk1', title: 'The Housemaid', author: '', asin: 'B0BSHZ1234' },
+    ]);
+  });
+
+  it('omits the key entirely when there is no ASIN', () => {
+    expect(buildLibraryLookupPayload([book()])[0]).not.toHaveProperty('asin');
+  });
 });
 
 describe('singleBookLookup', () => {
@@ -71,6 +88,18 @@ describe('singleBookLookup', () => {
     expect(singleBookLookup('review', 'The Housemaid', undefined)).toEqual([]);
     expect(singleBookLookup('review', '', 'Freida McFadden')).toEqual([]);
   });
+
+  it('carries an ASIN through', () => {
+    expect(singleBookLookup('review', 'The Housemaid', 'Freida McFadden', 'B0BSHZ1234')).toEqual([
+      { id: 'review', title: 'The Housemaid', author: 'Freida McFadden', asin: 'B0BSHZ1234' },
+    ]);
+  });
+
+  it('asks about a book that has only an ASIN', () => {
+    expect(singleBookLookup('review', '', undefined, 'B0BSHZ1234')).toEqual([
+      { id: 'review', title: '', author: '', asin: 'B0BSHZ1234' },
+    ]);
+  });
 });
 
 describe('booksLookupSignature', () => {
@@ -86,6 +115,12 @@ describe('booksLookupSignature', () => {
 
   it('is empty when nothing is worth asking about', () => {
     expect(booksLookupSignature([book({ author: '' })])).toBe('');
+  });
+
+  it('changes when an ASIN appears, so the answer is refetched', () => {
+    expect(booksLookupSignature([book()])).not.toBe(
+      booksLookupSignature([book({ asin: 'B0BSHZ1234' })]),
+    );
   });
 });
 

@@ -21,6 +21,7 @@ This document lists all configuration options that can be set via environment va
 - [Audiobookshelf](#audiobookshelf)
 - [Download Clients](#download-clients)
 - [Metadata Providers](#metadata-providers)
+  - [Audible](#metadata-providers-audible)
   - [Hardcover](#metadata-providers-hardcover)
   - [Open Library](#metadata-providers-open-library)
   - [Google Books](#metadata-providers-google-books)
@@ -2012,6 +2013,58 @@ Move deletes the job from your usenet client after import; Copy keeps it in the 
 </details>
 
 ## Metadata Providers
+
+### Metadata Providers: Audible
+
+| Variable | Description | Type | Default |
+|----------|-------------|------|---------|
+| `AUDIBLE_ENABLED` | Enable Audible as a metadata provider for audiobook searches | boolean | `false` |
+| `AUDIBLE_REGION` | Which Audible storefront to search. Catalogues and ASINs differ by region, so pick the one your library was matched against. | string (choice) | `us` |
+| `AUDIBLE_DEFAULT_SORT` | Default sort order for Audible search results. | string (choice) | `relevance` |
+| `AUDIBLE_AUDNEXUS_ENRICHMENT` | Fetch genres and ISBNs from api.audnex.us when opening a book's details. Audnexus is a free community service; if it is unreachable the book still loads without them. | boolean | `true` |
+
+<details>
+<summary>Detailed descriptions</summary>
+
+#### `AUDIBLE_ENABLED`
+
+**Enable Audible**
+
+Enable Audible as a metadata provider for audiobook searches
+
+- **Type:** boolean
+- **Default:** `false`
+
+#### `AUDIBLE_REGION`
+
+**Audible Region**
+
+Which Audible storefront to search. Catalogues and ASINs differ by region, so pick the one your library was matched against.
+
+- **Type:** string (choice)
+- **Default:** `us`
+- **Options:** `us` (United States (audible.com)), `uk` (United Kingdom (audible.co.uk)), `ca` (Canada (audible.ca)), `au` (Australia (audible.com.au)), `de` (Germany (audible.de)), `fr` (France (audible.fr)), `es` (Spain (audible.es)), `it` (Italy (audible.it)), `in` (India (audible.in)), `jp` (Japan (audible.co.jp)), `br` (Brazil (audible.com.br))
+
+#### `AUDIBLE_DEFAULT_SORT`
+
+**Default Sort Order**
+
+Default sort order for Audible search results.
+
+- **Type:** string (choice)
+- **Default:** `relevance`
+- **Options:** `relevance` (Most relevant), `popularity` (Best sellers), `newest` (Newest), `oldest` (Oldest)
+
+#### `AUDIBLE_AUDNEXUS_ENRICHMENT`
+
+**Enrich details via Audnexus**
+
+Fetch genres and ISBNs from api.audnex.us when opening a book's details. Audnexus is a free community service; if it is unreachable the book still loads without them.
+
+- **Type:** boolean
+- **Default:** `true`
+
+</details>
 
 ### Metadata Providers: Hardcover
 

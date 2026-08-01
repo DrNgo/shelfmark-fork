@@ -76,7 +76,7 @@ def lookup_books(books: list[Any], *, index: LibraryIndexDB | None = None) -> di
         if not book_id or book_id in matches:
             continue
 
-        keys = build_match_keys(book.get("title"), book.get("author"))
+        keys = build_match_keys(book.get("title"), book.get("author"), asin=book.get("asin"))
         if not keys:
             continue
 

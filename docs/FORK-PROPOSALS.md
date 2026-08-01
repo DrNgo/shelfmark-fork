@@ -36,6 +36,7 @@ people running Audiobookshelf (#3). Item #1 is a genuine feature gap.
 | 2 | AudioBook Bay ingestion is broken | bug | **~4 lines** + a guard | restores a source that is otherwise dead |
 | 3 | No awareness of what's already in the library | feature | medium | stops re-downloading owned books |
 | 1 | One destination, five ABS libraries | feature | medium–large | routes each approval to the right library |
+| 4 | Audiobook search uses print-book metadata | feature | medium | narrator, runtime and ASINs for audiobook search |
 
 Suggested order: ~~2 → 3 → 1~~ **superseded — see Locked decisions below.**
 
@@ -292,6 +293,57 @@ have this" before asking.
   feature #1 needs — build the client once and let both use it.
 - Handle the ABS token being absent or wrong by degrading to today's behaviour with a visible
   warning, not by failing search.
+
+---
+
+## 4. Audiobook search runs on print-book metadata
+
+### Problem
+
+Shelfmark ships three metadata providers — Hardcover, Open Library, Google Books — and all
+three catalogue **books**. Set as the audiobook provider, they cannot supply a narrator, a
+runtime, an abridgement flag, or the recording's own cover art, because none of those exist
+in a print catalogue. The "editions" they offer are paper editions.
+
+### Evidence
+
+`grep -rni asin shelfmark/metadata_providers/` returns zero hits: no provider surfaces an
+Audible identifier, which is why proposal #3's matcher had to fall back to normalised
+title+author as its *only* key rather than as a fallback.
+
+### The service ABS actually uses
+
+Audiobookshelf does this in two calls, and only the first is load-bearing:
+
+1. `https://api.audible.{tld}/1.0/catalog/products?title=&author=&num_results=&products_sort_by=`
+   — search, returning ASINs. Undocumented, unauthenticated, and relied on by ABS, Readarr
+   and Plex's agent alike.
+2. `https://api.audnex.us/books/{asin}?region=` — enrichment for a *known* ASIN.
+
+**Audnexus cannot replace step 1.** Its entire surface is `/authors?name=`, `/authors/{ASIN}`,
+`/books/{ASIN}` and `/books/{ASIN}/chapters` — there is no book search, so it can never turn
+a title into an ASIN.
+
+### Proposed design
+
+An `audible` metadata provider registered through the existing `@register_provider` system:
+region-selectable storefront, narrator/runtime/rating/abridgement as display fields, square
+cover art, series taken from the numbered entry rather than the first, and optional audnexus
+enrichment for genres and ISBN on the detail view only — never once per search result.
+
+`BookMetadata` gains an `asin` field, which flows into the #3 badge as an **additional exact
+match key**.
+
+### Risks / notes
+
+- **ASIN confirms a match; it never rules one out.** Regional editions, re-recordings and
+  abridgements each get their own ASIN, and direct-mode results (ABB, Anna's Archive,
+  Prowlarr) carry none at all. Title+author must keep carrying the general case.
+- An ASIN is only valid in the storefront it came from, so anything cached by ASIN has to be
+  keyed by region too.
+- The catalog API is undocumented; Amazon can change it. audnex.us is a free community
+  service, so enrichment must be best-effort and never load-bearing.
+- Audible is audiobooks only. Leave the ebook provider alone.
 
 ---
 

@@ -120,9 +120,9 @@ class LibraryIndexDB:
     def replace_items(self, items: list[LibraryItem]) -> int:
         """Replace the whole index with `items`, returning how many were stored.
 
-        Items that cannot produce a match key (no title or no author) are
-        dropped: they could never answer a lookup, so keeping them would only
-        inflate the count the UI reports.
+        Items that cannot produce a match key (no title or no author, and no
+        usable ASIN) are dropped: they could never answer a lookup, so keeping
+        them would only inflate the count the UI reports.
         """
         rows: list[tuple[str, str, str, str, str, str, str]] = []
         key_rows: list[tuple[str, str]] = []
@@ -131,7 +131,7 @@ class LibraryIndexDB:
         for item in items:
             if not item.item_id or item.item_id in seen:
                 continue
-            keys = build_match_keys(item.title, item.author, item.subtitle)
+            keys = build_match_keys(item.title, item.author, item.subtitle, asin=item.asin)
             if not keys:
                 continue
 

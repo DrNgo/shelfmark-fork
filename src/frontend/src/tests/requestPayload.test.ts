@@ -78,6 +78,15 @@ describe('requestPayload utilities', () => {
     expect(sourceBackedReleaseData.search_mode).toBe('direct');
   });
 
+  it('carries an ASIN into the request so the approver can match exactly', () => {
+    const bookData = buildMetadataBookRequestData(
+      { ...baseBook, provider: 'audible', asin: 'B0BSHZ1234' },
+      'audiobook',
+    );
+
+    expect(bookData.asin).toBe('B0BSHZ1234');
+  });
+
   it('resolves browse source from source-backed or provider-backed books', () => {
     expect(getBrowseSource(baseBook)).toBe('direct_download');
     expect(

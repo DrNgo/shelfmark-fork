@@ -33,6 +33,9 @@ export const buildMetadataBookRequestData = (book: Book, contentType: ContentTyp
     content_type: contentType,
     provider: book.provider || 'metadata',
     provider_id: book.provider_id || book.id,
+    // Persisted so the approving admin gets the same exact library match the
+    // requester saw, without re-querying the metadata provider.
+    asin: book.asin,
     year: book.year,
     preview: book.preview,
     series_name: book.series_name,

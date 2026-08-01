@@ -32,6 +32,7 @@ const buildSeriesLine = (name: string, position: number | null, count: number | 
 export interface RequestConfirmationPreview {
   title: string;
   author: string;
+  asin: string;
   year: string;
   seriesLine: string;
   preview: string;
@@ -60,6 +61,7 @@ export const buildRequestConfirmationPreview = (
   return {
     title: toText(bookData.title ?? releaseData.title, 'Untitled'),
     author: toText(bookData.author ?? releaseData.author, 'Unknown author'),
+    asin: toText(bookData.asin, ''),
     year: toText(bookData.year ?? releaseData.year, ''),
     seriesLine,
     preview,

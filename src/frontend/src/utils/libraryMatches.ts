@@ -25,13 +25,16 @@ export interface LibraryLookupBook {
   id: string;
   title: string;
   author: string;
+  asin?: string;
 }
 
 /**
  * Reduce books to the fields the matcher uses, dropping any that cannot match.
  *
- * A book without both a title and an author has no key, so asking about it
- * would only cost a round trip.
+ * A book needs either both a title and an author, or an ASIN — anything less
+ * has no key, so asking about it would only cost a round trip. An ASIN alone
+ * is enough because it is a complete identity, which half a title+author key
+ * is not.
  */
 export const buildLibraryLookupPayload = (books: Book[]): LibraryLookupBook[] => {
   const seen = new Set<string>();
@@ -41,10 +44,12 @@ export const buildLibraryLookupPayload = (books: Book[]): LibraryLookupBook[] =>
     const id = (book.id ?? '').trim();
     const title = (book.title ?? '').trim();
     const author = (book.author ?? '').trim();
-    if (!id || !title || !author || seen.has(id)) continue;
+    const asin = (book.asin ?? '').trim();
+    if (!id || seen.has(id)) continue;
+    if (!asin && (!title || !author)) continue;
 
     seen.add(id);
-    payload.push({ id, title, author });
+    payload.push(asin ? { id, title, author, asin } : { id, title, author });
   }
 
   return payload;
@@ -63,18 +68,20 @@ export const singleBookLookup = (
   id: string,
   title: string | undefined,
   author: string | undefined,
+  asin?: string,
 ): Book[] => {
   const trimmedTitle = (title ?? '').trim();
   const trimmedAuthor = (author ?? '').trim();
-  if (!trimmedTitle || !trimmedAuthor) return NO_BOOKS;
+  const trimmedAsin = (asin ?? '').trim();
+  if (!trimmedAsin && (!trimmedTitle || !trimmedAuthor)) return NO_BOOKS;
 
-  return [{ id, title: trimmedTitle, author: trimmedAuthor }];
+  return [{ id, title: trimmedTitle, author: trimmedAuthor, asin: trimmedAsin || undefined }];
 };
 
 /** A stable key for a book list, so scrolling a result set refetches only once. */
 export const booksLookupSignature = (books: Book[]): string =>
   buildLibraryLookupPayload(books)
-    .map((book) => book.id)
+    .map((book) => (book.asin ? `${book.id}#${book.asin}` : book.id))
     .join(',');
 
 /** Short badge text naming where the book is held. */

@@ -83,6 +83,26 @@ class TestLibraryIndexLookup:
     def test_returns_nothing_when_nothing_was_ever_synced(self, index):
         assert index.find_matches(build_match_keys("The Housemaid", "Freida McFadden")) == []
 
+    def test_indexes_an_item_by_its_asin(self, index):
+        index.replace_items([_item(asin="B0BSHZ1234")])
+
+        matches = index.find_matches(build_match_keys("", "", asin="B0BSHZ1234"))
+
+        assert len(matches) == 1
+        assert matches[0].item_id == "li_1"
+
+    def test_an_asin_only_item_is_still_indexed(self, index):
+        """Audiobookshelf items sometimes carry an ASIN and little else."""
+        index.replace_items([_item(title="", author="", asin="B0BSHZ1234")])
+
+        assert len(index.find_matches(build_match_keys("", "", asin="B0BSHZ1234"))) == 1
+
+    def test_a_malformed_asin_indexes_no_asin_key(self, index):
+        """Two items both tagged `N/A` must not become the same book."""
+        index.replace_items([_item(item_id="li_1", asin="N/A"), _item(item_id="li_2", asin="N/A")])
+
+        assert index.find_matches({"asin:N/A", "asin:"}) == []
+
 
 class TestLibraryIndexReplace:
     """A sync is a full swap, so deletions in Audiobookshelf propagate."""
@@ -96,8 +116,10 @@ class TestLibraryIndexReplace:
         assert len(index.find_matches(build_match_keys("The Coworker", "Freida McFadden"))) == 1
 
     def test_skips_items_that_can_never_match(self, index):
-        """An item with no author yields no key; storing it would be dead weight."""
-        stored = index.replace_items([_item(item_id="li_1", author=""), _item(item_id="li_2")])
+        """No author and no usable ASIN yields no key; storing it is dead weight."""
+        stored = index.replace_items(
+            [_item(item_id="li_1", author="", asin=""), _item(item_id="li_2")]
+        )
 
         assert stored == 1
 

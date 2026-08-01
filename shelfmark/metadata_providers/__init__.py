@@ -198,6 +198,11 @@ class BookMetadata:
     authors: list[str] = field(default_factory=list)
     isbn_10: str | None = None
     isbn_13: str | None = None
+    # Audible/Amazon identifier. Only providers that catalogue recordings have
+    # one, and it identifies an *edition*: the US and UK releases of one book
+    # carry different ASINs, so it can confirm a library match but never rule
+    # one out.
+    asin: str | None = None
     cover_url: str | None = None
     description: str | None = None
     publisher: str | None = None
@@ -709,3 +714,6 @@ with suppress(ImportError):
 
 with suppress(ImportError):
     from shelfmark.metadata_providers import googlebooks as googlebooks
+
+with suppress(ImportError):
+    from shelfmark.metadata_providers import audible as audible

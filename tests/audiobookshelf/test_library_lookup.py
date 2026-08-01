@@ -151,6 +151,49 @@ class TestLookupBooks:
 
         assert result["matches"] == {}
 
+    def test_matches_on_asin_when_the_title_differs(self, index):
+        """The payoff of an Audible-sourced ASIN: edition noise stops mattering."""
+        with patch_config(ENABLED):
+            result = lookup_books(
+                [
+                    {
+                        "id": "bk1",
+                        "title": "Housemaid, The (Unabridged)",
+                        "author": "F. McFadden",
+                        "asin": "b0bshz1234",
+                    }
+                ],
+                index=index,
+            )
+
+        assert result["matches"]["bk1"]["items"][0]["item_id"] == "li_1"
+
+    def test_a_book_with_only_an_asin_is_still_matchable(self, index):
+        with patch_config(ENABLED):
+            result = lookup_books(
+                [{"id": "bk1", "title": "", "author": "", "asin": "B0BSHZ1234"}],
+                index=index,
+            )
+
+        assert result["matches"]["bk1"]["libraries"] == ["Audiobooks"]
+
+    def test_a_different_asin_does_not_suppress_a_title_match(self, index):
+        """A UK edition ASIN must not stop title+author from matching."""
+        with patch_config(ENABLED):
+            result = lookup_books(
+                [
+                    {
+                        "id": "bk1",
+                        "title": "The Housemaid: A Novel",
+                        "author": "Freida McFadden",
+                        "asin": "B0UKUKUK99",
+                    }
+                ],
+                index=index,
+            )
+
+        assert result["matches"]["bk1"]["items"][0]["item_id"] == "li_1"
+
     def test_reports_index_freshness(self, index):
         with patch_config(ENABLED):
             result = lookup_books([], index=index)

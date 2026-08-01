@@ -40,6 +40,7 @@ export interface Book {
   provider_id?: string; // ID in provider's system
   isbn_10?: string;
   isbn_13?: string;
+  asin?: string; // Audible/Amazon ID — only audiobook providers supply one
   genres?: string[];
   source_url?: string; // Link to book on provider's site
   display_fields?: DisplayField[]; // Provider-specific display data

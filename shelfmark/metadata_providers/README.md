@@ -13,6 +13,7 @@ Metadata providers allow searching for books and retrieving detailed metadata (t
 | **Hardcover** | Yes (API key) | Modern book tracking platform with GraphQL API. Get your key at [hardcover.app/account/api](https://hardcover.app/account/api) |
 | **Open Library** | No | Free, open-source library catalog from the Internet Archive. Rate limited to ~100 requests/minute |
 | **Google Books** | Yes (API key) | Google's book database with broad coverage and a free API key option |
+| **Audible** | No | Audiobooks only. Audible's public catalog API — the only provider that supplies narrator, runtime, abridgement and an ASIN. Optionally enriched with genres/ISBN from [audnex.us](https://audnex.us). Set it as the *audiobook* provider; it has no ebooks |
 
 
 ## Core Components
@@ -33,6 +34,9 @@ class BookMetadata:
     authors: List[str]
     isbn_10: str
     isbn_13: str
+    # Audible/Amazon ID. Identifies an *edition*, so it can confirm a library
+    # match but never rule one out. Only audiobook providers supply it.
+    asin: str
     cover_url: str
     description: str
     publisher: str

@@ -13,6 +13,7 @@ export interface MetadataBookData {
   authors?: string[];
   isbn_10?: string;
   isbn_13?: string;
+  asin?: string;
   cover_url?: string;
   cover_aspect?: 'portrait' | 'square';
   description?: string;
@@ -89,6 +90,7 @@ export function transformMetadataToBook(data: MetadataBookData): Book {
     provider_id: data.provider_id,
     isbn_10: data.isbn_10,
     isbn_13: data.isbn_13,
+    asin: data.asin,
     genres: data.genres,
     source_url: data.source_url,
     display_fields: data.display_fields,

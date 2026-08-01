@@ -51,6 +51,19 @@ describe('requestConfirmation utilities', () => {
     expect(preview.seriesLine).toBe('');
   });
 
+  it('surfaces an ASIN so the confirmation can match the library exactly', () => {
+    const preview = buildRequestConfirmationPreview({
+      ...releasePayload,
+      book_data: { ...releasePayload.book_data, asin: 'B0BSHZ1234' },
+    });
+
+    expect(preview.asin).toBe('B0BSHZ1234');
+  });
+
+  it('leaves the ASIN empty when the provider had none', () => {
+    expect(buildRequestConfirmationPreview(releasePayload).asin).toBe('');
+  });
+
   it('omits release line for book-level payloads', () => {
     const preview = buildRequestConfirmationPreview(bookPayload);
 
