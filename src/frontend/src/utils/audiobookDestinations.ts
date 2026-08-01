@@ -4,7 +4,7 @@ export interface AudiobookDestination {
 }
 
 /**
- * Whether the approve panel should offer a library picker.
+ * Whether a library picker should be offered.
  *
  * Routing is audiobooks-only, and a single destination is not a choice — with
  * one configured library the picker would just be a control with one option.
@@ -30,4 +30,20 @@ export const resolveDefaultDestinationKey = (
     return '';
   }
   return destinations.some((destination) => destination.key === currentKey) ? currentKey : '';
+};
+
+/**
+ * Attach an admin's library choice to a direct-download payload.
+ *
+ * Copied rather than mutated, and omitted rather than blanked: '' is the
+ * picker's own value for "use the default destination", so forwarding it would
+ * put a key on the wire that means nothing. The server strips the key from a
+ * non-admin's payload regardless, so this is presentation, not enforcement.
+ */
+export const withDestinationKey = <T extends object>(
+  payload: T,
+  destinationKey: string | null | undefined,
+): T & { destination_key?: string } => {
+  const key = (destinationKey ?? '').trim();
+  return key ? { ...payload, destination_key: key } : { ...payload };
 };

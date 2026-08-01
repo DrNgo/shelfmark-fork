@@ -80,6 +80,7 @@ import type {
 } from './types';
 import { isMetadataBook } from './types';
 import { formatActingAsUserName } from './utils/actingAsUser';
+import { withDestinationKey } from './utils/audiobookDestinations';
 import { buildLoginRedirectPath, getReturnToFromSearch } from './utils/authRedirect';
 import { withBasePath } from './utils/basePath';
 import { emitBookTargetChange } from './utils/bookTargetEvents';
@@ -204,6 +205,8 @@ type CombinedSelectionState = {
   audiobookMode: RequestPolicyMode;
   stagedEbook?: { book: Book; release: Release };
   stagedAudiobook?: Release;
+  // Applies to the audiobook leg only — the ebook lane has one destination.
+  destinationKey?: string;
 };
 
 type PendingOnBehalfDownload =
@@ -218,6 +221,7 @@ type PendingOnBehalfDownload =
       release: Release;
       releaseContentType: ContentType;
       actingAsUser: ActingAsUserSelection;
+      destinationKey?: string;
     }
   | {
       type: 'combined';
@@ -1073,36 +1077,44 @@ function App() {
   );
 
   const buildReleaseDownloadPayload = useCallback(
-    (book: Book, release: Release, releaseContentType: ContentType): DownloadReleasePayload => {
+    (
+      book: Book,
+      release: Release,
+      releaseContentType: ContentType,
+      destinationKey?: string,
+    ): DownloadReleasePayload => {
       const isManual = book.provider === 'manual';
       const releasePreview =
         typeof release.extra?.preview === 'string' ? release.extra.preview : undefined;
       const releaseAuthor =
         typeof release.extra?.author === 'string' ? release.extra.author : undefined;
 
-      return {
-        source: release.source,
-        source_id: release.source_id,
-        title: isManual ? release.title : book.title,
-        author: isManual ? releaseAuthor || '' : book.author,
-        year: book.year,
-        format: release.format,
-        size: release.size,
-        size_bytes: release.size_bytes,
-        download_url: release.download_url,
-        protocol: release.protocol,
-        indexer: release.indexer,
-        seeders: release.seeders,
-        extra: release.extra,
-        preview: isManual ? releasePreview || undefined : book.preview,
-        content_type: releaseContentType,
-        series_name: book.series_name,
-        series_position: book.series_position,
-        subtitle: book.subtitle,
-        // From the release, never the book: book.language is the provider's
-        // canonical edition, which would mislabel a translated release.
-        language: release.language ?? undefined,
-      };
+      return withDestinationKey(
+        {
+          source: release.source,
+          source_id: release.source_id,
+          title: isManual ? release.title : book.title,
+          author: isManual ? releaseAuthor || '' : book.author,
+          year: book.year,
+          format: release.format,
+          size: release.size,
+          size_bytes: release.size_bytes,
+          download_url: release.download_url,
+          protocol: release.protocol,
+          indexer: release.indexer,
+          seeders: release.seeders,
+          extra: release.extra,
+          preview: isManual ? releasePreview || undefined : book.preview,
+          content_type: releaseContentType,
+          series_name: book.series_name,
+          series_position: book.series_position,
+          subtitle: book.subtitle,
+          // From the release, never the book: book.language is the provider's
+          // canonical edition, which would mislabel a translated release.
+          language: release.language ?? undefined,
+        },
+        destinationKey,
+      );
     },
     [],
   );
@@ -1214,12 +1226,13 @@ function App() {
       release: Release,
       releaseContentType: ContentType,
       onBehalfOfUserId?: number,
+      destinationKey?: string,
     ): Promise<void> => {
       const requestStartedAtSeconds = Date.now() / 1000;
       try {
         trackRelease(book.id, release.source_id);
         await downloadRelease(
-          buildReleaseDownloadPayload(book, release, releaseContentType),
+          buildReleaseDownloadPayload(book, release, releaseContentType, destinationKey),
           onBehalfOfUserId,
         );
         await fetchStatus();
@@ -1380,7 +1393,13 @@ function App() {
       }
 
       if (audiobookMode === 'download' && audiobookRelease) {
-        await executeReleaseDownload(book, audiobookRelease, 'audiobook', onBehalfOfUserId);
+        await executeReleaseDownload(
+          book,
+          audiobookRelease,
+          'audiobook',
+          onBehalfOfUserId,
+          selection.destinationKey,
+        );
       } else if (
         audiobookMode !== 'download' &&
         (audiobookRelease || audiobookMode === 'request_book')
@@ -1416,6 +1435,7 @@ function App() {
           effectivePendingOnBehalfDownload.release,
           effectivePendingOnBehalfDownload.releaseContentType,
           onBehalfOfUserId,
+          effectivePendingOnBehalfDownload.destinationKey,
         );
       }
       setPendingOnBehalfDownload(null);
@@ -1640,6 +1660,7 @@ function App() {
     book: Book,
     release: Release,
     releaseContentType: ContentType,
+    destinationKey?: string,
   ) => {
     policyTrace('release.action:start', {
       bookId: book.id,
@@ -1655,11 +1676,14 @@ function App() {
         release,
         releaseContentType,
         actingAsUser: effectiveActingAsUser,
+        // Held across the on-behalf confirmation so the library chosen before
+        // the modal opened is not lost by confirming the download.
+        destinationKey,
       });
       return;
     }
 
-    await executeReleaseDownload(book, release, releaseContentType);
+    await executeReleaseDownload(book, release, releaseContentType, undefined, destinationKey);
   };
 
   const handleReleaseRequest = useCallback(
@@ -1731,7 +1755,7 @@ function App() {
   }, []);
 
   const handleCombinedDownload = useCallback(
-    async (release: Release | null) => {
+    async (release: Release | null, destinationKey?: string) => {
       if (!combinedState || !releaseBook) return;
 
       const nextCombinedState: CombinedSelectionState =
@@ -1739,10 +1763,12 @@ function App() {
           ? {
               ...combinedState,
               stagedEbook: release ? { book: releaseBook, release } : undefined,
+              destinationKey,
             }
           : {
               ...combinedState,
               stagedAudiobook: release ?? undefined,
+              destinationKey,
             };
 
       if (effectiveActingAsUser) {
@@ -2622,6 +2648,11 @@ function App() {
               isRequestMode={isBrowseFulfilMode || activeReleaseBook?.provider === 'manual'}
               showReleaseSourceLinks={config?.show_release_source_links !== false}
               onShowToast={showToast}
+              // Admins only, because the server drops anyone else's key. Not in
+              // browse-to-fulfil either: that detour already carries the library
+              // chosen on the approve panel, and a second picker here would be a
+              // second source of truth for one download.
+              canChooseDestination={requestRoleIsAdmin && !isBrowseFulfilMode}
               combinedMode={
                 effectiveCombinedState
                   ? {
@@ -2635,8 +2666,8 @@ function App() {
                       onBack: combinedHasPreviousStep ? handleCombinedBack : undefined,
                       onClearSelection: handleCombinedClearSelection,
                       onDownload: combinedIsFinalStep
-                        ? (release) => {
-                            void handleCombinedDownload(release);
+                        ? (release, destinationKey) => {
+                            void handleCombinedDownload(release, destinationKey);
                           }
                         : undefined,
                     }

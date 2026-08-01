@@ -253,7 +253,9 @@ def queue_release(
         subtitle = release_data.get("subtitle") or extra.get("subtitle")
         language = release_data.get("language") or extra.get("language")
 
-        # Explicit audiobook library chosen by an admin on the approve dialog.
+        # Explicit audiobook library chosen by an admin, on either the approve
+        # dialog or the release modal. Non-admin payloads never reach here with
+        # one — the route strips it before queueing.
         destination_key = normalize_optional_text(
             release_data.get("destination_key") or extra.get("destination_key")
         )

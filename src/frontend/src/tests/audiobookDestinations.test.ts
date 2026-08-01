@@ -4,6 +4,7 @@ import { buildFulfilAdminRequestBody } from '../services/requestApiHelpers';
 import {
   resolveDefaultDestinationKey,
   shouldShowDestinationPicker,
+  withDestinationKey,
 } from '../utils/audiobookDestinations';
 
 const DESTINATIONS = [
@@ -63,5 +64,32 @@ describe('resolveDefaultDestinationKey', () => {
 
   it('defaults to no choice, which routes to the default destination', () => {
     expect(resolveDefaultDestinationKey(null, DESTINATIONS)).toBe('');
+  });
+});
+
+describe('withDestinationKey', () => {
+  it('adds the chosen library to a direct-download payload', () => {
+    expect(withDestinationKey({ source: 'prowlarr' }, 'lib-kids')).toEqual({
+      source: 'prowlarr',
+      destination_key: 'lib-kids',
+    });
+  });
+
+  it('omits the key when no library was chosen', () => {
+    expect('destination_key' in withDestinationKey({ source: 'prowlarr' }, undefined)).toBe(false);
+  });
+
+  it('omits the key for a blank choice rather than sending an empty one', () => {
+    // '' is the picker's own value for "use the default destination", so
+    // forwarding it would put a key on the wire that means nothing.
+    expect('destination_key' in withDestinationKey({ source: 'prowlarr' }, '   ')).toBe(false);
+  });
+
+  it('leaves the payload it was given untouched', () => {
+    const payload = { source: 'prowlarr' };
+
+    withDestinationKey(payload, 'lib-kids');
+
+    expect('destination_key' in payload).toBe(false);
   });
 });
