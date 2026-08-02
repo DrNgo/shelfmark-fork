@@ -41,6 +41,18 @@ const getKeyedDisplayFields = (fields: DisplayField[]) => {
   });
 };
 
+// Full-cast productions list a dozen-plus narrators; the mobile info column is
+// an auto-sized grid track, so an unabridged list would swallow the whole row
+// and crush the title column to nothing.
+const summarizeNameList = (value: string): string => {
+  const names = value
+    .split(',')
+    .map((name) => name.trim())
+    .filter(Boolean);
+  if (names.length <= 2) return value;
+  return `${names[0]} +${names.length - 1} more`;
+};
+
 const ListViewThumbnail = ({
   preview,
   title,
@@ -164,7 +176,7 @@ export const ListView = ({
           return (
             <div
               key={book.id}
-              className="hover-row animate-pop-up relative w-full px-1.5 py-1.5 transition-colors duration-200 sm:px-2 sm:py-2"
+              className="hover-row animate-pop-up relative w-full px-1.5 py-2.5 transition-colors duration-200 sm:px-2 sm:py-2"
               style={{
                 zIndex: openDropdownBookId === book.id ? 30 : undefined,
                 animationDelay: `${index * 50}ms`,
@@ -222,12 +234,16 @@ export const ListView = ({
                 </div>
 
                 {/* Mobile universal mode info */}
-                <div className="flex flex-col items-end text-[10px] leading-tight opacity-70 sm:hidden">
+                <div className="flex max-w-[40vw] min-w-0 flex-col items-end gap-0.5 text-[10px] leading-tight opacity-70 sm:hidden">
                   {mobileDisplayFields.length > 0 ? (
                     mobileDisplayFields.map(({ field, key }) => (
-                      <span key={key} className="flex items-center gap-0.5" title={field.label}>
+                      <span
+                        key={key}
+                        className="flex max-w-full items-center gap-0.5"
+                        title={field.value}
+                      >
                         <DisplayFieldIcon icon={field.icon} />
-                        <span>{field.value}</span>
+                        <span className="truncate">{summarizeNameList(field.value)}</span>
                       </span>
                     ))
                   ) : (
@@ -262,10 +278,17 @@ export const ListView = ({
                         <span className="text-xs text-gray-500">-</span>
                       )}
                     </div>
-                    {/* Narrator column */}
+                    {/* Narrator column — full cast lists collapse to "Name +N more"
+                        (hover shows everyone) so one row can't balloon the table. */}
                     <div className="hidden justify-start sm:flex">
                       {narratorField ? (
-                        <DisplayFieldBadge field={narratorField} />
+                        <DisplayFieldBadge
+                          field={{
+                            ...narratorField,
+                            label: narratorField.value,
+                            value: summarizeNameList(narratorField.value),
+                          }}
+                        />
                       ) : (
                         <span className="text-xs text-gray-500">-</span>
                       )}
