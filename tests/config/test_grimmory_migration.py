@@ -4,6 +4,13 @@ import json
 
 import pytest
 
+# Importing this runs the @register_settings decorator in shelfmark.grimmory.settings,
+# registering the "grimmory" tab. Without it, running this file alone leaves
+# get_all_settings_tabs() without "grimmory", so initialize_default_configs() never
+# creates grimmory.json, and TestMigrationOrdering passes even if the migrations are
+# wired in after initialize_default_configs() — the exact bug this test exists to catch.
+# Same idiom as tests/config/test_security.py:678 for the "security" tab.
+import shelfmark.grimmory.settings  # noqa: F401
 from shelfmark.core import settings_registry
 
 
