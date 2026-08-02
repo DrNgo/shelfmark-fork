@@ -61,6 +61,7 @@ const API = {
   activityDismiss: `${API_BASE}/activity/dismiss`,
   activityDismissMany: `${API_BASE}/activity/dismiss-many`,
   activityHistory: `${API_BASE}/activity/history`,
+  discover: `${API_BASE}/discover`,
 };
 
 // Custom error class for authentication failures
@@ -336,6 +337,22 @@ export const searchMetadata = async (
 
 export const getMetadataProviders = async (): Promise<MetadataProvidersResponse> => {
   return fetchJSON<MetadataProvidersResponse>(API.metadataProviders);
+};
+
+export interface DiscoverRowResponse {
+  row: string;
+  label?: string;
+  provider?: string;
+  stale?: boolean;
+  books: MetadataBookData[];
+}
+
+export const getDiscoverRow = async (
+  contentType: string,
+  row: string,
+): Promise<DiscoverRowResponse> => {
+  const params = new URLSearchParams({ content_type: contentType, row });
+  return fetchJSON<DiscoverRowResponse>(`${API.discover}?${params.toString()}`);
 };
 
 export const getMetadataSearchConfig = async (
