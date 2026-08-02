@@ -57,7 +57,7 @@ def grimmory_settings() -> list[SettingsField]:
         ),
         TextField(
             key="BOOKLORE_HOST",
-            label="Grimmory URL",
+            label=f"{BOOKLORE_DISPLAY_NAME} URL",
             description=f"Base URL of your {BOOKLORE_DISPLAY_NAME} instance",
             placeholder="http://grimmory:6060",
             required=True,
