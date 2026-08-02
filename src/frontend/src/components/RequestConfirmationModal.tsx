@@ -6,7 +6,11 @@ import { useLibraryMatches } from '../hooks/useLibraryMatches';
 import { useMountEffect } from '../hooks/useMountEffect';
 import { getMetadataBookInfo } from '../services/api';
 import type { Book, CreateRequestPayload } from '../types';
-import { singleBookLookup } from '../utils/libraryMatches';
+import {
+  isHeldInFormat,
+  libraryMatchOwnershipMessage,
+  singleBookLookup,
+} from '../utils/libraryMatches';
 import type { RequestConfirmationPreview } from '../utils/requestConfirmation';
 import {
   applyRequestNoteToPayload,
@@ -182,7 +186,14 @@ function RequestConfirmationModalSession({
   const lookupBooks = useMemo(
     () =>
       preview
-        ? singleBookLookup('request-confirmation', preview.title, preview.author, preview.asin)
+        ? singleBookLookup(
+            'request-confirmation',
+            preview.title,
+            preview.author,
+            preview.asin,
+            preview.isbn_13 ?? preview.isbn_10,
+            preview.content_type,
+          )
         : EMPTY_LOOKUP_BOOKS,
     [preview],
   );
@@ -322,12 +333,15 @@ function RequestConfirmationModalSession({
           </div>
 
           {libraryMatch && (
-            <div className="flex items-start gap-2 rounded-lg border border-emerald-600/40 bg-emerald-600/10 px-3 py-2 text-sm text-emerald-800 dark:text-emerald-200">
+            <div
+              className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-sm ${
+                isHeldInFormat(libraryMatch)
+                  ? 'border-emerald-600/40 bg-emerald-600/10 text-emerald-800 dark:text-emerald-200'
+                  : 'border-slate-400/40 bg-slate-400/10 text-slate-700 dark:text-slate-300'
+              }`}
+            >
               <InLibraryBadge match={libraryMatch} className="mt-0.5" />
-              <span className="min-w-0">
-                You already have this. Requesting it anyway is fine — a better edition is still
-                worth having.
-              </span>
+              <span className="min-w-0">{libraryMatchOwnershipMessage(libraryMatch)}</span>
             </div>
           )}
 

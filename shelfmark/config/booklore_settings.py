@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import suppress
 from typing import Any
 
 from shelfmark.core.config import config
 from shelfmark.core.logger import setup_logger
-from shelfmark.download.outputs.booklore import (
+from shelfmark.grimmory.client import (
+    BOOKLORE_DISPLAY_NAME,
     BookloreConfig,
     BookloreError,
     booklore_list_libraries,
     booklore_login,
+    list_books,
 )
 
 logger = setup_logger(__name__)
@@ -27,13 +30,9 @@ def _get_booklore_cache_key(base_url: str, username: str, password: str) -> str:
     return f"{base_url}|{username}|{hashlib.sha256(password.encode()).hexdigest()}"
 
 
-def _get_booklore_select_options(
-    base_url: str,
-    username: str,
-    password: str,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    # library_id/path_id are not used for login/library listing
-    booklore_config = BookloreConfig(
+def _config_from(base_url: str, username: str, password: str) -> BookloreConfig:
+    """Build a BookloreConfig for calls that only need auth, not upload targets."""
+    return BookloreConfig(
         base_url=base_url.rstrip("/"),
         username=username,
         password=password,
@@ -42,6 +41,15 @@ def _get_booklore_select_options(
         verify_tls=True,
         refresh_after_upload=True,
     )
+
+
+def _get_booklore_select_options(
+    base_url: str,
+    username: str,
+    password: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    # library_id/path_id are not used for login/library listing
+    booklore_config = _config_from(base_url, username, password)
 
     token = booklore_login(booklore_config)
     libraries = booklore_list_libraries(booklore_config, token) or []
@@ -186,19 +194,43 @@ def check_booklore_connection(
     password = str(_get_value("BOOKLORE_PASSWORD", "") or "")
 
     if not base_url:
-        return {"success": False, "message": "Grimmory URL is required"}
+        return {"success": False, "message": f"{BOOKLORE_DISPLAY_NAME} URL is required"}
     if not username:
-        return {"success": False, "message": "Grimmory username is required"}
+        return {"success": False, "message": f"{BOOKLORE_DISPLAY_NAME} username is required"}
     if not password:
-        return {"success": False, "message": "Grimmory password is required"}
+        return {"success": False, "message": f"{BOOKLORE_DISPLAY_NAME} password is required"}
 
     try:
         library_options, _ = _get_booklore_select_options(base_url, username, password)
     except BookloreError as exc:
         return {"success": False, "message": str(exc)}
     else:
-        message = "Connected to Grimmory"
+        message = f"Connected to {BOOKLORE_DISPLAY_NAME}"
         if library_options:
-            message = f"Connected to Grimmory ({len(library_options)} libraries)"
+            message = f"Connected to {BOOKLORE_DISPLAY_NAME} ({len(library_options)} libraries)"
+
+        # GET /api/v1/books is scoped to the authenticated user: an admin sees every
+        # library, anyone else only their assigned ones. One page bounds the total
+        # without walking the whole library, and surfacing it here is what makes a
+        # too-narrow service account visible now rather than as missing badges hours
+        # later. Wrapped in suppress because the connection already succeeded above -
+        # a book-count hiccup should cost the extra detail, not the whole result.
+        with suppress(BookloreError):
+            books_config = _config_from(base_url, username, password)
+            token = booklore_login(books_config)
+            books, total_pages = list_books(books_config, token, page=0, size=1)
+            # total_pages is list_books()'s paging clamp (never below 1), which
+            # is correct for pagination but not a real book count: reusing it
+            # directly would report an account that can see nothing as having
+            # "1 books". With size=1 each page holds exactly one book, so
+            # total_pages is only a trustworthy count once we know there is at
+            # least one book to count - otherwise it is honestly zero.
+            book_count = total_pages if books else 0
+            book_word = "book" if book_count == 1 else "books"
+            message = (
+                f"{message[:-1]}, {book_count} {book_word})"
+                if message.endswith(")")
+                else f"{message} ({book_count} {book_word})"
+            )
 
         return {"success": True, "message": message}

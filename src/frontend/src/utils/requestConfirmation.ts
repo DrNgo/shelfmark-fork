@@ -33,6 +33,9 @@ export interface RequestConfirmationPreview {
   title: string;
   author: string;
   asin: string;
+  isbn_10: string;
+  isbn_13: string;
+  content_type: string;
   year: string;
   seriesLine: string;
   preview: string;
@@ -67,6 +70,9 @@ export const buildRequestConfirmationPreview = (
     title: toText(bookData.title ?? releaseData.title, 'Untitled'),
     author: toText(bookData.author ?? releaseData.author, 'Unknown author'),
     asin: toText(bookData.asin, ''),
+    isbn_10: toText(bookData.isbn_10 ?? releaseData.isbn_10, ''),
+    isbn_13: toText(bookData.isbn_13 ?? releaseData.isbn_13, ''),
+    content_type: toText(payload.context?.content_type, ''),
     year: toText(bookData.year ?? releaseData.year, ''),
     seriesLine,
     preview,

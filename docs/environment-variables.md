@@ -19,6 +19,7 @@ This document lists all configuration options that can be set via environment va
 - [AudiobookBay](#audiobookbay)
 - [IRC](#irc)
 - [Audiobookshelf](#audiobookshelf)
+- [Grimmory](#grimmory)
 - [Download Clients](#download-clients)
 - [Metadata Providers](#metadata-providers)
   - [Audible](#metadata-providers-audible)
@@ -318,6 +319,7 @@ Default language filter for searches.
 | `AA_DEFAULT_SORT` | Default sort order for search results. | string (choice) | `relevance` |
 | `SHOW_RELEASE_SOURCE_LINKS` | Show clickable release-source links in release and details modals. Metadata provider links stay enabled. | boolean | `true` |
 | `SHOW_COMBINED_SELECTOR` | Show the option to search for and download both a book and audiobook together. | boolean | `true` |
+| `SHOW_DISCOVER_ROWS` | Show trending and new-release rows on the home page before a search. Sourced from Hardcover or Audible depending on the configured metadata provider. | boolean | `true` |
 | `FORCE_COMBINED_SEARCH` | Force combined search whenever it's available. Locks the combined toggle on. | boolean | `false` |
 | `METADATA_PROVIDER` | Choose which metadata provider to use for book searches. | string (choice) | `openlibrary` |
 | `METADATA_PROVIDER_AUDIOBOOK` | Metadata provider for audiobook searches. Uses the book provider if not set. | string (choice) | _empty string_ |
@@ -362,6 +364,15 @@ Show clickable release-source links in release and details modals. Metadata prov
 **Show Combined Download Selector**
 
 Show the option to search for and download both a book and audiobook together.
+
+- **Type:** boolean
+- **Default:** `true`
+
+#### `SHOW_DISCOVER_ROWS`
+
+**Show Discover Rows**
+
+Show trending and new-release rows on the home page before a search. Sourced from Hardcover or Audible depending on the configured metadata provider.
 
 - **Type:** boolean
 - **Default:** `true`
@@ -437,9 +448,6 @@ The release source tab to open by default in the release modal for audiobooks. U
 | `TEMPLATE_RENAME` | Variables: {Author}, {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. Rename templates are filename-only (no '/' or '\'); use Organize for folders. Applies to single-file downloads. | string | `{Author} - {Title} ({Year})` |
 | `TEMPLATE_ORGANIZE` | Use / to create folders. Variables: {Author}, {Title}, {Year}, {Language}, {User}, {OriginalName} (source filename without extension). Universal adds: {Series}, {SeriesPosition}, {Subtitle}, {PrimaryTitle}. Use arbitrary prefix/suffix: {Vol. SeriesPosition - } outputs 'Vol. 2 - ' when set, nothing when empty. | string | `{Author}/{Title} ({Year})` |
 | `HARDLINK_TORRENTS` | Create hardlinks instead of copying. Preserves seeding but archives won't be extracted. Don't use if destination is a library ingest folder. | boolean | `false` |
-| `BOOKLORE_HOST` | Base URL of your Grimmory instance | string | _none_ |
-| `BOOKLORE_USERNAME` | Grimmory account username | string | _none_ |
-| `BOOKLORE_PASSWORD` | Grimmory account password | string (secret) | _none_ |
 | `BOOKLORE_DESTINATION` | Choose whether uploads go directly to a specific library path or to Bookdrop for review. | string (choice) | `library` |
 | `BOOKLORE_LIBRARY_ID` | Grimmory library to upload into. | string (choice) | _none_ |
 | `BOOKLORE_PATH_ID` | Grimmory library path for uploads. | string (choice) | _none_ |
@@ -523,36 +531,6 @@ Create hardlinks instead of copying. Preserves seeding but archives won't be ext
 
 - **Type:** boolean
 - **Default:** `false`
-
-#### `BOOKLORE_HOST`
-
-**Grimmory URL**
-
-Base URL of your Grimmory instance
-
-- **Type:** string
-- **Default:** _none_
-- **Required:** Yes
-
-#### `BOOKLORE_USERNAME`
-
-**Username**
-
-Grimmory account username
-
-- **Type:** string
-- **Default:** _none_
-- **Required:** Yes
-
-#### `BOOKLORE_PASSWORD`
-
-**Password**
-
-Grimmory account password
-
-- **Type:** string (secret)
-- **Default:** _none_
-- **Required:** Yes
 
 #### `BOOKLORE_DESTINATION`
 
@@ -805,7 +783,7 @@ Select the authentication method for accessing Shelfmark. Restart container afte
 
 - **Type:** string (choice)
 - **Default:** `none`
-- **Options:** `none` (No Authentication), `builtin` (Local), `proxy` (Proxy Authentication), `oidc` (OIDC (OpenID Connect)), `cwa` (Calibre-Web Database)
+- **Options:** `none` (No Authentication), `builtin` (Local), `proxy` (Proxy Authentication), `oidc` (OIDC (OpenID Connect)), `cwa` (Calibre-Web Database), `abs` (Audiobookshelf)
 
 #### `PROXY_AUTH_USER_HEADER`
 
@@ -1571,6 +1549,80 @@ Turn off to stop indexing and hide the badges.
 **Refresh interval (hours)**
 
 How often the index is rebuilt. Books added to Audiobookshelf since the last refresh will not be flagged yet.
+
+- **Type:** number
+- **Default:** `1`
+- **Constraints:** min: 1, max: 168
+
+</details>
+
+## Grimmory
+
+| Variable | Description | Type | Default |
+|----------|-------------|------|---------|
+| `BOOKLORE_ENABLED` | Turn on duplicate detection against your ebook library. | boolean | `false` |
+| `BOOKLORE_HOST` | Base URL of your Grimmory instance | string | _none_ |
+| `BOOKLORE_USERNAME` | Grimmory account username. What this account can see is what gets indexed — a non-admin only sees its assigned libraries. | string | _none_ |
+| `BOOKLORE_PASSWORD` | Grimmory account password | string (secret) | _none_ |
+| `BOOKLORE_LIBRARY_INDEX_ENABLED` | Turn off to stop indexing and hide the badges. | boolean | `true` |
+| `BOOKLORE_INDEX_INTERVAL_HOURS` | How often the index is rebuilt. Books added to Grimmory since the last refresh will not be flagged yet. | number | `1` |
+
+<details>
+<summary>Detailed descriptions</summary>
+
+#### `BOOKLORE_ENABLED`
+
+**Enable Grimmory integration**
+
+Turn on duplicate detection against your ebook library.
+
+- **Type:** boolean
+- **Default:** `false`
+
+#### `BOOKLORE_HOST`
+
+**Grimmory URL**
+
+Base URL of your Grimmory instance
+
+- **Type:** string
+- **Default:** _none_
+- **Required:** Yes
+
+#### `BOOKLORE_USERNAME`
+
+**Username**
+
+Grimmory account username. What this account can see is what gets indexed — a non-admin only sees its assigned libraries.
+
+- **Type:** string
+- **Default:** _none_
+- **Required:** Yes
+
+#### `BOOKLORE_PASSWORD`
+
+**Password**
+
+Grimmory account password
+
+- **Type:** string (secret)
+- **Default:** _none_
+- **Required:** Yes
+
+#### `BOOKLORE_LIBRARY_INDEX_ENABLED`
+
+**Flag ebooks already in your library**
+
+Turn off to stop indexing and hide the badges.
+
+- **Type:** boolean
+- **Default:** `true`
+
+#### `BOOKLORE_INDEX_INTERVAL_HOURS`
+
+**Refresh interval (hours)**
+
+How often the index is rebuilt. Books added to Grimmory since the last refresh will not be flagged yet.
 
 - **Type:** number
 - **Default:** `1`

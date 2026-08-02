@@ -87,6 +87,7 @@ import { withBasePath } from './utils/basePath';
 import { emitBookTargetChange } from './utils/bookTargetEvents';
 import { bookSupportsTargets } from './utils/bookTargetLoader';
 import { buildSearchQuery } from './utils/buildSearchQuery';
+import { contentTypeForDiscoverDetails } from './utils/discoverRows';
 import { wasDownloadQueuedAfterResponseError } from './utils/downloadRecovery';
 import { getDynamicOptionGroup } from './utils/dynamicFieldOptions';
 import { getConfiguredMetadataProviderForContentType } from './utils/metadataProviders';
@@ -993,19 +994,26 @@ function App() {
       showToast('Failed to load book details', 'error');
       return;
     }
+    // DiscoverSection only tags books internally for its own library lookup —
+    // it renders (and hands off to onDetails) the untagged row.books entries,
+    // so this is where the tile gets its per-book content_type before the
+    // modal opens. See contentTypeForDiscoverDetails (discoverRows.ts) for
+    // why the gate is mode-dependent.
+    const discoverContentType = contentTypeForDiscoverDetails(book, effectiveCombinedMode);
+    const taggedBook = discoverContentType ? { ...book, content_type: discoverContentType } : book;
     try {
-      const fullBook = await getMetadataBookInfo(book.provider, book.provider_id);
+      const fullBook = await getMetadataBookInfo(taggedBook.provider, taggedBook.provider_id);
       setSelectedBook({
-        ...book,
-        description: fullBook.description || book.description,
-        series_id: fullBook.series_id || book.series_id,
+        ...taggedBook,
+        description: fullBook.description || taggedBook.description,
+        series_id: fullBook.series_id || taggedBook.series_id,
         series_name: fullBook.series_name,
         series_position: fullBook.series_position,
         series_count: fullBook.series_count,
       });
     } catch (error) {
       console.error('Failed to load book description, using discover data:', error);
-      setSelectedBook(book);
+      setSelectedBook(taggedBook);
     }
   };
 
@@ -2623,7 +2631,7 @@ function App() {
             getButtonState={getDirectActionButtonState}
             getUniversalButtonState={getUniversalActionButtonState}
             openRequestKeys={openRequestKeys}
-            showInLibraryBadges={!effectiveCombinedMode && effectiveContentType === 'audiobook'}
+            defaultContentType={effectiveContentType}
             sortValue={visibleResultsSort}
             showSortControl={
               !activeQueryUsesSeriesBrowse && !activeQueryUsesListBrowse && !resultsSourceUrl
@@ -2674,7 +2682,7 @@ function App() {
                   : getDirectActionButtonState(selectedBook.id)
               }
               showReleaseSourceLinks={config?.show_release_source_links !== false}
-              showInLibraryBadge={!effectiveCombinedMode && effectiveContentType === 'audiobook'}
+              defaultContentType={effectiveContentType}
             />
           )}
 

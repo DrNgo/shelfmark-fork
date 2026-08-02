@@ -80,13 +80,11 @@ def test_download_settings_grimmory_copy_is_exposed_in_ui_metadata():
     heading_field = next(
         field for field in fields if getattr(field, "key", None) == "booklore_heading"
     )
-    url_field = next(field for field in fields if getattr(field, "key", None) == "BOOKLORE_HOST")
 
     assert grimmory_option["label"] == "Grimmory (API)"
     assert grimmory_option["description"] == "Upload files directly to Grimmory"
     assert heading_field.title == "Grimmory"
     assert "(Formerly Booklore)" in heading_field.description
-    assert url_field.label == "Grimmory URL"
 
 
 def test_download_settings_booklore_library_and_path_depend_on_library_destination():

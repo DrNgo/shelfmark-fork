@@ -13,9 +13,12 @@ import { useDependencyEffect } from './useMountEffect';
  * A failed lookup resolves to no matches rather than an error: the badge is
  * advisory, so losing it should be invisible, never a blocked search.
  */
-export const useLibraryMatches = (books: Book[]): Record<string, LibraryMatch> => {
+export const useLibraryMatches = (
+  books: Book[],
+  defaultContentType?: string,
+): Record<string, LibraryMatch> => {
   const [matches, setMatches] = useState<Record<string, LibraryMatch>>({});
-  const signature = booksLookupSignature(books);
+  const signature = booksLookupSignature(books, defaultContentType);
 
   useDependencyEffect(() => {
     if (!signature) {
@@ -24,7 +27,7 @@ export const useLibraryMatches = (books: Book[]): Record<string, LibraryMatch> =
     }
 
     let cancelled = false;
-    void getLibraryMatches(buildLibraryLookupPayload(books))
+    void getLibraryMatches(buildLibraryLookupPayload(books, defaultContentType))
       .then((response) => {
         if (!cancelled) {
           setMatches(response.enabled ? response.matches : {});
@@ -39,8 +42,8 @@ export const useLibraryMatches = (books: Book[]): Record<string, LibraryMatch> =
     return () => {
       cancelled = true;
     };
-    // Keyed by the book ids only: re-running on the array identity would refetch
-    // on every parent render.
+    // Keyed by the signature only: re-running on the array identity would
+    // refetch on every parent render.
   }, [signature]);
 
   return matches;

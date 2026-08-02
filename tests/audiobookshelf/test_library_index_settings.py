@@ -3,7 +3,7 @@
 from unittest.mock import patch
 
 from shelfmark.audiobookshelf import settings
-from shelfmark.audiobookshelf.library_sync import SyncResult
+from shelfmark.library.scheduler import SyncResult
 
 
 def field_map():
@@ -37,7 +37,7 @@ class TestSyncLibraryIndexNow:
 
     def test_reports_the_indexed_count_on_success(self):
         with patch(
-            "shelfmark.audiobookshelf.library_sync.run_sync_now",
+            "shelfmark.library.scheduler.run_sync_now",
             return_value=SyncResult(success=True, item_count=412, message="Indexed 412 items"),
         ):
             result = settings.sync_library_index_now()
@@ -47,7 +47,7 @@ class TestSyncLibraryIndexNow:
 
     def test_reports_why_a_sync_failed(self):
         with patch(
-            "shelfmark.audiobookshelf.library_sync.run_sync_now",
+            "shelfmark.library.scheduler.run_sync_now",
             return_value=SyncResult(success=False, item_count=0, message="Connection refused"),
         ):
             result = settings.sync_library_index_now()
@@ -58,7 +58,7 @@ class TestSyncLibraryIndexNow:
     def test_surfaces_an_unexpected_failure_instead_of_raising(self):
         """A settings button that 500s tells the admin nothing about their setup."""
         with patch(
-            "shelfmark.audiobookshelf.library_sync.run_sync_now",
+            "shelfmark.library.scheduler.run_sync_now",
             side_effect=OSError("disk full"),
         ):
             result = settings.sync_library_index_now()

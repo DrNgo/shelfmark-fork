@@ -351,6 +351,7 @@ def generate_env_docs() -> str:
     import shelfmark.audiobookshelf.settings
     import shelfmark.config.security
     import shelfmark.config.settings
+    import shelfmark.grimmory.settings
     import shelfmark.metadata_providers.googlebooks
     import shelfmark.metadata_providers.hardcover
     import shelfmark.metadata_providers.openlibrary

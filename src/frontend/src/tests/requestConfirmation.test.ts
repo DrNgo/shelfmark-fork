@@ -64,6 +64,31 @@ describe('requestConfirmation utilities', () => {
     expect(buildRequestConfirmationPreview(releasePayload).asin).toBe('');
   });
 
+  it('surfaces the content type from the request context, so the library lookup matches the right format', () => {
+    const preview = buildRequestConfirmationPreview({
+      ...releasePayload,
+      context: { ...releasePayload.context, content_type: 'audiobook' },
+    });
+
+    expect(preview.content_type).toBe('audiobook');
+  });
+
+  it('surfaces an ISBN so the confirmation can match the library exactly', () => {
+    const preview = buildRequestConfirmationPreview({
+      ...releasePayload,
+      book_data: { ...releasePayload.book_data, isbn_13: '9780593135204' },
+    });
+
+    expect(preview.isbn_13).toBe('9780593135204');
+  });
+
+  it('leaves ISBNs empty when the provider had none', () => {
+    const preview = buildRequestConfirmationPreview(releasePayload);
+
+    expect(preview.isbn_13).toBe('');
+    expect(preview.isbn_10).toBe('');
+  });
+
   it('omits release line for book-level payloads', () => {
     const preview = buildRequestConfirmationPreview(bookPayload);
 

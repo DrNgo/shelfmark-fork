@@ -1,8 +1,8 @@
 import type { Book, ContentType, CreateRequestPayload, Release } from '../types';
 
-export const toContentType = (value: string): ContentType => {
-  return value.trim().toLowerCase() === 'audiobook' ? 'audiobook' : 'ebook';
-};
+// Re-exported for backward compatibility: several modules and tests import
+// this from here rather than from ../utils/mediaType, where it is defined.
+export { toContentType } from './mediaType';
 
 export const getBrowseSource = (book: Book): string => {
   const source = book.source || book.provider;

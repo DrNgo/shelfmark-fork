@@ -3,10 +3,6 @@
 from typing import TYPE_CHECKING, Any
 
 from shelfmark.audiobookshelf.destinations import DESTINATION_MAP_KEY
-from shelfmark.audiobookshelf.library_sync import (
-    LIBRARY_INDEX_ENABLED_KEY,
-    LIBRARY_INDEX_INTERVAL_KEY,
-)
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.request_helpers import normalize_optional_text
 from shelfmark.core.settings_registry import (
@@ -22,6 +18,10 @@ from shelfmark.core.settings_registry import (
     register_settings,
 )
 from shelfmark.core.utils import normalize_http_url
+from shelfmark.library.providers.audiobookshelf import (
+    LIBRARY_INDEX_ENABLED_KEY,
+    LIBRARY_INDEX_INTERVAL_KEY,
+)
 
 if TYPE_CHECKING:
     from shelfmark.audiobookshelf.client import AudiobookshelfClient, AudiobookshelfLibrary
@@ -240,12 +240,12 @@ def sync_library_index_now(current_values: dict[str, Any] | None = None) -> dict
     """
     del current_values
 
-    from shelfmark.audiobookshelf import library_sync
-    from shelfmark.audiobookshelf.client import ABS_CLIENT_ERRORS
+    from shelfmark.library import scheduler
+    from shelfmark.library.index import SOURCE_AUDIOBOOKSHELF
 
     try:
-        result = library_sync.run_sync_now()
-    except (*ABS_CLIENT_ERRORS, *_SETTINGS_ERRORS) as e:
+        result = scheduler.run_sync_now(SOURCE_AUDIOBOOKSHELF)
+    except _SETTINGS_ERRORS as e:
         return {"success": False, "message": f"Library sync failed: {e!s}"}
 
     return {"success": result.success, "message": result.message}
