@@ -6,6 +6,7 @@ import { ActivitySidebar } from './components/activity';
 import { AdvancedFilters } from './components/AdvancedFilters';
 import { ConfigSetupBanner } from './components/ConfigSetupBanner';
 import { DetailsModal } from './components/DetailsModal';
+import { DiscoverSection } from './components/DiscoverSection';
 import { Footer } from './components/Footer';
 import { Header } from './components/Header';
 import { MetadataConfigSession } from './components/MetadataConfigSession';
@@ -980,6 +981,31 @@ function App() {
           showToast('Failed to load book details', 'error');
         }
       }
+    }
+  };
+
+  // Discover tiles hold Books that are not in search-results state, so details
+  // enrichment takes the Book itself instead of an id looked up in `books`.
+  const handleShowDiscoverDetails = async (book: Book): Promise<void> => {
+    // Book.provider/provider_id are optional; isMetadataBook (types/index.ts:356)
+    // narrows them to string. Discover books always satisfy it in practice.
+    if (!isMetadataBook(book)) {
+      showToast('Failed to load book details', 'error');
+      return;
+    }
+    try {
+      const fullBook = await getMetadataBookInfo(book.provider, book.provider_id);
+      setSelectedBook({
+        ...book,
+        description: fullBook.description || book.description,
+        series_id: fullBook.series_id || book.series_id,
+        series_name: fullBook.series_name,
+        series_position: fullBook.series_position,
+        series_count: fullBook.series_count,
+      });
+    } catch (error) {
+      console.error('Failed to load book description, using discover data:', error);
+      setSelectedBook(book);
     }
   };
 
@@ -2567,6 +2593,25 @@ function App() {
             onMetadataProviderChange={handleMetadataProviderChange}
             isAdmin={requestRoleIsAdmin}
           />
+
+          {isInitialState &&
+            isAuthenticated &&
+            config?.show_discover_rows &&
+            effectiveSearchMode === 'universal' && (
+              <DiscoverSection
+                contentType={effectiveCombinedMode ? 'combined' : effectiveContentType}
+                providerName={
+                  effectiveCombinedMode
+                    ? configuredCombinedMetadataProvider
+                    : (effectiveContentType === 'audiobook'
+                        ? (configuredAudiobookMetadataProvider ?? configuredMetadataProvider)
+                        : configuredMetadataProvider)
+                }
+                openRequestKeys={openRequestKeys}
+                getButtonState={getUniversalActionButtonState}
+                onDetails={(book) => void handleShowDiscoverDetails(book)}
+              />
+            )}
 
           <ResultsSection
             books={books}
