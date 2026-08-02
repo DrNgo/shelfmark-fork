@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { useSearchMode } from '../../contexts/SearchModeContext';
 import type { Book, ButtonStateInfo } from '../../types';
 import { bookSupportsTargets } from '../../utils/bookTargetLoader';
+import { summarizeNameList } from '../../utils/displayFields';
 import type { LibraryMatch } from '../../utils/libraryMatches';
 import { BookActionButton } from '../BookActionButton';
 import { BookTargetDropdown } from '../BookTargetDropdown';
@@ -223,9 +224,14 @@ export const CompactView = ({
               {/* max-h-9 = two text-xs lines; a long field (e.g. a full-cast
                   reader list in `users`) clips instead of growing the card. */}
               <DisplayFieldBadges
-                fields={book.display_fields.filter(
-                  (f) => f.icon !== 'editions' && f.icon !== 'microphone',
-                )}
+                fields={book.display_fields
+                  .filter((f) => f.icon !== 'editions' && f.icon !== 'microphone')
+                  .map((f) =>
+                    // Full-cast reader lists (users icon) clip mid-line otherwise.
+                    f.icon === 'users'
+                      ? Object.assign({}, f, { value: summarizeNameList(f.value) })
+                      : f,
+                  )}
                 className="max-h-9 overflow-hidden text-xs opacity-70"
               />
               {microphoneField && (
@@ -234,7 +240,7 @@ export const CompactView = ({
                   title={microphoneField.value}
                 >
                   <DisplayFieldIcon icon="microphone" className="h-3 w-3 shrink-0" />
-                  <span className="truncate">{microphoneField.value}</span>
+                  <span className="truncate">{summarizeNameList(microphoneField.value)}</span>
                 </div>
               )}
             </>

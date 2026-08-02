@@ -5,6 +5,7 @@ import type { Book, ButtonStateInfo, DisplayField } from '../../types';
 import { bookSupportsTargets } from '../../utils/bookTargetLoader';
 import { getFormatColor, getLanguageColor } from '../../utils/colorMaps';
 import type { LibraryMatch } from '../../utils/libraryMatches';
+import { summarizeNameList } from '../../utils/displayFields';
 import { isBookRequested } from '../../utils/requestedBooks';
 import { BookActionButton } from '../BookActionButton';
 import { BookTargetDropdown } from '../BookTargetDropdown';
@@ -39,18 +40,6 @@ const getKeyedDisplayFields = (fields: DisplayField[]) => {
       key: nextCount === 1 ? signature : `${signature}|${nextCount}`,
     };
   });
-};
-
-// Full-cast productions list a dozen-plus narrators; the mobile info column is
-// an auto-sized grid track, so an unabridged list would swallow the whole row
-// and crush the title column to nothing.
-const summarizeNameList = (value: string): string => {
-  const names = value
-    .split(',')
-    .map((name) => name.trim())
-    .filter(Boolean);
-  if (names.length <= 2) return value;
-  return `${names[0]} +${names.length - 1} more`;
 };
 
 const ListViewThumbnail = ({
