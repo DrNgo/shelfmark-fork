@@ -1065,29 +1065,11 @@ def download_settings() -> list[SettingsField]:
         HeadingField(
             key="booklore_heading",
             title="Grimmory",
-            description="Upload books directly to Grimmory (Formerly Booklore) via API. Audiobooks always use folder mode.",
-            show_when={"field": "BOOKS_OUTPUT_MODE", "value": "booklore"},
-        ),
-        TextField(
-            key="BOOKLORE_HOST",
-            label="Grimmory URL",
-            description="Base URL of your Grimmory instance",
-            placeholder="http://booklore:6060",
-            required=True,
-            show_when={"field": "BOOKS_OUTPUT_MODE", "value": "booklore"},
-        ),
-        TextField(
-            key="BOOKLORE_USERNAME",
-            label="Username",
-            description="Grimmory account username",
-            required=True,
-            show_when={"field": "BOOKS_OUTPUT_MODE", "value": "booklore"},
-        ),
-        PasswordField(
-            key="BOOKLORE_PASSWORD",
-            label="Password",
-            description="Grimmory account password",
-            required=True,
+            description=(
+                "Upload books directly to Grimmory (Formerly Booklore) via API. Set the "
+                "server URL and credentials under Settings → Grimmory. Audiobooks always "
+                "use folder mode."
+            ),
             show_when={"field": "BOOKS_OUTPUT_MODE", "value": "booklore"},
         ),
         SelectField(
