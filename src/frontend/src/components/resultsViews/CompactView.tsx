@@ -92,7 +92,8 @@ export const CompactView = ({
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
-      <div className={`relative h-full shrink-0 ${isSquareCover ? 'w-[140px] sm:w-[180px]' : 'w-[120px]'}`}>
+      {/* Square art must stay square at every breakpoint: width = card height. */}
+      <div className={`relative h-full shrink-0 ${isSquareCover ? 'w-[180px]' : 'w-[120px]'}`}>
         <div className="absolute inset-0 overflow-hidden rounded-l-[.75rem]">
           {/* Series position badge */}
           {showSeriesPosition && book.series_position != null && (

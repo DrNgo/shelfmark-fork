@@ -53,7 +53,9 @@ const ListViewThumbnail = ({
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
   const isSquare = coverAspect === 'square';
-  const sizeClass = isSquare ? 'w-10 h-10 sm:w-14 sm:h-14' : 'w-7 h-10 sm:w-10 sm:h-14';
+  // Square audiobook rows run tall (wrapped narrator lists), so their art gets
+  // more room than the 2:3 book thumbs.
+  const sizeClass = isSquare ? 'w-16 h-16 sm:w-20 sm:h-20' : 'w-7 h-10 sm:w-10 sm:h-14';
 
   if (!preview || imageError) {
     return (
