@@ -87,6 +87,7 @@ import { withBasePath } from './utils/basePath';
 import { emitBookTargetChange } from './utils/bookTargetEvents';
 import { bookSupportsTargets } from './utils/bookTargetLoader';
 import { buildSearchQuery } from './utils/buildSearchQuery';
+import { contentTypeForDiscoverBook } from './utils/discoverRows';
 import { wasDownloadQueuedAfterResponseError } from './utils/downloadRecovery';
 import { getDynamicOptionGroup } from './utils/dynamicFieldOptions';
 import { getConfiguredMetadataProviderForContentType } from './utils/metadataProviders';
@@ -993,19 +994,27 @@ function App() {
       showToast('Failed to load book details', 'error');
       return;
     }
+    // Discover metadata never carries content_type (see discoverRows.ts), and
+    // DiscoverSection only tags books internally for its own library lookup —
+    // it renders (and hands off to onDetails) the untagged row.books entries.
+    // Tag it here the same way the grid does so DetailsModal's own lookup
+    // uses the book's real per-tile format instead of falling back to
+    // defaultContentType (the section-wide type combined rows deliberately
+    // don't use, since a combined row mixes formats).
+    const taggedBook = { ...book, content_type: contentTypeForDiscoverBook(book) };
     try {
-      const fullBook = await getMetadataBookInfo(book.provider, book.provider_id);
+      const fullBook = await getMetadataBookInfo(taggedBook.provider, taggedBook.provider_id);
       setSelectedBook({
-        ...book,
-        description: fullBook.description || book.description,
-        series_id: fullBook.series_id || book.series_id,
+        ...taggedBook,
+        description: fullBook.description || taggedBook.description,
+        series_id: fullBook.series_id || taggedBook.series_id,
         series_name: fullBook.series_name,
         series_position: fullBook.series_position,
         series_count: fullBook.series_count,
       });
     } catch (error) {
       console.error('Failed to load book description, using discover data:', error);
-      setSelectedBook(book);
+      setSelectedBook(taggedBook);
     }
   };
 

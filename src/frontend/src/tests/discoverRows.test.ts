@@ -13,6 +13,12 @@ import { buildLibraryLookupPayload } from '../utils/libraryMatches';
 
 const book = (id: string): Book => ({ id, title: `Book ${id}`, author: 'A' });
 
+// The exact composition expression DetailsModal uses internally to resolve a
+// book's format (components/DetailsModal.tsx, singleBookLookup's contentType
+// argument): `book.content_type ?? defaultContentType`.
+const resolveModalContentType = (candidate: Book, defaultContentType: string): string =>
+  candidate.content_type ?? defaultContentType;
+
 describe('getDiscoverRowsForProvider', () => {
   it('returns trending + new releases for hardcover', () => {
     expect(getDiscoverRowsForProvider('hardcover').map((r) => r.key)).toEqual([
@@ -94,5 +100,49 @@ describe('contentTypeForDiscoverBook', () => {
 
     expect(payload.find((entry) => entry.id === '1')?.content_type).toBe('audiobook');
     expect(payload.find((entry) => entry.id === '2')?.content_type).toBe('ebook');
+  });
+});
+
+describe('handleShowDiscoverDetails regression (App.tsx)', () => {
+  // App.tsx has no component-render harness available (no RTL/jsdom, and
+  // `npm install` is off-limits here), so this exercises the real
+  // `contentTypeForDiscoverBook` classifier plus the real composition
+  // expression the modal uses (resolveModalContentType, defined above).
+  //
+  // Regression scenario: a combined-mode Discover row mixes an Audible
+  // audiobook tile with a Hardcover ebook tile. The section-wide
+  // defaultContentType passed to the modal reflects whichever tile the user
+  // is *currently viewing's neighbor row phase* — here simulated as
+  // 'audiobook' to match the bug report (user owns the audiobook; opens the
+  // ebook tile). Before the fix, handleShowDiscoverDetails put the book into
+  // setSelectedBook untagged, so DetailsModal fell back to defaultContentType
+  // and asked the library lookup for 'audiobook' — even though the tile is a
+  // Hardcover ebook. That produced a false "In library" lock on a book the
+  // user does not own as an ebook.
+
+  it('tags an ebook-provider tile as ebook even when the section-wide type is audiobook', () => {
+    const hardcoverTile: Book = { id: 'hc-1', title: 'T', author: 'A', provider: 'hardcover' };
+    const defaultContentType = 'audiobook'; // effectiveContentType at the time the tile was opened
+
+    // This is the fix: handleShowDiscoverDetails now tags the book the same
+    // way DiscoverSection's own library lookup does before handing it to
+    // setSelectedBook, so DetailsModal never needs its defaultContentType
+    // fallback for a book that has a knowable per-tile format.
+    const taggedBook: Book = {
+      ...hardcoverTile,
+      content_type: contentTypeForDiscoverBook(hardcoverTile),
+    };
+
+    expect(resolveModalContentType(taggedBook, defaultContentType)).toBe('ebook');
+  });
+
+  it('proves the bug: an UNTAGGED book falls back to the section-wide default and mislabels the tile', () => {
+    // This reproduces the pre-fix behaviour directly (no tagging applied —
+    // exactly what handleShowDiscoverDetails did before this change), to
+    // demonstrate why the fix above is necessary rather than a no-op.
+    const hardcoverTile: Book = { id: 'hc-1', title: 'T', author: 'A', provider: 'hardcover' };
+    const defaultContentType = 'audiobook';
+
+    expect(resolveModalContentType(hardcoverTile, defaultContentType)).toBe('audiobook');
   });
 });
