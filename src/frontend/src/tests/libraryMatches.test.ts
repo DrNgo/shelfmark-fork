@@ -5,6 +5,7 @@ import {
   applyInLibraryLock,
   booksLookupSignature,
   buildLibraryLookupPayload,
+  isHeldInFormat,
   libraryMatchTooltip,
   singleBookLookup,
 } from '../utils/libraryMatches';
@@ -21,14 +22,18 @@ const match = (overrides: Partial<LibraryMatch> = {}): LibraryMatch => ({
   libraries: ['Audiobooks'],
   items: [
     {
+      source: 'audiobookshelf',
+      media_type: 'audiobook',
       item_id: 'li_1',
       library_id: 'lib_books',
       library_name: 'Audiobooks',
       title: 'The Housemaid',
       author: 'Freida McFadden',
       asin: 'B0BSHZ1234',
+      isbn13: '',
     },
   ],
+  other_formats: [],
   ...overrides,
 });
 
@@ -61,8 +66,10 @@ describe('buildLibraryLookupPayload', () => {
 
   it('keeps a book that has an ASIN but no usable author', () => {
     // An ASIN is a complete identity where half a title+author key is not.
+    // An empty author is not a value, so it is omitted from the payload
+    // rather than sent as an empty string.
     expect(buildLibraryLookupPayload([book({ author: '', asin: 'B0BSHZ1234' })])).toEqual([
-      { id: 'bk1', title: 'The Housemaid', author: '', asin: 'B0BSHZ1234' },
+      { id: 'bk1', title: 'The Housemaid', asin: 'B0BSHZ1234' },
     ]);
   });
 
@@ -99,6 +106,12 @@ describe('singleBookLookup', () => {
     expect(singleBookLookup('review', '', undefined, 'B0BSHZ1234')).toEqual([
       { id: 'review', title: '', author: '', asin: 'B0BSHZ1234' },
     ]);
+  });
+
+  it('carries the content type through so an audiobook surface matches its own format', () => {
+    expect(singleBookLookup('x', 'T', 'A', undefined, undefined, 'audiobook')[0]).toMatchObject({
+      content_type: 'audiobook',
+    });
   });
 });
 
@@ -189,5 +202,151 @@ describe('applyInLibraryLock', () => {
     const blocked: ButtonStateInfo = { state: 'blocked', text: 'Unavailable' };
 
     expect(applyInLibraryLock(blocked, true)).toBe(blocked);
+  });
+});
+
+describe('buildLibraryLookupPayload with ISBNs', () => {
+  it('forwards both ISBN spellings and the content type', () => {
+    const payload = buildLibraryLookupPayload([
+      {
+        id: 'b1',
+        title: 'The Housemaid',
+        author: 'Freida McFadden',
+        isbn_13: '9780593135204',
+        content_type: 'ebook',
+      },
+    ]);
+
+    expect(payload[0]).toEqual({
+      id: 'b1',
+      title: 'The Housemaid',
+      author: 'Freida McFadden',
+      isbn_13: '9780593135204',
+      content_type: 'ebook',
+    });
+  });
+
+  it('keeps a book that has only an ISBN', () => {
+    const payload = buildLibraryLookupPayload([
+      { id: 'b1', title: '', author: '', isbn_10: '0306406152' },
+    ]);
+
+    expect(payload).toHaveLength(1);
+  });
+
+  it('still drops a book with no title, author, ASIN or ISBN', () => {
+    expect(
+      buildLibraryLookupPayload([{ id: 'b1', title: 'Half a key', author: '' }]),
+    ).toEqual([]);
+  });
+
+  it('falls back to the surface content type when a book carries none', () => {
+    const payload = buildLibraryLookupPayload(
+      [{ id: 'b1', title: '', author: '', isbn_10: '0306406152' }],
+      'audiobook',
+    );
+
+    expect(payload[0].content_type).toBe('audiobook');
+  });
+});
+
+describe('booksLookupSignature', () => {
+  it('changes when the content type changes, so a format switch refetches', () => {
+    const signatureBook = { id: 'b1', title: 'T', author: 'A' };
+
+    expect(booksLookupSignature([signatureBook], 'ebook')).not.toBe(
+      booksLookupSignature([signatureBook], 'audiobook'),
+    );
+  });
+
+  it('changes when an ISBN is added', () => {
+    const base = { id: 'b1', title: 'T', author: 'A' };
+
+    expect(booksLookupSignature([base])).not.toBe(
+      booksLookupSignature([{ ...base, isbn_13: '9780593135204' }]),
+    );
+  });
+});
+
+describe('isHeldInFormat', () => {
+  const held: LibraryMatch = {
+    libraries: ['Ebooks'],
+    items: [
+      {
+        source: 'grimmory',
+        media_type: 'ebook',
+        item_id: '1',
+        library_id: '7',
+        library_name: 'Ebooks',
+        title: 'The Housemaid',
+        author: 'Freida McFadden',
+        asin: '',
+        isbn13: '9780593135204',
+      },
+    ],
+    other_formats: [],
+  };
+  const otherOnly: LibraryMatch = { ...held, items: [], other_formats: held.items };
+
+  it('is true when the same format is held', () => {
+    expect(isHeldInFormat(held)).toBe(true);
+  });
+
+  it('is false when only another format is held', () => {
+    expect(isHeldInFormat(otherOnly)).toBe(false);
+  });
+
+  it('is false when there is no match at all', () => {
+    expect(isHeldInFormat(undefined)).toBe(false);
+  });
+});
+
+describe('applyInLibraryLock', () => {
+  it('does not lock acquisition when only another format is held', () => {
+    const otherOnly: LibraryMatch = {
+      libraries: [],
+      items: [],
+      other_formats: [
+        {
+          source: 'audiobookshelf',
+          media_type: 'audiobook',
+          item_id: 'abs_1',
+          library_id: 'lib',
+          library_name: 'Audiobooks',
+          title: 'The Housemaid',
+          author: 'Freida McFadden',
+          asin: '',
+          isbn13: '',
+        },
+      ],
+    };
+
+    expect(applyInLibraryLock({ state: 'download', text: 'Download' }, isHeldInFormat(otherOnly)))
+      .toEqual({ state: 'download', text: 'Download' });
+  });
+});
+
+describe('libraryMatchTooltip', () => {
+  it('names the other format without implying ownership of this one', () => {
+    const otherOnly: LibraryMatch = {
+      libraries: [],
+      items: [],
+      other_formats: [
+        {
+          source: 'audiobookshelf',
+          media_type: 'audiobook',
+          item_id: 'abs_1',
+          library_id: 'lib',
+          library_name: 'Audiobooks',
+          title: 'The Housemaid',
+          author: 'Freida McFadden',
+          asin: 'B09XYZ1234',
+          isbn13: '',
+        },
+      ],
+    };
+
+    expect(libraryMatchTooltip(otherOnly)).toContain('as an audiobook');
+    expect(libraryMatchTooltip(otherOnly)).not.toContain('Already in your library: ');
   });
 });
