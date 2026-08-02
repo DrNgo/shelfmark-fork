@@ -93,9 +93,23 @@ export const CompactView = ({
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
-      {/* Square art must stay square at every breakpoint: width = card height. */}
-      <div className={`relative h-full shrink-0 ${isSquareCover ? 'w-[180px]' : 'w-[120px]'}`}>
-        <div className="absolute inset-0 overflow-hidden rounded-l-[.75rem]">
+      {/* Square art stays square everywhere, but on phones a full-height
+          square column ate half the row — there it renders as a smaller
+          inset thumbnail; from sm up it stays the flush 180px column. */}
+      <div
+        className={`relative h-full shrink-0 ${
+          isSquareCover
+            ? 'max-sm:flex max-sm:w-[124px] max-sm:items-center max-sm:justify-center sm:w-[180px]'
+            : 'w-[120px]'
+        }`}
+      >
+        <div
+          className={
+            isSquareCover
+              ? 'overflow-hidden max-sm:relative max-sm:h-[104px] max-sm:w-[104px] max-sm:rounded-lg max-sm:shadow-sm sm:absolute sm:inset-0 sm:rounded-l-[.75rem]'
+              : 'absolute inset-0 overflow-hidden rounded-l-[.75rem]'
+          }
+        >
           {/* Series position badge */}
           {showSeriesPosition && book.series_position != null && (
             <div
