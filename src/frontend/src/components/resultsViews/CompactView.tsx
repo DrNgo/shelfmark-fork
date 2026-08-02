@@ -48,6 +48,9 @@ export const CompactView = ({
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const targetProvider = book.provider;
   const targetBookId = book.provider_id;
+  // Square audiobook art gets a square cover column (width = card height);
+  // portrait book covers keep the 2:3 column.
+  const isSquareCover = book.cover_aspect === 'square';
   const microphoneField = book.display_fields?.find((field) => field.icon === 'microphone');
   let zIndex: number | undefined;
   if (dropdownOpen) {
@@ -89,7 +92,7 @@ export const CompactView = ({
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
-      <div className="relative h-full w-[120px] shrink-0">
+      <div className={`relative h-full shrink-0 ${isSquareCover ? 'w-[140px] sm:w-[180px]' : 'w-[120px]'}`}>
         <div className="absolute inset-0 overflow-hidden rounded-l-[.75rem]">
           {/* Series position badge */}
           {showSeriesPosition && book.series_position != null && (
@@ -119,7 +122,7 @@ export const CompactView = ({
                   opacity: imageLoaded ? 1 : 0,
                   transition: 'opacity 0.3s ease-in-out',
                   objectFit: 'cover',
-                  objectPosition: 'top',
+                  objectPosition: isSquareCover ? 'center' : 'top',
                 }}
                 onLoad={() => setImageLoaded(true)}
                 onError={() => setImageError(true)}

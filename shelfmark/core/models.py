@@ -98,6 +98,7 @@ class DownloadTask:
     format: str | None = None
     size: str | None = None
     preview: str | None = None
+    cover_aspect: str | None = None  # "square" for audiobook art; portrait when unset
     content_type: str | None = None  # "book (fiction)", "audiobook", "magazine", etc.
     source_url: str | None = None  # Original release URL used by source-specific handlers
     retry_download_url: str | None = None  # Resolved download URL for restart-safe retries

@@ -515,6 +515,7 @@ export type DownloadReleasePayload = {
   seeders?: number;
   extra?: Record<string, unknown>;
   preview?: string; // Book cover from metadata provider
+  cover_aspect?: 'portrait' | 'square'; // Cover art shape hint (square = audiobook art)
   content_type?: string; // "ebook" or "audiobook" - for directory routing
   series_name?: string;
   series_position?: number;

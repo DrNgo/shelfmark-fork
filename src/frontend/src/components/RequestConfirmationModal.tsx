@@ -256,12 +256,18 @@ function RequestConfirmationModalSession({
         <div className="space-y-4 px-6 py-5">
           <div className="rounded-xl border border-(--border-muted) bg-(--bg-soft) px-4 py-4">
             <div className="flex gap-4">
-              <div className="h-24 w-16 shrink-0 overflow-hidden rounded-lg border border-(--border-muted) bg-(--bg)">
+              <div
+                className={`h-24 shrink-0 overflow-hidden rounded-lg border border-(--border-muted) bg-(--bg) ${
+                  preview.coverAspect === 'square' ? 'w-24' : 'w-16'
+                }`}
+              >
                 {preview.preview ? (
                   <img
                     src={preview.preview}
                     alt={`${preview.title} cover`}
-                    className="h-full w-full object-cover object-top"
+                    className={`h-full w-full object-cover ${
+                      preview.coverAspect === 'square' ? 'object-center' : 'object-top'
+                    }`}
                   />
                 ) : (
                   <div className="flex h-full w-full items-center justify-center text-[10px] opacity-60">

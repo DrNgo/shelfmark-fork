@@ -36,6 +36,7 @@ export interface RequestConfirmationPreview {
   year: string;
   seriesLine: string;
   preview: string;
+  coverAspect: 'portrait' | 'square';
   releaseLine: string;
 }
 
@@ -57,6 +58,10 @@ export const buildRequestConfirmationPreview = (
   } else if (typeof releaseData.preview === 'string') {
     preview = releaseData.preview;
   }
+  const coverAspect =
+    bookData.cover_aspect === 'square' || releaseData.cover_aspect === 'square'
+      ? ('square' as const)
+      : ('portrait' as const);
 
   return {
     title: toText(bookData.title ?? releaseData.title, 'Untitled'),
@@ -65,6 +70,7 @@ export const buildRequestConfirmationPreview = (
     year: toText(bookData.year ?? releaseData.year, ''),
     seriesLine,
     preview,
+    coverAspect,
     releaseLine:
       requestLevel === 'release'
         ? [

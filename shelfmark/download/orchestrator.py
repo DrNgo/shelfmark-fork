@@ -235,6 +235,7 @@ def queue_release(
         author = release_data.get("author") or extra.get("author")
         year = release_data.get("year") or extra.get("year")
         preview = release_data.get("preview") or extra.get("preview")
+        cover_aspect = release_data.get("cover_aspect") or extra.get("cover_aspect")
         content_type = release_data.get("content_type") or extra.get("content_type")
         source_url_raw = (
             release_data.get("download_url")
@@ -288,6 +289,7 @@ def queue_release(
             format=release_data.get("format"),
             size=release_data.get("size"),
             preview=preview,
+            cover_aspect=cover_aspect,
             content_type=content_type,
             source_url=source_url,
             series_name=series_name,
@@ -425,6 +427,7 @@ def serialize_task_for_retry(task: DownloadTask) -> dict[str, Any]:
         "format": getattr(task, "format", None),
         "size": getattr(task, "size", None),
         "preview": getattr(task, "preview", None),
+        "cover_aspect": getattr(task, "cover_aspect", None),
         "content_type": getattr(task, "content_type", None),
         "source_url": getattr(task, "source_url", None),
         "series_name": getattr(task, "series_name", None),
@@ -486,6 +489,7 @@ def _restore_task_from_retry_payload(payload: object) -> DownloadTask | None:
         format=normalize_optional_text(payload.get("format")),
         size=normalize_optional_text(payload.get("size")),
         preview=normalize_optional_text(payload.get("preview")),
+        cover_aspect=normalize_optional_text(payload.get("cover_aspect")),
         content_type=normalize_optional_text(payload.get("content_type")),
         source_url=normalize_optional_text(payload.get("source_url")),
         series_name=normalize_optional_text(payload.get("series_name")),

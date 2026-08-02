@@ -22,6 +22,8 @@ export interface ActivityItem {
   title: string;
   author: string;
   preview?: string;
+  /** Cover art shape hint ('square' for audiobook art); portrait when absent. */
+  coverAspect?: 'portrait' | 'square';
 
   metaLine: string;
 

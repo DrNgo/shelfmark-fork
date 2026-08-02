@@ -774,13 +774,19 @@ export const ActivityCard = ({
         />
       )}
       <div className="flex items-start gap-3">
-        {/* Artwork */}
-        <div className="h-18 w-12 shrink-0 overflow-hidden rounded-sm bg-gray-200 dark:bg-gray-700">
+        {/* Artwork — square audiobook art vs 2:3 book covers */}
+        <div
+          className={`h-18 shrink-0 overflow-hidden rounded-sm bg-gray-200 dark:bg-gray-700 ${
+            item.coverAspect === 'square' ? 'w-18' : 'w-12'
+          }`}
+        >
           {item.preview ? (
             <img
               src={item.preview}
               alt={`${item.title} cover`}
-              className="h-full w-full object-cover object-top"
+              className={`h-full w-full object-cover ${
+                item.coverAspect === 'square' ? 'object-center' : 'object-top'
+              }`}
             />
           ) : (
             <BookFallback />

@@ -1132,6 +1132,7 @@ function App() {
           seeders: release.seeders,
           extra: release.extra,
           preview: isManual ? releasePreview || undefined : book.preview,
+          cover_aspect: isManual ? undefined : book.cover_aspect,
           content_type: releaseContentType,
           series_name: book.series_name,
           series_position: book.series_position,

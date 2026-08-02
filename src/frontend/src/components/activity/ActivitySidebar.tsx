@@ -176,6 +176,7 @@ const mergeRequestWithDownload = (
     title: downloadItem.title || requestItem.title,
     author: downloadItem.author || requestItem.author,
     preview: downloadItem.preview || requestItem.preview,
+    coverAspect: downloadItem.coverAspect ?? requestItem.coverAspect,
     metaLine: downloadItem.metaLine,
     timestamp: Math.max(downloadItem.timestamp, requestItem.timestamp),
     username: requestItem.username || downloadItem.username,

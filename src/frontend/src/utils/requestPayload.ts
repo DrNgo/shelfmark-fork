@@ -38,6 +38,7 @@ export const buildMetadataBookRequestData = (book: Book, contentType: ContentTyp
     asin: book.asin,
     year: book.year,
     preview: book.preview,
+    cover_aspect: book.cover_aspect,
     series_name: book.series_name,
     series_position: book.series_position,
     series_count: book.series_count,
@@ -58,6 +59,7 @@ const buildDirectBookRequestData = (book: Book) => {
     format: book.format,
     size: book.size,
     preview: book.preview,
+    cover_aspect: book.cover_aspect,
     source,
     source_url: book.source_url,
   };
@@ -88,6 +90,7 @@ export const buildReleaseDataFromMetadataRelease = (
     seeders: release.seeders,
     extra: release.extra,
     preview: book.preview,
+    cover_aspect: book.cover_aspect,
     content_type: contentType,
     series_name: book.series_name,
     series_position: book.series_position,
@@ -109,6 +112,7 @@ export const buildReleaseDataFromDirectBook = (book: Book) => {
     format: book.format,
     size: book.size,
     preview: book.preview,
+    cover_aspect: book.cover_aspect,
     content_type: 'ebook' as const,
     // Browsing a source directly means the book record IS the release record.
     language: book.language,

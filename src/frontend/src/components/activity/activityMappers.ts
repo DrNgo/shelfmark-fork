@@ -14,6 +14,10 @@ const toText = (value: unknown, fallback: string): string => {
   return fallback;
 };
 
+const toCoverAspect = (value: unknown): 'portrait' | 'square' | undefined => {
+  return value === 'square' || value === 'portrait' ? value : undefined;
+};
+
 const toOptionalText = (value: unknown): string | undefined => {
   if (typeof value === 'string' && value.trim()) {
     return value.trim();
@@ -104,6 +108,7 @@ export const downloadToActivityItem = (book: Book, statusKey: DownloadStatusKey)
     title: toText(book.title, 'Unknown title'),
     author: toText(book.author, 'Unknown author'),
     preview: toOptionalText(book.preview),
+    coverAspect: toCoverAspect(book.cover_aspect),
     metaLine,
     statusLabel: STATUS_LABELS[visualStatus],
     statusDetail,
@@ -171,6 +176,7 @@ export const requestToActivityItem = (
     title: toText(bookData.title ?? releaseData.title, 'Unknown title'),
     author: toText(bookData.author ?? releaseData.author, 'Unknown author'),
     preview: toOptionalText(bookData.preview) || toOptionalText(releaseData.preview),
+    coverAspect: toCoverAspect(bookData.cover_aspect) ?? toCoverAspect(releaseData.cover_aspect),
     metaLine: buildRequestMetaLine(record, bookData, releaseData, viewerRole),
     statusLabel: STATUS_LABELS[visualStatus],
     adminNote: toOptionalText(record.admin_note),
