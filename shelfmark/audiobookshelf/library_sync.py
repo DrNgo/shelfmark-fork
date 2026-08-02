@@ -15,12 +15,14 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from shelfmark.audiobookshelf.client import ABS_CLIENT_ERRORS
-from shelfmark.audiobookshelf.library_index import (
+from shelfmark.core.logger import setup_logger
+from shelfmark.library.index import (
+    MEDIA_TYPE_AUDIOBOOK,
+    SOURCE_AUDIOBOOKSHELF,
     LibraryIndexDB,
     LibraryItem,
     get_library_index,
 )
-from shelfmark.core.logger import setup_logger
 
 if TYPE_CHECKING:
     from shelfmark.audiobookshelf.client import AudiobookshelfClient, AudiobookshelfLibrary
@@ -92,13 +94,16 @@ def extract_library_items(
 
         items.append(
             LibraryItem(
+                source=SOURCE_AUDIOBOOKSHELF,
                 item_id=item_id,
                 library_id=library.id,
                 library_name=library.name,
+                media_type=MEDIA_TYPE_AUDIOBOOK,
                 title=title,
                 subtitle=str(metadata.get("subtitle") or "").strip(),
                 author=_primary_author(metadata),
                 asin=str(metadata.get("asin") or "").strip(),
+                isbn13="",
             )
         )
 
@@ -126,10 +131,10 @@ def sync_library_index(
     except ABS_CLIENT_ERRORS as e:
         message = f"Library sync failed: {e!s}"
         logger.warning("%s", message)
-        index.record_failure(message)
+        index.record_failure(SOURCE_AUDIOBOOKSHELF, message)
         return SyncResult(success=False, item_count=0, message=message)
 
-    stored = index.replace_items(items)
+    stored = index.replace_items(SOURCE_AUDIOBOOKSHELF, items)
     logger.info(
         "Indexed %d Audiobookshelf items across %d libraries",
         stored,
@@ -197,7 +202,7 @@ def _scheduler_loop() -> None:
     while True:
         try:
             if library_index_enabled():
-                state = get_library_index().get_state()
+                state = get_library_index().get_state(SOURCE_AUDIOBOOKSHELF)
                 if is_index_stale(state.last_sync_at, interval_hours=get_interval_hours()):
                     run_sync_now()
         except Exception:

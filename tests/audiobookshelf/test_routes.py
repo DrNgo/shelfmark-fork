@@ -3,9 +3,9 @@
 import pytest
 from flask import Flask
 
-from shelfmark.audiobookshelf import library_index
-from shelfmark.audiobookshelf.library_index import LibraryItem
 from shelfmark.audiobookshelf.routes import register_audiobookshelf_routes
+from shelfmark.library import index as library_index
+from shelfmark.library.index import MEDIA_TYPE_AUDIOBOOK, SOURCE_AUDIOBOOKSHELF, LibraryItem
 from tests.audiobookshelf.test_destinations import patch_config
 
 DESTINATIONS = {
@@ -38,17 +38,21 @@ def indexed_library(tmp_path, monkeypatch):
 
     index = library_index.get_library_index()
     index.replace_items(
+        SOURCE_AUDIOBOOKSHELF,
         [
             LibraryItem(
+                source=SOURCE_AUDIOBOOKSHELF,
                 item_id="li_1",
                 library_id="lib_books",
                 library_name="Audiobooks",
+                media_type=MEDIA_TYPE_AUDIOBOOK,
                 title="The Housemaid",
                 subtitle="",
                 author="Freida McFadden",
                 asin="B0BSHZ1234",
+                isbn13="",
             )
-        ]
+        ],
     )
     yield index
     library_index._index = None

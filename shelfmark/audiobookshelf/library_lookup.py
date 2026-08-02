@@ -7,11 +7,16 @@ on Audiobookshelf.
 
 from typing import Any
 
-from shelfmark.audiobookshelf.library_index import LibraryIndexDB, LibraryMatch, get_library_index
 from shelfmark.audiobookshelf.library_sync import (
     get_interval_hours,
     is_index_stale,
     library_index_enabled,
+)
+from shelfmark.library.index import (
+    SOURCE_AUDIOBOOKSHELF,
+    LibraryIndexDB,
+    LibraryMatch,
+    get_library_index,
 )
 from shelfmark.library.matching import build_match_keys
 
@@ -56,7 +61,7 @@ def lookup_books(books: list[Any], *, index: LibraryIndexDB | None = None) -> di
     if not library_index_enabled():
         return {"enabled": False, "stale": False, "last_sync_at": None, "matches": {}}
 
-    state = library_index.get_state()
+    state = library_index.get_state(SOURCE_AUDIOBOOKSHELF)
     result: dict[str, Any] = {
         "enabled": True,
         "stale": is_index_stale(state.last_sync_at, interval_hours=get_interval_hours()),

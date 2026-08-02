@@ -5,8 +5,13 @@ from unittest.mock import patch
 
 import pytest
 
-from shelfmark.audiobookshelf.library_index import LibraryIndexDB, LibraryItem
 from shelfmark.audiobookshelf.library_lookup import MAX_LOOKUP_BOOKS, lookup_books
+from shelfmark.library.index import (
+    MEDIA_TYPE_AUDIOBOOK,
+    SOURCE_AUDIOBOOKSHELF,
+    LibraryIndexDB,
+    LibraryItem,
+)
 
 
 def config_getter(values: dict[str, Any]):
@@ -34,17 +39,21 @@ def index(tmp_path):
     db = LibraryIndexDB(str(tmp_path / "abs_index.db"))
     db.initialize()
     db.replace_items(
+        SOURCE_AUDIOBOOKSHELF,
         [
             LibraryItem(
+                source=SOURCE_AUDIOBOOKSHELF,
                 item_id="li_1",
                 library_id="lib_books",
                 library_name="Audiobooks",
+                media_type=MEDIA_TYPE_AUDIOBOOK,
                 title="The Housemaid",
                 subtitle="A Novel",
                 author="Freida McFadden",
                 asin="B0BSHZ1234",
+                isbn13="",
             )
-        ]
+        ],
     )
     return db
 
@@ -104,26 +113,33 @@ class TestLookupBooks:
 
     def test_lists_every_library_holding_the_book(self, index):
         index.replace_items(
+            SOURCE_AUDIOBOOKSHELF,
             [
                 LibraryItem(
+                    source=SOURCE_AUDIOBOOKSHELF,
                     item_id="li_1",
                     library_id="lib_a",
                     library_name="Audiobooks",
+                    media_type=MEDIA_TYPE_AUDIOBOOK,
                     title="The Housemaid",
                     subtitle="",
                     author="Freida McFadden",
                     asin="B0BSHZ1234",
+                    isbn13="",
                 ),
                 LibraryItem(
+                    source=SOURCE_AUDIOBOOKSHELF,
                     item_id="li_2",
                     library_id="lib_b",
                     library_name="Kids",
+                    media_type=MEDIA_TYPE_AUDIOBOOK,
                     title="The Housemaid",
                     subtitle="",
                     author="Freida McFadden",
                     asin="B0BSHZ9999",
+                    isbn13="",
                 ),
-            ]
+            ],
         )
 
         with patch_config(ENABLED):

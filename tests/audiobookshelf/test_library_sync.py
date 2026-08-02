@@ -6,12 +6,12 @@ import pytest
 import requests
 
 from shelfmark.audiobookshelf.client import AudiobookshelfLibrary
-from shelfmark.audiobookshelf.library_index import LibraryIndexDB
 from shelfmark.audiobookshelf.library_sync import (
     extract_library_items,
     is_index_stale,
     sync_library_index,
 )
+from shelfmark.library.index import SOURCE_AUDIOBOOKSHELF, LibraryIndexDB
 from shelfmark.library.matching import build_match_keys
 
 BOOKS_LIBRARY = AudiobookshelfLibrary(id="lib_books", name="Audiobooks", media_type="book")
@@ -126,28 +126,34 @@ class TestSyncLibraryIndex:
 
     def test_records_the_failure_and_keeps_the_old_index(self, index):
         """An Audiobookshelf outage must leave yesterday's badges standing."""
-        index.replace_items(extract_library_items([_raw_item()], BOOKS_LIBRARY))
+        index.replace_items(
+            SOURCE_AUDIOBOOKSHELF, extract_library_items([_raw_item()], BOOKS_LIBRARY)
+        )
         client = FakeClient(error=requests.exceptions.ConnectionError("refused"))
 
         result = sync_library_index(client=client, index=index)
 
         assert not result.success
-        assert index.get_state().last_error
+        assert index.get_state(SOURCE_AUDIOBOOKSHELF).last_error
         assert len(index.find_matches(build_match_keys("The Housemaid", "Freida McFadden"))) == 1
 
     def test_does_nothing_without_a_client(self, index):
         """Audiobookshelf disabled is not a failure, and must not wipe the index."""
-        index.replace_items(extract_library_items([_raw_item()], BOOKS_LIBRARY))
+        index.replace_items(
+            SOURCE_AUDIOBOOKSHELF, extract_library_items([_raw_item()], BOOKS_LIBRARY)
+        )
 
         result = sync_library_index(client=None, index=index)
 
         assert not result.success
-        assert index.get_state().last_error is None
+        assert index.get_state(SOURCE_AUDIOBOOKSHELF).last_error is None
         assert len(index.find_matches(build_match_keys("The Housemaid", "Freida McFadden"))) == 1
 
     def test_an_empty_library_empties_the_index(self, index):
         """Genuinely-zero results are a real answer; the client raises otherwise."""
-        index.replace_items(extract_library_items([_raw_item()], BOOKS_LIBRARY))
+        index.replace_items(
+            SOURCE_AUDIOBOOKSHELF, extract_library_items([_raw_item()], BOOKS_LIBRARY)
+        )
         client = FakeClient(items_by_library={"lib_books": []})
 
         result = sync_library_index(client=client, index=index)
