@@ -72,6 +72,14 @@ Labels say Grimmory; keys stay `BOOKLORE_*`. They are persisted in existing inst
 and documented as env vars, and mixing `BOOKLORE_HOST` with `GRIMMORY_INDEX_INTERVAL_HOURS`
 in one section reads worse than the inconsistency it would resolve.
 
+Keeping the key names does **not** make this migration-free, however. Settings values are
+persisted per tab (`_get_config_file_path(tab_name)` in `shelfmark/core/settings_registry.py`),
+and `Config._field_map` binds each key to the tab that declares it. Moving
+`BOOKLORE_HOST`, `BOOKLORE_USERNAME` and `BOOKLORE_PASSWORD` to a Grimmory tab therefore
+moves where their values are read from, so the persisted values must move with them —
+see Rollout. Env-var-supplied values are unaffected, since env takes precedence over the
+config file either way.
+
 ### Upload is unaffected by the new toggle
 
 `build_booklore_config` reads credentials directly and ignores `BOOKLORE_ENABLED`, so
@@ -331,7 +339,17 @@ the lock-vs-tooltip split.
 
   The checkbox still defaults to `False` for fresh installs, matching the Audiobookshelf
   tab and keeping the Grimmory tab collapsed for people who do not use it.
-- No other config migration — every key is unchanged.
+- **Tab-move migration.** `BOOKLORE_HOST`, `BOOKLORE_USERNAME` and `BOOKLORE_PASSWORD`
+  move from the `downloads` tab to the new `grimmory` tab, so their persisted values must
+  move from `downloads.json` to `grimmory.json` or they read as empty and both uploads and
+  indexing break. Copy each key that is absent from `grimmory.json`, then drop it from
+  `downloads.json`. `BOOKLORE_DESTINATION`, `BOOKLORE_LIBRARY_ID` and `BOOKLORE_PATH_ID`
+  stay on the `downloads` tab and must not move.
+
+  Both migrations join the existing chain in `sync_env_to_config()`
+  (`shelfmark/core/settings_registry.py:558-565`), and the tab move must run **before**
+  the enablement migration, which reads the moved credentials to decide.
+- No key is renamed, so env vars and `docker-compose` files need no changes.
 - `library_index.db` rebuilds itself on first start, since a missing timestamp already
   counts as stale.
 - The orphaned `audiobookshelf_index.db` gets a best-effort unlink on first init so
