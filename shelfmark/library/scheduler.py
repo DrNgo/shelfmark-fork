@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from shelfmark.core.logger import setup_logger
+from shelfmark.grimmory.client import BookloreError
 from shelfmark.library.index import LibraryIndexDB, get_library_index
 from shelfmark.library.providers import LibraryProvider, get_providers
 
@@ -24,7 +25,10 @@ logger = setup_logger(__name__)
 _SCHEDULER_POLL_SECONDS = 300
 
 # Anything a provider's transport can throw. Providers must not leak these.
-PROVIDER_ERRORS = (OSError, RuntimeError, TypeError, ValueError)
+# BookloreError subclasses Exception directly (not one of the others below),
+# so without it a Grimmory outage would escape sync_provider instead of being
+# recorded as a failure.
+PROVIDER_ERRORS = (BookloreError, OSError, RuntimeError, TypeError, ValueError)
 
 
 @dataclass(frozen=True)

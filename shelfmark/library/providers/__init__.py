@@ -40,5 +40,6 @@ def get_providers() -> list[LibraryProvider]:
     which imports this package.
     """
     from shelfmark.library.providers.audiobookshelf import AudiobookshelfProvider
+    from shelfmark.library.providers.grimmory import GrimmoryProvider
 
-    return [AudiobookshelfProvider()]
+    return [AudiobookshelfProvider(), GrimmoryProvider()]
