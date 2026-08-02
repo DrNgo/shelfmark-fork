@@ -192,3 +192,68 @@ class TestBuildMatchKeysWithAsin:
         keys = build_match_keys("The Housemaid", "Freida McFadden", asin="N/A")
 
         assert keys == {"housemaid|freida mcfadden"}
+
+
+from shelfmark.library.matching import ISBN_KEY_PREFIX, isbn_match_key, normalize_isbn
+
+
+class TestNormalizeIsbn:
+    def test_keeps_a_valid_isbn13(self):
+        assert normalize_isbn("9780593135204") == "9780593135204"
+
+    def test_strips_hyphens_and_spaces(self):
+        assert normalize_isbn("978-0-593-13520-4") == "9780593135204"
+        assert normalize_isbn("  9780593135204 ") == "9780593135204"
+
+    def test_converts_isbn10_to_isbn13(self):
+        assert normalize_isbn("0306406152") == "9780306406157"
+
+    def test_accepts_an_x_check_digit(self):
+        assert normalize_isbn("080442957X") == "9780804429573"
+
+    def test_rejects_a_bad_isbn13_check_digit(self):
+        assert normalize_isbn("9780593135205") == ""
+
+    def test_rejects_a_bad_isbn10_check_digit(self):
+        assert normalize_isbn("0306406153") == ""
+
+    def test_passes_through_a_979_isbn13(self):
+        # 979 ISBNs have no ISBN-10 equivalent and must survive untouched.
+        assert normalize_isbn("9791234567896") == "9791234567896"
+
+    def test_rejects_junk(self):
+        for junk in ["", "N/A", "none", "97805931352", "97805931352049", None, 12345]:
+            assert normalize_isbn(junk) == ""
+
+    def test_rejects_zero_filled_placeholders(self):
+        # Both zero-filled forms pass their own check-digit arithmetic, so they
+        # need rejecting by hand or every placeholder row matches every other.
+        assert normalize_isbn("0000000000") == ""
+        assert normalize_isbn("0000000000000") == ""
+
+
+class TestIsbnMatchKey:
+    def test_namespaces_the_key(self):
+        assert isbn_match_key("0306406152") == f"{ISBN_KEY_PREFIX}9780306406157"
+
+    def test_returns_empty_for_junk(self):
+        assert isbn_match_key("N/A") == ""
+
+
+class TestBuildMatchKeysWithIsbn:
+    def test_an_isbn_is_enough_on_its_own(self):
+        keys = build_match_keys(None, None, isbn="9780593135204")
+        assert keys == {f"{ISBN_KEY_PREFIX}9780593135204"}
+
+    def test_isbn10_and_isbn13_produce_the_same_key(self):
+        assert build_match_keys(None, None, isbn="0306406152") == build_match_keys(
+            None, None, isbn="9780306406157"
+        )
+
+    def test_isbn_adds_to_title_author_keys_rather_than_replacing_them(self):
+        keys = build_match_keys("The Housemaid", "Freida McFadden", isbn="9780593135204")
+        assert f"{ISBN_KEY_PREFIX}9780593135204" in keys
+        assert any(KEY_SEPARATOR in key for key in keys)
+
+    def test_a_bad_isbn_contributes_no_key(self):
+        assert build_match_keys(None, None, isbn="9780593135205") == set()
