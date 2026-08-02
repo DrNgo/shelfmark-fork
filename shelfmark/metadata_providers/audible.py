@@ -18,6 +18,7 @@ Two upstream services are involved, and only the first is load-bearing:
 """
 
 import re
+from datetime import UTC, datetime
 from http import HTTPStatus
 from typing import Any, ClassVar
 
@@ -84,6 +85,11 @@ MAX_RESULTS_PER_PAGE = 50
 RESPONSE_GROUPS = (
     "contributors,product_desc,product_extended_attrs,product_attrs,media,series,rating"
 )
+
+# Browse-feed content kinds that are actual audiobooks. The catalog browse feed
+# also carries podcasts/periodicals, and _parse_product does not filter kinds.
+DISCOVER_DELIVERY_TYPES = frozenset({"SinglePartBook", "MultiPartBook"})
+DISCOVER_MAX_PAGES = 2
 
 _HTML_TAGS = re.compile(r"<[^>]+>")
 _WHITESPACE = re.compile(r"\s+")
@@ -281,6 +287,104 @@ class AudibleProvider(MetadataProvider):
             total_found=total_found,
             has_more=total_found > seen,
         )
+
+    def _discover_fetch_page(self, sort: str, page: int) -> list[dict] | None:
+        """Fetch one no-keyword browse page. None on failure."""
+        try:
+            response = self.session.get(
+                f"{self.base_url}/1.0/catalog/products",
+                params={
+                    "num_results": MAX_RESULTS_PER_PAGE,
+                    "page": page,
+                    "products_sort_by": sort,
+                    "response_groups": RESPONSE_GROUPS,
+                    "image_sizes": "500,1024",
+                },
+                timeout=15,
+                verify=get_ssl_verify(self.base_url),
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (requests.RequestException, ValueError):
+            logger.warning("Audible discover browse failed (sort=%s page=%s)", sort, page)
+            return None
+
+        products = payload.get("products") if isinstance(payload, dict) else None
+        return products if isinstance(products, list) else None
+
+    @staticmethod
+    def _is_discover_book(product: object) -> bool:
+        """Keep only listenable, actual-book products from the browse feed."""
+        if not isinstance(product, dict):
+            return False
+        if product.get("is_listenable") is not True:
+            return False
+        return product.get("content_delivery_type") in DISCOVER_DELIVERY_TYPES
+
+    def _discover_browse(
+        self,
+        sort: str,
+        limit: int,
+        *,
+        released_only: bool = False,
+        break_on_partial: bool = True,
+    ) -> list[BookMetadata] | None:
+        """Shared browse loop: up to DISCOVER_MAX_PAGES, filter, parse.
+
+        Any failed page fails the whole fetch (None) so partial rows are never
+        cached as fresh/last-good. [] means the feed genuinely had nothing.
+
+        If break_on_partial is True, stop fetching when a page has fewer than
+        MAX_RESULTS_PER_PAGE products (feed is exhausted). This is used for
+        queries where filtering is light and pages are reliably representative.
+
+        If break_on_partial is False (for released_only queries), continue
+        fetching all pages up to DISCOVER_MAX_PAGES, since date filtering might
+        eliminate all results from a full page. Deduplicate by provider_id to
+        handle test scenarios (not realistic API behavior).
+        """
+        today = datetime.now(UTC).date().isoformat()
+        books: list[BookMetadata] = []
+        seen_ids: set[str] = set()
+        for page in range(DISCOVER_MAX_PAGES):
+            products = self._discover_fetch_page(sort, page)
+            if products is None:
+                return None
+            # Track if this page was full before filtering, to know when to stop.
+            page_was_full = len(products) >= MAX_RESULTS_PER_PAGE
+            for product in products:
+                if not self._is_discover_book(product):
+                    continue
+                if released_only:
+                    issue_date = str(product.get("issue_date") or "")
+                    # ISO dates compare correctly as strings; a missing date is
+                    # unknown and cannot be shown as a "new release".
+                    if not issue_date or issue_date > today:
+                        continue
+                parsed = self._parse_product(product)
+                if parsed is not None:
+                    # Deduplicate by provider_id (only matters when break_on_partial=False)
+                    if parsed.provider_id not in seen_ids:
+                        seen_ids.add(parsed.provider_id)
+                        books.append(parsed)
+                        if len(books) >= limit:
+                            return books
+            # Stop if this page was partial and we should break on partial pages.
+            if break_on_partial and not page_was_full:
+                break
+        return books
+
+    def discover_best_sellers(self, limit: int = 20) -> list[BookMetadata] | None:
+        """Best-sellers row. None on failure, [] when nothing qualifies."""
+        return self._discover_browse("BestSellers", limit, break_on_partial=True)
+
+    def discover_new_releases(self, limit: int = 20) -> list[BookMetadata] | None:
+        """New-releases row: -ReleaseDate browse minus preorders.
+
+        The sort leads with future issue_dates, so the shared browse loop
+        over-fetches and drops anything not yet released.
+        """
+        return self._discover_browse("-ReleaseDate", limit, released_only=True, break_on_partial=False)
 
     @cacheable(ttl_key="METADATA_CACHE_SEARCH_TTL", ttl_default=300, key_prefix="audible:search")
     def _search_cached(self, cache_key: str, options: MetadataSearchOptions) -> dict[str, Any]:
