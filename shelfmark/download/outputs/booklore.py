@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -20,6 +19,16 @@ from shelfmark.download.staging import (
     build_staging_dir,
     get_staging_dir,
 )
+from shelfmark.grimmory.client import (
+    BOOKLORE_DESTINATION_BOOKDROP,
+    BOOKLORE_DESTINATION_LIBRARY,
+    BOOKLORE_DISPLAY_NAME,
+    BookloreConfig,
+    BookloreError,
+    booklore_login,
+    parse_destination,
+    parse_int,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -30,8 +39,6 @@ if TYPE_CHECKING:
 logger = setup_logger(__name__)
 
 BOOKLORE_OUTPUT_MODE = "booklore"
-BOOKLORE_DESTINATION_LIBRARY = "library"
-BOOKLORE_DESTINATION_BOOKDROP = "bookdrop"
 BOOKLORE_SUPPORTED_EXTENSIONS = {
     ".azw",
     ".azw3",
@@ -46,46 +53,6 @@ BOOKLORE_SUPPORTED_EXTENSIONS = {
 BOOKLORE_SUPPORTED_FORMATS_LABEL = ", ".join(
     ext.lstrip(".").upper() for ext in sorted(BOOKLORE_SUPPORTED_EXTENSIONS)
 )
-BOOKLORE_DISPLAY_NAME = "Grimmory"
-
-
-class BookloreError(Exception):
-    """Raised when Booklore integration fails."""
-
-
-@dataclass(frozen=True)
-class BookloreConfig:
-    """Configuration required to upload files into Booklore."""
-
-    base_url: str
-    username: str
-    password: str
-    library_id: int
-    path_id: int
-    verify_tls: bool = True
-    upload_to_bookdrop: bool = False
-    refresh_after_upload: bool = False
-
-
-def _parse_int(value: object, label: str) -> int:
-    if value is None or value == "":
-        msg = f"{label} is required"
-        raise BookloreError(msg)
-    if not isinstance(value, (int, float, str)):
-        msg = f"{label} must be a number"
-        raise BookloreError(msg)
-    try:
-        return int(value)
-    except (TypeError, ValueError) as exc:
-        msg = f"{label} must be a number"
-        raise BookloreError(msg) from exc
-
-
-def _parse_destination(value: object) -> str:
-    normalized = str(value or "").strip().lower()
-    if normalized == BOOKLORE_DESTINATION_BOOKDROP:
-        return BOOKLORE_DESTINATION_BOOKDROP
-    return BOOKLORE_DESTINATION_LIBRARY
 
 
 def build_booklore_config(
@@ -107,7 +74,7 @@ def build_booklore_config(
         msg = f"{BOOKLORE_DISPLAY_NAME} password is required"
         raise BookloreError(msg)
 
-    destination = _parse_destination(
+    destination = parse_destination(
         values.get("BOOKLORE_DESTINATION", BOOKLORE_DESTINATION_LIBRARY)
     )
     upload_to_bookdrop = destination == BOOKLORE_DESTINATION_BOOKDROP
@@ -131,8 +98,8 @@ def build_booklore_config(
             library_id_val = values.get("BOOKLORE_LIBRARY_ID")
             path_id_val = values.get("BOOKLORE_PATH_ID")
 
-        library_id = _parse_int(library_id_val, f"{BOOKLORE_DISPLAY_NAME} library ID")
-        path_id = _parse_int(path_id_val, f"{BOOKLORE_DISPLAY_NAME} path ID")
+        library_id = parse_int(library_id_val, f"{BOOKLORE_DISPLAY_NAME} library ID")
+        path_id = parse_int(path_id_val, f"{BOOKLORE_DISPLAY_NAME} path ID")
 
     return BookloreConfig(
         base_url=base_url.rstrip("/"),
@@ -144,69 +111,6 @@ def build_booklore_config(
         upload_to_bookdrop=upload_to_bookdrop,
         refresh_after_upload=not upload_to_bookdrop,
     )
-
-
-def booklore_login(booklore_config: BookloreConfig) -> str:
-    """Authenticate with Booklore and return an API token."""
-    url = f"{booklore_config.base_url}/api/v1/auth/login"
-    payload = {
-        "username": booklore_config.username,
-        "password": booklore_config.password,
-    }
-
-    try:
-        response = requests.post(url, json=payload, timeout=30, verify=booklore_config.verify_tls)
-    except requests.exceptions.ConnectionError as exc:
-        msg = f"Could not connect to {BOOKLORE_DISPLAY_NAME}"
-        raise BookloreError(msg) from exc
-    except requests.exceptions.Timeout as exc:
-        msg = f"{BOOKLORE_DISPLAY_NAME} connection timed out"
-        raise BookloreError(msg) from exc
-    except requests.exceptions.RequestException as exc:
-        msg = f"{BOOKLORE_DISPLAY_NAME} login failed: {exc}"
-        raise BookloreError(msg) from exc
-
-    if response.status_code in {401, 403}:
-        msg = f"{BOOKLORE_DISPLAY_NAME} authentication failed"
-        raise BookloreError(msg)
-
-    try:
-        response.raise_for_status()
-    except requests.exceptions.HTTPError as exc:
-        msg = f"{BOOKLORE_DISPLAY_NAME} login failed ({response.status_code})"
-        raise BookloreError(msg) from exc
-
-    try:
-        data = response.json()
-    except ValueError as exc:
-        msg = f"Invalid {BOOKLORE_DISPLAY_NAME} login response"
-        raise BookloreError(msg) from exc
-
-    token = data.get("accessToken")
-    if not token:
-        msg = f"{BOOKLORE_DISPLAY_NAME} did not return an access token"
-        raise BookloreError(msg)
-
-    return token
-
-
-def booklore_list_libraries(booklore_config: BookloreConfig, token: str) -> list[dict[str, Any]]:
-    """Fetch the available Booklore libraries for the current user."""
-    url = f"{booklore_config.base_url}/api/v1/libraries"
-    headers = {"Authorization": f"Bearer {token}"}
-
-    try:
-        response = requests.get(url, headers=headers, timeout=30, verify=booklore_config.verify_tls)
-        response.raise_for_status()
-    except requests.exceptions.RequestException as exc:
-        msg = f"Failed to fetch {BOOKLORE_DISPLAY_NAME} libraries: {exc}"
-        raise BookloreError(msg) from exc
-
-    try:
-        return response.json()
-    except ValueError as exc:
-        msg = f"Invalid {BOOKLORE_DISPLAY_NAME} libraries response"
-        raise BookloreError(msg) from exc
 
 
 def booklore_upload_file(booklore_config: BookloreConfig, token: str, file_path: Path) -> None:
