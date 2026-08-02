@@ -12,7 +12,7 @@ from shelfmark.audiobookshelf.library_sync import (
     is_index_stale,
     sync_library_index,
 )
-from shelfmark.audiobookshelf.matching import build_match_keys
+from shelfmark.library.matching import build_match_keys
 
 BOOKS_LIBRARY = AudiobookshelfLibrary(id="lib_books", name="Audiobooks", media_type="book")
 KIDS_LIBRARY = AudiobookshelfLibrary(id="lib_kids", name="Kids", media_type="book")

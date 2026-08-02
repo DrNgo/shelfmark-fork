@@ -5,7 +5,7 @@ The badge is advisory, so a miss costs today's status quo — but a false
 is therefore exact-after-normalization; nothing scores or fuzzy-matches.
 """
 
-from shelfmark.audiobookshelf.matching import (
+from shelfmark.library.matching import (
     KEY_SEPARATOR,
     asin_match_key,
     author_match_keys,

@@ -15,8 +15,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from shelfmark.audiobookshelf.matching import build_match_keys
 from shelfmark.core.logger import setup_logger
+from shelfmark.library.matching import build_match_keys
 
 logger = setup_logger(__name__)
 

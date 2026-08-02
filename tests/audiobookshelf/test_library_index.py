@@ -3,7 +3,7 @@
 import pytest
 
 from shelfmark.audiobookshelf.library_index import LibraryIndexDB, LibraryItem
-from shelfmark.audiobookshelf.matching import build_match_keys
+from shelfmark.library.matching import build_match_keys
 
 
 def _item(

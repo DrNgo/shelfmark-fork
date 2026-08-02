@@ -13,7 +13,7 @@ from shelfmark.audiobookshelf.library_sync import (
     is_index_stale,
     library_index_enabled,
 )
-from shelfmark.audiobookshelf.matching import build_match_keys
+from shelfmark.library.matching import build_match_keys
 
 # A page of search results is dozens of books; anything past this is either a
 # bug or someone using the endpoint as a bulk library query.
