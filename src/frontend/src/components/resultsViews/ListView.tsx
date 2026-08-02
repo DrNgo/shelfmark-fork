@@ -4,6 +4,7 @@ import { useSearchMode } from '../../contexts/SearchModeContext';
 import type { Book, ButtonStateInfo, DisplayField } from '../../types';
 import { bookSupportsTargets } from '../../utils/bookTargetLoader';
 import { getFormatColor, getLanguageColor } from '../../utils/colorMaps';
+import { isHeldInFormat } from '../../utils/libraryMatches';
 import type { LibraryMatch } from '../../utils/libraryMatches';
 import { summarizeNameList } from '../../utils/displayFields';
 import { isBookRequested } from '../../utils/requestedBooks';
@@ -362,7 +363,7 @@ export const ListView = ({
                       void handleGetReleases(selectedBook);
                     }}
                     isLoadingReleases={releasesLoadingId === book.id}
-                    isInLibrary={Boolean(libraryMatches[book.id])}
+                    isInLibrary={isHeldInFormat(libraryMatches[book.id])}
                     variant="icon"
                     size="md"
                   />

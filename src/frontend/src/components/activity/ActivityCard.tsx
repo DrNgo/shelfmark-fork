@@ -315,8 +315,18 @@ const ReviewInlinePanel = ({
         toOptionalText(reviewBookData.title),
         toOptionalText(reviewBookData.author),
         toOptionalText(reviewBookData.asin),
+        toOptionalText(reviewBookData.isbn_13) ?? toOptionalText(reviewBookData.isbn_10),
+        reviewRecord.content_type,
       ),
-    [reviewRecord.id, reviewBookData.title, reviewBookData.author, reviewBookData.asin],
+    [
+      reviewRecord.id,
+      reviewRecord.content_type,
+      reviewBookData.title,
+      reviewBookData.author,
+      reviewBookData.asin,
+      reviewBookData.isbn_13,
+      reviewBookData.isbn_10,
+    ],
   );
   const libraryMatch = useLibraryMatches(lookupBooks)[`review-${reviewRecord.id}`];
 

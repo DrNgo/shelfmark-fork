@@ -122,11 +122,15 @@ export const DiscoverSection = ({
   }, [contentType, providerName]);
 
   const allBooks = useMemo(() => rows.flatMap((row) => row.books ?? []), [rows]);
-  // Record keyed by book.id (buildLibraryLookupPayload uses book.id).
-  // The ABS library index matches by title/author with no format awareness, so
-  // an ebook tile would inherit the badge from an audiobook copy — only
-  // audiobook rows may consult it.
-  const libraryMatches = useLibraryMatches(contentType === 'audiobook' ? allBooks : []);
+  // Record keyed by book.id (buildLibraryLookupPayload uses book.id). The
+  // index is format-aware, so every row can ask; discover tiles carry no
+  // content type of their own, so the section's own type fills in for them.
+  // Combined rows mix providers with no reliable per-tile format, so they get
+  // no default and fall back to the backend's own default.
+  const libraryMatches = useLibraryMatches(
+    allBooks,
+    contentType === 'combined' ? undefined : contentType,
+  );
 
   const rendered = visibleRows(rows);
   if (rendered.length === 0) {

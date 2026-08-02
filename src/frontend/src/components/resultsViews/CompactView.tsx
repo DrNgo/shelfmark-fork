@@ -4,6 +4,7 @@ import { useSearchMode } from '../../contexts/SearchModeContext';
 import type { Book, ButtonStateInfo } from '../../types';
 import { bookSupportsTargets } from '../../utils/bookTargetLoader';
 import { summarizeNameList } from '../../utils/displayFields';
+import { isHeldInFormat } from '../../utils/libraryMatches';
 import type { LibraryMatch } from '../../utils/libraryMatches';
 import { BookActionButton } from '../BookActionButton';
 import { BookTargetDropdown } from '../BookTargetDropdown';
@@ -298,7 +299,7 @@ export const CompactView = ({
                   void handleGetReleases(selectedBook);
                 }}
                 isLoadingReleases={isLoadingReleases}
-                isInLibrary={Boolean(libraryMatch)}
+                isInLibrary={isHeldInFormat(libraryMatch)}
                 size="sm"
                 className="flex-1"
               />
@@ -312,7 +313,7 @@ export const CompactView = ({
                 void handleGetReleases(selectedBook);
               }}
               isLoadingReleases={isLoadingReleases}
-              isInLibrary={Boolean(libraryMatch)}
+              isInLibrary={isHeldInFormat(libraryMatch)}
               size="sm"
               fullWidth
             />

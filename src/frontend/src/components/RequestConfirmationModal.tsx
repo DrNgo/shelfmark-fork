@@ -182,7 +182,14 @@ function RequestConfirmationModalSession({
   const lookupBooks = useMemo(
     () =>
       preview
-        ? singleBookLookup('request-confirmation', preview.title, preview.author, preview.asin)
+        ? singleBookLookup(
+            'request-confirmation',
+            preview.title,
+            preview.author,
+            preview.asin,
+            preview.isbn_13 ?? preview.isbn_10,
+            preview.content_type,
+          )
         : EMPTY_LOOKUP_BOOKS,
     [preview],
   );

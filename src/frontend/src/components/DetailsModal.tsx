@@ -9,7 +9,7 @@ import type { Book, ButtonStateInfo } from '../types';
 import { isMetadataBook } from '../types';
 import { bookSupportsTargets } from '../utils/bookTargetLoader';
 import { isUserCancelledError } from '../utils/errors';
-import { applyInLibraryLock, singleBookLookup } from '../utils/libraryMatches';
+import { applyInLibraryLock, isHeldInFormat, singleBookLookup } from '../utils/libraryMatches';
 import { BookTargetDropdown } from './BookTargetDropdown';
 
 interface DetailsModalProps {
@@ -21,12 +21,6 @@ interface DetailsModalProps {
   buttonState: ButtonStateInfo;
   showReleaseSourceLinks?: boolean;
   onShowToast?: (message: string, type: 'success' | 'error' | 'info') => void;
-  /**
-   * Whether to consult the ABS library index (badge + re-acquire lock). The
-   * index has no format awareness, so ebook surfaces must not inherit state
-   * from audiobook-only holdings.
-   */
-  showInLibraryBadge?: boolean;
 }
 
 interface DetailsModalAutoCloseProps {
@@ -53,7 +47,6 @@ export const DetailsModal = ({
   buttonState,
   showReleaseSourceLinks = true,
   onShowToast,
-  showInLibraryBadge = true,
 }: DetailsModalProps) => {
   const [isQueuing, setIsQueuing] = useState(false);
   const [isClosing, setIsClosing] = useState(false);
@@ -74,10 +67,23 @@ export const DetailsModal = ({
   // was the one door left open to re-acquiring a book already held.
   const lookupBooks = useMemo(
     () =>
-      showInLibraryBadge
-        ? singleBookLookup(`details-${book?.id ?? ''}`, book?.title, book?.author, book?.asin)
-        : [],
-    [showInLibraryBadge, book?.id, book?.title, book?.author, book?.asin],
+      singleBookLookup(
+        `details-${book?.id ?? ''}`,
+        book?.title,
+        book?.author,
+        book?.asin,
+        book?.isbn_13 ?? book?.isbn_10,
+        book?.content_type,
+      ),
+    [
+      book?.id,
+      book?.title,
+      book?.author,
+      book?.asin,
+      book?.isbn_13,
+      book?.isbn_10,
+      book?.content_type,
+    ],
   );
   const libraryMatch = useLibraryMatches(lookupBooks)[`details-${book?.id ?? ''}`];
 
@@ -105,7 +111,7 @@ export const DetailsModal = ({
 
   // Determine if this is a metadata book (Universal mode) vs a release (Direct Download)
   const isMetadata = isMetadataBook(book);
-  const effectiveButtonState = applyInLibraryLock(buttonState, Boolean(libraryMatch));
+  const effectiveButtonState = applyInLibraryLock(buttonState, isHeldInFormat(libraryMatch));
   const showBookSourceLink = Boolean(book.source_url) && (isMetadata || showReleaseSourceLinks);
   const metadataActionText =
     isMetadata && effectiveButtonState.state === 'download' && effectiveButtonState.text === 'Get'

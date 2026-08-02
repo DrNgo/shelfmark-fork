@@ -40,16 +40,14 @@ interface ResultsSectionProps {
   /** Identities with a request still awaiting a decision, from the sidebar's records. */
   openRequestKeys?: Set<string>;
   /**
-   * Whether to consult the ABS library index for in-library badges. The index
-   * matches by title/author with no format awareness, so ebook surfaces must
-   * not inherit badges from audiobook-only holdings.
+   * Content type to assume for books that carry none of their own. The index is
+   * format-aware, so every surface can ask — an ebook result will not inherit a
+   * badge from an audiobook-only holding.
    */
-  showInLibraryBadges?: boolean;
+  defaultContentType?: string;
 }
 
 const NO_OPEN_REQUESTS: Set<string> = new Set();
-// Stable empty array: a fresh [] each render would churn the lookup hook's signature.
-const NO_LOOKUP_BOOKS: Book[] = [];
 
 export const ResultsSection = ({
   books,
@@ -70,11 +68,11 @@ export const ResultsSection = ({
   onShowToast,
   resultsSourceUrl,
   openRequestKeys = NO_OPEN_REQUESTS,
-  showInLibraryBadges = true,
+  defaultContentType,
 }: ResultsSectionProps) => {
   const { searchMode } = useSearchMode();
   // One lookup for the whole result set, not one per card.
-  const libraryMatches = useLibraryMatches(showInLibraryBadges ? books : NO_LOOKUP_BOOKS);
+  const libraryMatches = useLibraryMatches(books, defaultContentType);
   const activeViewClasses =
     searchMode === 'universal'
       ? 'bg-emerald-600 text-white hover:bg-emerald-700'

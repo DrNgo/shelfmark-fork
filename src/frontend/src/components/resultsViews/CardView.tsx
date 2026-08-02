@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { useSearchMode } from '../../contexts/SearchModeContext';
 import type { Book, ButtonStateInfo } from '../../types';
 import { bookSupportsTargets } from '../../utils/bookTargetLoader';
+import { isHeldInFormat } from '../../utils/libraryMatches';
 import type { LibraryMatch } from '../../utils/libraryMatches';
 import { BookActionButton } from '../BookActionButton';
 import { BookTargetDropdown } from '../BookTargetDropdown';
@@ -256,7 +257,7 @@ export const CardView = ({
               void handleGetReleases(selectedBook);
             }}
             isLoadingReleases={isLoadingReleases}
-            isInLibrary={Boolean(libraryMatch)}
+            isInLibrary={isHeldInFormat(libraryMatch)}
             size="sm"
             className="flex-1"
           />
@@ -271,7 +272,7 @@ export const CardView = ({
           void handleGetReleases(selectedBook);
         }}
         isLoadingReleases={isLoadingReleases}
-        isInLibrary={Boolean(libraryMatch)}
+        isInLibrary={isHeldInFormat(libraryMatch)}
         className="hidden rounded-none sm:flex"
         fullWidth
         style={{

@@ -350,3 +350,140 @@ describe('libraryMatchTooltip', () => {
     expect(libraryMatchTooltip(otherOnly)).not.toContain('Already in your library: ');
   });
 });
+
+// Every acquire button (DetailsModal, and the isInLibrary prop into
+// BookActionButton from CardView/CompactView/ListView) locks by composing
+// these two functions in this exact order. A cross-format-only match must
+// survive the trip through both without locking, or the badge changes colour
+// while the button stays blocked.
+describe('acquire-button wiring: isHeldInFormat feeding applyInLibraryLock', () => {
+  const GET: ButtonStateInfo = { state: 'download', text: 'Get' };
+
+  it('locks when the match holds this format', () => {
+    const heldHere: LibraryMatch = {
+      libraries: ['Ebooks'],
+      items: [
+        {
+          source: 'grimmory',
+          media_type: 'ebook',
+          item_id: 'gm_1',
+          library_id: 'lib',
+          library_name: 'Ebooks',
+          title: 'The Housemaid',
+          author: 'Freida McFadden',
+          asin: '',
+          isbn13: '9780593135204',
+        },
+      ],
+      other_formats: [],
+    };
+
+    expect(applyInLibraryLock(GET, isHeldInFormat(heldHere))).toEqual({
+      state: 'blocked',
+      text: 'In library',
+    });
+  });
+
+  it('does NOT lock when the match only holds another format', () => {
+    const audiobookOnly: LibraryMatch = {
+      libraries: ['Audiobooks'],
+      items: [],
+      other_formats: [
+        {
+          source: 'audiobookshelf',
+          media_type: 'audiobook',
+          item_id: 'abs_1',
+          library_id: 'lib',
+          library_name: 'Audiobooks',
+          title: 'The Housemaid',
+          author: 'Freida McFadden',
+          asin: 'B0BSHZ1234',
+          isbn13: '',
+        },
+      ],
+    };
+
+    expect(applyInLibraryLock(GET, isHeldInFormat(audiobookOnly))).toBe(GET);
+  });
+
+  it('does not lock when there is no match at all', () => {
+    expect(applyInLibraryLock(GET, isHeldInFormat(undefined))).toBe(GET);
+  });
+});
+
+// DetailsModal, RequestConfirmationModal and ActivityCard each build a
+// one-book lookup locally and must pass their book's real content type and
+// ISBN, or the backend defaults the request to "ebook" — filing a real
+// audiobook holding under other_formats instead of items, so the modal never
+// locks even though the reader already owns the audiobook.
+describe('single-book surfaces thread format and ISBN through the lookup', () => {
+  it('DetailsModal-shaped audiobook lookup carries content_type and ISBN', () => {
+    const payload = singleBookLookup(
+      'details-bk1',
+      'The Housemaid',
+      'Freida McFadden',
+      undefined,
+      '9780593135204',
+      'audiobook',
+    );
+
+    expect(payload).toEqual([
+      {
+        id: 'details-bk1',
+        title: 'The Housemaid',
+        author: 'Freida McFadden',
+        isbn_13: '9780593135204',
+        content_type: 'audiobook',
+      },
+    ]);
+  });
+
+  it('an audiobook holding lands in items (held) when content_type is passed, not other_formats', () => {
+    // What the backend returns once the lookup honestly says "audiobook":
+    // the Audiobookshelf copy is the requested format, so it is an item.
+    const correctlyClassified: LibraryMatch = {
+      libraries: ['Audiobooks'],
+      items: [
+        {
+          source: 'audiobookshelf',
+          media_type: 'audiobook',
+          item_id: 'abs_1',
+          library_id: 'lib',
+          library_name: 'Audiobooks',
+          title: 'The Housemaid',
+          author: 'Freida McFadden',
+          asin: '',
+          isbn13: '9780593135204',
+        },
+      ],
+      other_formats: [],
+    };
+
+    expect(isHeldInFormat(correctlyClassified)).toBe(true);
+  });
+
+  it('the same holding would have landed in other_formats (not held) under the old ebook-default bug', () => {
+    // What the backend returns when no content_type is sent: it defaults to
+    // "ebook", so the very same Audiobookshelf copy is filed as a cross-format
+    // holding instead of an item — this is the bug threading content_type fixes.
+    const defaultedToEbook: LibraryMatch = {
+      libraries: ['Audiobooks'],
+      items: [],
+      other_formats: [
+        {
+          source: 'audiobookshelf',
+          media_type: 'audiobook',
+          item_id: 'abs_1',
+          library_id: 'lib',
+          library_name: 'Audiobooks',
+          title: 'The Housemaid',
+          author: 'Freida McFadden',
+          asin: '',
+          isbn13: '9780593135204',
+        },
+      ],
+    };
+
+    expect(isHeldInFormat(defaultedToEbook)).toBe(false);
+  });
+});
