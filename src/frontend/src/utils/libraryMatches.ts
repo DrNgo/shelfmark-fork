@@ -1,4 +1,5 @@
 import type { Book, ButtonStateInfo } from '../types';
+import { mediaTypeLabel } from './mediaType';
 
 interface LibraryMatchItem {
   source: string;
@@ -159,7 +160,7 @@ export const libraryMatchTooltip = (match: LibraryMatch): string => {
   lines.push(
     ...match.other_formats.map(
       (item, index) =>
-        `${index === 0 ? `Also in your library as ${item.media_type === 'audiobook' ? 'an audiobook' : 'an ebook'}: ` : ''}${describeLibraryMatchItem(item)}`,
+        `${index === 0 ? `Also in your library as ${mediaTypeLabel(item.media_type)}: ` : ''}${describeLibraryMatchItem(item)}`,
     ),
   );
 

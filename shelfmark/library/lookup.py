@@ -13,15 +13,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from shelfmark.core.utils import is_audiobook
-from shelfmark.library.index import (
-    MEDIA_TYPE_AUDIOBOOK,
-    MEDIA_TYPE_EBOOK,
-    LibraryIndexDB,
-    LibraryMatch,
-    get_library_index,
-)
+from shelfmark.library.index import LibraryIndexDB, LibraryMatch, get_library_index
 from shelfmark.library.matching import build_match_keys
+from shelfmark.library.media_type import media_type_for_content_type
 from shelfmark.library.providers import get_providers
 from shelfmark.library.scheduler import is_index_stale
 
@@ -60,10 +54,6 @@ def _match_payload(matches: list[LibraryMatch], requested_media_type: str) -> di
         "items": [_item_payload(m) for m in same],
         "other_formats": [_item_payload(m) for m in other],
     }
-
-
-def _requested_media_type(book: dict[str, Any]) -> str:
-    return MEDIA_TYPE_AUDIOBOOK if is_audiobook(book.get("content_type")) else MEDIA_TYPE_EBOOK
 
 
 def _source_states(library_index: LibraryIndexDB) -> dict[str, dict[str, Any]]:
@@ -134,7 +124,9 @@ def lookup_books(books: list[Any], *, index: LibraryIndexDB | None = None) -> di
 
         found = library_index.find_matches(keys)
         if found:
-            matches[book_id] = _match_payload(found, _requested_media_type(book))
+            matches[book_id] = _match_payload(
+                found, media_type_for_content_type(book.get("content_type"))
+            )
 
     result["matches"] = matches
     return result

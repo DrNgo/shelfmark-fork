@@ -23,6 +23,11 @@ from pathlib import Path
 from shelfmark.core.logger import setup_logger
 from shelfmark.library.matching import build_match_keys
 
+# Re-exported for backward compatibility: several modules and tests import
+# these constants from here rather than from shelfmark.library.media_type,
+# where they are actually defined.
+from shelfmark.library.media_type import MEDIA_TYPE_AUDIOBOOK, MEDIA_TYPE_EBOOK  # noqa: F401
+
 logger = setup_logger(__name__)
 
 # SQLite's default variable limit is 999; keys are looked up in chunks so a
@@ -31,9 +36,6 @@ _MAX_QUERY_KEYS = 500
 
 SOURCE_AUDIOBOOKSHELF = "audiobookshelf"
 SOURCE_GRIMMORY = "grimmory"
-
-MEDIA_TYPE_EBOOK = "ebook"
-MEDIA_TYPE_AUDIOBOOK = "audiobook"
 
 _CREATE_TABLES_SQL = """
 CREATE TABLE IF NOT EXISTS library_items (

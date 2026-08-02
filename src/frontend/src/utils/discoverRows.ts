@@ -1,4 +1,5 @@
 import type { Book, ContentType } from '../types';
+import { MEDIA_TYPE_AUDIOBOOK, MEDIA_TYPE_EBOOK } from './mediaType';
 
 export interface DiscoverRowDef {
   key: string;
@@ -57,4 +58,6 @@ export const visibleRows = (rows: DiscoverRowState[]): DiscoverRowState[] =>
 const AUDIOBOOK_ONLY_PROVIDERS = new Set(['audible']);
 
 export const contentTypeForDiscoverBook = (book: Book): ContentType =>
-  book.provider && AUDIOBOOK_ONLY_PROVIDERS.has(book.provider) ? 'audiobook' : 'ebook';
+  book.provider && AUDIOBOOK_ONLY_PROVIDERS.has(book.provider)
+    ? MEDIA_TYPE_AUDIOBOOK
+    : MEDIA_TYPE_EBOOK;
