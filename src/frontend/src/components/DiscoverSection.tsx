@@ -9,6 +9,7 @@ import type { DiscoverRowState } from '../utils/discoverRows';
 import {
   applyRowError,
   applyRowResponse,
+  contentTypeForDiscoverBook,
   getDiscoverRowsForProvider,
   initialRowStates,
   visibleRows,
@@ -124,11 +125,20 @@ export const DiscoverSection = ({
   const allBooks = useMemo(() => rows.flatMap((row) => row.books ?? []), [rows]);
   // Record keyed by book.id (buildLibraryLookupPayload uses book.id). The
   // index is format-aware, so every row can ask; discover tiles carry no
-  // content type of their own, so the section's own type fills in for them.
-  // Combined rows mix providers with no reliable per-tile format, so they get
-  // no default and fall back to the backend's own default.
+  // content type of their own, so something has to fill it in per book.
+  // Ebook/audiobook mode is unambiguous — the whole section is one format —
+  // so the section's own type covers every book via defaultContentType.
+  // Combined mode mixes rows with no single type, so each book is tagged
+  // individually from its provider before the lookup ever sees it.
+  const booksForLookup = useMemo(
+    () =>
+      contentType === 'combined'
+        ? allBooks.map((book) => ({ ...book, content_type: contentTypeForDiscoverBook(book) }))
+        : allBooks,
+    [allBooks, contentType],
+  );
   const libraryMatches = useLibraryMatches(
-    allBooks,
+    booksForLookup,
     contentType === 'combined' ? undefined : contentType,
   );
 

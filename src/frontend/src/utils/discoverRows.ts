@@ -1,4 +1,4 @@
-import type { Book } from '../types';
+import type { Book, ContentType } from '../types';
 
 export interface DiscoverRowDef {
   key: string;
@@ -44,3 +44,17 @@ export const applyRowError = (rows: DiscoverRowState[], key: string): DiscoverRo
 /** Rows worth rendering: still loading (skeleton) or loaded with books. */
 export const visibleRows = (rows: DiscoverRowState[]): DiscoverRowState[] =>
   rows.filter((row) => row.books === null || row.books.length > 0);
+
+// Discover metadata never carries its own content_type — BookMetadata (the
+// backend shape) has no such field, and transformMetadataToBook doesn't
+// invent one — so a combined row has no per-tile format to hand the library
+// lookup. Without this, an owned audiobook surfaced through a combined row
+// would silently default to "ebook" and fail to badge/lock. Audible is the
+// only registered metadata provider that catalogues audiobooks exclusively
+// (shelfmark/metadata_providers/audible.py; Hardcover, Open Library and
+// Google Books are ebook catalogs with no ASIN support), so provider
+// identity is what stands in for a real content type here.
+const AUDIOBOOK_ONLY_PROVIDERS = new Set(['audible']);
+
+export const contentTypeForDiscoverBook = (book: Book): ContentType =>
+  book.provider && AUDIOBOOK_ONLY_PROVIDERS.has(book.provider) ? 'audiobook' : 'ebook';
