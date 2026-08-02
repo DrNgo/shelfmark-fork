@@ -147,6 +147,19 @@ class TestLookupLibraryMatches:
     """`POST /api/library-matches` is what puts the badge on a search result."""
 
     def test_reports_a_book_already_in_the_library(self, client, indexed_library):
+        """`content_type` here is the post-Task-11/12 payload shape.
+
+        The current frontend (`buildLibraryLookupPayload` / `singleBookLookup`
+        in libraryMatches.ts) does not send `content_type` yet — that wiring
+        lands in Task 11 (payload builders) and Task 12 Step 5 (threading it
+        through DetailsModal, RequestConfirmationModal, ActivityCard). A book
+        without `content_type` classifies as an ebook by design (see
+        `lookup.py::_requested_media_type`), so until those tasks land, an
+        audiobook holding badges only book payloads that already carry
+        `content_type: "audiobook"` — see
+        `test_a_book_without_a_content_type_is_treated_as_an_ebook` below for
+        today's actual, honest behavior with no `content_type` on the wire.
+        """
         del indexed_library
         as_user(client)
 
@@ -176,6 +189,40 @@ class TestLookupLibraryMatches:
         assert payload["enabled"] is True
         assert payload["matches"]["bk1"]["libraries"] == ["Audiobooks"]
         assert "bk2" not in payload["matches"]
+
+    def test_a_book_without_a_content_type_is_treated_as_an_ebook(self, client, indexed_library):
+        """Documents the interim gap: today's frontend sends no `content_type`.
+
+        Until Task 11/12 wire it through, every book payload arrives without
+        `content_type`, so it classifies as an ebook (`lookup.py`'s documented
+        default) regardless of what format is actually held. An audiobook-only
+        holding must therefore report no same-format `items` — the badge and
+        acquire lock stay off — while still surfacing the holding as an
+        advisory `other_formats` entry. This test pins that honest behavior so
+        it cannot be mistaken for "audiobook badges already work end to end,"
+        and it keeps passing unchanged once Tasks 11-12 add `content_type` to
+        real requests, since it never sends one itself.
+        """
+        del indexed_library
+        as_user(client)
+
+        with patch_config(INDEX_ENABLED):
+            response = client.post(
+                "/api/library-matches",
+                json={
+                    "books": [
+                        {"id": "bk1", "title": "The Housemaid", "author": "Freida McFadden"},
+                    ]
+                },
+            )
+
+        assert response.status_code == 200
+        payload = response.get_json()
+        match = payload["matches"]["bk1"]
+        assert match["items"] == []
+        assert match["libraries"] == []
+        assert len(match["other_formats"]) == 1
+        assert match["other_formats"][0]["source"] == "audiobookshelf"
 
     def test_is_available_to_requesters_not_just_admins(self, client, indexed_library):
         """The point is that a requester sees "you already have this" first."""
