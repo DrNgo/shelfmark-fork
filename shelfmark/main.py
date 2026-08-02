@@ -23,7 +23,6 @@ from werkzeug.wrappers import Response
 
 from shelfmark.api.websocket import ws_manager
 from shelfmark.audiobookshelf.destinations import authorize_destination_key
-from shelfmark.audiobookshelf.library_sync import start_library_index_sync
 from shelfmark.config.env import (
     BUILD_VERSION,
     CONFIG_DIR,
@@ -87,6 +86,7 @@ from shelfmark.core.requests_service import (
 from shelfmark.core.user_db import UserDB
 from shelfmark.core.utils import normalize_base_path
 from shelfmark.download import orchestrator as backend
+from shelfmark.library.scheduler import start_library_index_sync
 from shelfmark.release_sources import (
     BrowseRecord,
     Release,

@@ -7,11 +7,6 @@ on Audiobookshelf.
 
 from typing import Any
 
-from shelfmark.audiobookshelf.library_sync import (
-    get_interval_hours,
-    is_index_stale,
-    library_index_enabled,
-)
 from shelfmark.library.index import (
     SOURCE_AUDIOBOOKSHELF,
     LibraryIndexDB,
@@ -19,6 +14,8 @@ from shelfmark.library.index import (
     get_library_index,
 )
 from shelfmark.library.matching import build_match_keys
+from shelfmark.library.providers.audiobookshelf import AudiobookshelfProvider
+from shelfmark.library.scheduler import is_index_stale
 
 # A page of search results is dozens of books; anything past this is either a
 # bug or someone using the endpoint as a bulk library query.
@@ -57,14 +54,15 @@ def lookup_books(books: list[Any], *, index: LibraryIndexDB | None = None) -> di
     as owned the moment any one of them was.
     """
     library_index = index if index is not None else get_library_index()
+    provider = AudiobookshelfProvider()
 
-    if not library_index_enabled():
+    if not provider.is_enabled():
         return {"enabled": False, "stale": False, "last_sync_at": None, "matches": {}}
 
     state = library_index.get_state(SOURCE_AUDIOBOOKSHELF)
     result: dict[str, Any] = {
         "enabled": True,
-        "stale": is_index_stale(state.last_sync_at, interval_hours=get_interval_hours()),
+        "stale": is_index_stale(state.last_sync_at, interval_hours=provider.interval_hours()),
         "last_sync_at": state.last_sync_at,
         "matches": {},
     }
