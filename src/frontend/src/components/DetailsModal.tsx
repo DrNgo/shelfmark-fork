@@ -21,6 +21,12 @@ interface DetailsModalProps {
   buttonState: ButtonStateInfo;
   showReleaseSourceLinks?: boolean;
   onShowToast?: (message: string, type: 'success' | 'error' | 'info') => void;
+  /**
+   * Whether to consult the ABS library index (badge + re-acquire lock). The
+   * index has no format awareness, so ebook surfaces must not inherit state
+   * from audiobook-only holdings.
+   */
+  showInLibraryBadge?: boolean;
 }
 
 interface DetailsModalAutoCloseProps {
@@ -47,6 +53,7 @@ export const DetailsModal = ({
   buttonState,
   showReleaseSourceLinks = true,
   onShowToast,
+  showInLibraryBadge = true,
 }: DetailsModalProps) => {
   const [isQueuing, setIsQueuing] = useState(false);
   const [isClosing, setIsClosing] = useState(false);
@@ -66,8 +73,11 @@ export const DetailsModal = ({
   // bypasses with its own footer button — so without its own lookup, details
   // was the one door left open to re-acquiring a book already held.
   const lookupBooks = useMemo(
-    () => singleBookLookup(`details-${book?.id ?? ''}`, book?.title, book?.author, book?.asin),
-    [book?.id, book?.title, book?.author, book?.asin],
+    () =>
+      showInLibraryBadge
+        ? singleBookLookup(`details-${book?.id ?? ''}`, book?.title, book?.author, book?.asin)
+        : [],
+    [showInLibraryBadge, book?.id, book?.title, book?.author, book?.asin],
   );
   const libraryMatch = useLibraryMatches(lookupBooks)[`details-${book?.id ?? ''}`];
 
