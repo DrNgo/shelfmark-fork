@@ -76,7 +76,8 @@ in one section reads worse than the inconsistency it would resolve.
 
 `build_booklore_config` reads credentials directly and ignores `BOOKLORE_ENABLED`, so
 an existing `BOOKS_OUTPUT_MODE=booklore` install delivers exactly as before after
-upgrade and opts into badges by flipping one checkbox.
+upgrade. Such an install also already has credentials, so the one-time enablement
+migration turns badges on for it automatically.
 
 ## Grimmory API Findings
 
@@ -278,7 +279,8 @@ badges off for entirely.
 
 New Grimmory tab (`order=61`, beside Audiobookshelf), mirroring the ABS tab structure:
 
-- `BOOKLORE_ENABLED` — master toggle, default `False`
+- `BOOKLORE_ENABLED` — master toggle, default `False`, but flipped to `True` by a one-time
+  migration on installs that already have Grimmory credentials (see Rollout)
 - `BOOKLORE_HOST` / `BOOKLORE_USERNAME` / `BOOKLORE_PASSWORD` **move here** from Downloads
 - Test Connection — existing `check_booklore_connection`, extended to report the number
   of books visible to the account alongside the library count it already returns
@@ -306,6 +308,8 @@ New `tests/library/`:
 - **lookup** — format split, `other_formats` population, lock behaviour
 - **grimmory provider** — `media_type` derivation including the mixed EPUB+M4B case,
   pagination, field extraction, missing-metadata handling
+- **enablement migration** — flips on with credentials present, stays off with partial or
+  absent credentials, and does not re-enable after a user unticks the box
 
 Existing `tests/audiobookshelf/test_library_*.py` port to the shared core with their ABS
 behaviour assertions intact. They are the regression net for the refactor and must be
@@ -316,7 +320,18 @@ the lock-vs-tooltip split.
 
 ## Rollout
 
-- No config migration — keys are unchanged and `BOOKLORE_ENABLED` defaults off.
+- **One-time enablement migration.** On first start after upgrade, if `BOOKLORE_ENABLED`
+  has never been persisted and `BOOKLORE_HOST`, `BOOKLORE_USERNAME` and
+  `BOOKLORE_PASSWORD` are all populated, set it to `True` and persist it. Anyone who has
+  already configured Grimmory gets ebook badges without hunting for a checkbox.
+
+  The migration keys off *never persisted*, not off the value, so a user who later
+  unticks the box stays unticked — a migration that re-enabled on every boot would be a
+  setting that refuses to stay off.
+
+  The checkbox still defaults to `False` for fresh installs, matching the Audiobookshelf
+  tab and keeping the Grimmory tab collapsed for people who do not use it.
+- No other config migration — every key is unchanged.
 - `library_index.db` rebuilds itself on first start, since a missing timestamp already
   counts as stale.
 - The orphaned `audiobookshelf_index.db` gets a best-effort unlink on first init so
