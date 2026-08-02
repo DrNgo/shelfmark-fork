@@ -530,6 +530,13 @@ def sync_env_to_config() -> None:
         or (plugins_dir.exists() and any(plugins_dir.glob("*.json")))
     )
 
+    # Ahead of initialize_default_configs(): it would create grimmory.json with
+    # BOOKLORE_ENABLED already defaulted, and "never persisted" would stop being
+    # a usable signal. Within this pair, the tab move runs first because the
+    # enablement check reads the credentials it relocates.
+    migrate_grimmory_connection_tab()
+    migrate_grimmory_enablement()
+
     # Initialize default configs first (for fresh installs)
     initialize_default_configs()
 
@@ -587,6 +594,69 @@ def migrate_search_page_title(*, existing_install: bool, had_existing_value: boo
         return
 
     save_config_file("general", {"SEARCH_PAGE_TITLE": "Book Search & Download"})
+
+
+_GRIMMORY_CONNECTION_KEYS = ("BOOKLORE_HOST", "BOOKLORE_USERNAME", "BOOKLORE_PASSWORD")
+
+
+def migrate_grimmory_connection_tab() -> None:
+    """Move the Grimmory connection keys from the downloads tab to its own.
+
+    Settings are persisted per tab, so relocating these fields relocates where
+    their values are read from. Without this an upgraded install would find them
+    empty and lose both uploads and indexing. The destination keys
+    (BOOKLORE_DESTINATION, BOOKLORE_LIBRARY_ID, BOOKLORE_PATH_ID) configure the
+    upload target and stay on the downloads tab.
+    """
+    downloads = load_config_file("downloads")
+    present = [key for key in _GRIMMORY_CONNECTION_KEYS if key in downloads]
+    if not present:
+        return
+
+    grimmory = load_config_file("grimmory")
+    moved = {key: downloads[key] for key in present if key not in grimmory}
+
+    try:
+        if moved:
+            save_config_file("grimmory", moved)
+
+        remaining = {k: v for k, v in downloads.items() if k not in _GRIMMORY_CONNECTION_KEYS}
+        _ensure_config_dir("downloads")
+        with _get_config_file_path("downloads").open("w") as f:
+            json.dump(remaining, f, indent=2)
+
+        logger.info("Moved %d Grimmory connection settings to their own tab", len(present))
+    except Exception:
+        logger.exception("Failed to move Grimmory connection settings")
+
+
+def migrate_grimmory_enablement() -> None:
+    """Switch the Grimmory integration on where it is already configured.
+
+    Anyone who has filled in a host, username and password has said what they
+    want; making them find a checkbox to get badges hides the feature behind a
+    setting nobody knows to look for.
+
+    Keyed off whether BOOKLORE_ENABLED was ever persisted rather than off its
+    value — keying off the value would produce a setting that silently turns
+    itself back on at every boot.
+
+    This only works if the migration runs BEFORE initialize_default_configs(),
+    which writes every field default into a missing tab file. Called after it,
+    "was it ever persisted?" is always true and this function does nothing.
+    """
+    grimmory = load_config_file("grimmory")
+    if "BOOKLORE_ENABLED" in grimmory:
+        return
+
+    if not all(str(grimmory.get(key, "") or "").strip() for key in _GRIMMORY_CONNECTION_KEYS):
+        return
+
+    try:
+        save_config_file("grimmory", {"BOOKLORE_ENABLED": True})
+        logger.info("Enabled the Grimmory integration for an already-configured install")
+    except Exception:
+        logger.exception("Failed to enable the Grimmory integration")
 
 
 def migrate_mirror_settings() -> None:
