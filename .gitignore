@@ -244,3 +244,4 @@ node_modules/
 # Local tooling / session artefacts (fork-only)
 .codegraph/
 SESSION_STATE.md
+.worktrees/
