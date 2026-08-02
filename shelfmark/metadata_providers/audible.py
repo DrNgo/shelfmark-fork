@@ -327,21 +327,11 @@ class AudibleProvider(MetadataProvider):
         limit: int,
         *,
         released_only: bool = False,
-        break_on_partial: bool = True,
     ) -> list[BookMetadata] | None:
         """Shared browse loop: up to DISCOVER_MAX_PAGES, filter, parse.
 
         Any failed page fails the whole fetch (None) so partial rows are never
         cached as fresh/last-good. [] means the feed genuinely had nothing.
-
-        If break_on_partial is True, stop fetching when a page has fewer than
-        MAX_RESULTS_PER_PAGE products (feed is exhausted). This is used for
-        queries where filtering is light and pages are reliably representative.
-
-        If break_on_partial is False (for released_only queries), continue
-        fetching all pages up to DISCOVER_MAX_PAGES, since date filtering might
-        eliminate all results from a full page. Deduplicate by provider_id to
-        handle test scenarios (not realistic API behavior).
         """
         today = datetime.now(UTC).date().isoformat()
         books: list[BookMetadata] = []
@@ -350,8 +340,6 @@ class AudibleProvider(MetadataProvider):
             products = self._discover_fetch_page(sort, page)
             if products is None:
                 return None
-            # Track if this page was full before filtering, to know when to stop.
-            page_was_full = len(products) >= MAX_RESULTS_PER_PAGE
             for product in products:
                 if not self._is_discover_book(product):
                     continue
@@ -363,20 +351,16 @@ class AudibleProvider(MetadataProvider):
                         continue
                 parsed = self._parse_product(product)
                 if parsed is not None:
-                    # Deduplicate by provider_id (only matters when break_on_partial=False)
                     if parsed.provider_id not in seen_ids:
                         seen_ids.add(parsed.provider_id)
                         books.append(parsed)
                         if len(books) >= limit:
                             return books
-            # Stop if this page was partial and we should break on partial pages.
-            if break_on_partial and not page_was_full:
-                break
         return books
 
     def discover_best_sellers(self, limit: int = 20) -> list[BookMetadata] | None:
         """Best-sellers row. None on failure, [] when nothing qualifies."""
-        return self._discover_browse("BestSellers", limit, break_on_partial=True)
+        return self._discover_browse("BestSellers", limit)
 
     def discover_new_releases(self, limit: int = 20) -> list[BookMetadata] | None:
         """New-releases row: -ReleaseDate browse minus preorders.
@@ -384,7 +368,7 @@ class AudibleProvider(MetadataProvider):
         The sort leads with future issue_dates, so the shared browse loop
         over-fetches and drops anything not yet released.
         """
-        return self._discover_browse("-ReleaseDate", limit, released_only=True, break_on_partial=False)
+        return self._discover_browse("-ReleaseDate", limit, released_only=True)
 
     @cacheable(ttl_key="METADATA_CACHE_SEARCH_TTL", ttl_default=300, key_prefix="audible:search")
     def _search_cached(self, cache_key: str, options: MetadataSearchOptions) -> dict[str, Any]:
