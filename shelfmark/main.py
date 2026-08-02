@@ -51,6 +51,8 @@ from shelfmark.core.auth_modes import (
 )
 from shelfmark.core.config import config as app_config
 from shelfmark.core.cwa_user_sync import upsert_cwa_user
+from shelfmark.core.discover import ROWS_BY_PROVIDER
+from shelfmark.core.discover import get_discover_row as get_discover_row_service
 from shelfmark.core.download_history_service import DownloadHistoryService
 from shelfmark.core.external_user_linking import upsert_external_user
 from shelfmark.core.logger import setup_logger
@@ -1183,6 +1185,7 @@ def api_config() -> Response | tuple[Response, int]:
             "show_combined_selector": app_config.get(
                 "SHOW_COMBINED_SELECTOR", True, user_id=db_user_id
             ),
+            "show_discover_rows": app_config.get("SHOW_DISCOVER_ROWS", True),
             "force_combined_search": app_config.get(
                 "FORCE_COMBINED_SEARCH", False, user_id=db_user_id
             ),
@@ -2614,6 +2617,50 @@ def api_metadata_config() -> Response | tuple[Response, int]:
     except _IMPORT_OPERATIONAL_ERRORS as e:
         logger.error_trace(f"Metadata config error: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+_DISCOVER_CONTENT_TYPES = {"ebook", "audiobook", "combined"}
+_DISCOVER_ROW_KEYS = {key for rows in ROWS_BY_PROVIDER.values() for key, _ in rows}
+
+
+@app.route("/api/discover", methods=["GET"])
+@login_required
+def api_discover() -> Response | tuple[Response, int]:
+    """Return one discover row for the landing page."""
+    if not app_config.get("SHOW_DISCOVER_ROWS", True):
+        return jsonify({"error": "Discover rows are disabled"}), 404
+
+    content_type = request.args.get("content_type", "ebook").strip().lower()
+    row_key = request.args.get("row", "").strip().lower()
+    if content_type not in _DISCOVER_CONTENT_TYPES:
+        return jsonify({"error": f"Invalid content_type: {content_type}"}), 400
+    if row_key not in _DISCOVER_ROW_KEYS:
+        return jsonify({"error": f"Invalid row: {row_key}"}), 400
+
+    db_user_id = get_session_db_user_id(session)
+    row = get_discover_row_service(content_type, row_key, user_id=db_user_id)
+    if row is None:
+        return jsonify({"row": row_key, "books": []})
+
+    from dataclasses import asdict
+
+    from shelfmark.core.utils import transform_cover_url
+
+    books_data = [asdict(book) for book in row.books]
+    for book_dict in books_data:
+        if book_dict.get("cover_url"):
+            cache_id = f"{book_dict['provider']}_{book_dict['provider_id']}"
+            book_dict["cover_url"] = transform_cover_url(book_dict["cover_url"], cache_id)
+
+    return jsonify(
+        {
+            "row": row.key,
+            "label": row.label,
+            "provider": row.provider,
+            "stale": row.stale,
+            "books": books_data,
+        }
+    )
 
 
 @app.route("/api/metadata/search", methods=["GET"])

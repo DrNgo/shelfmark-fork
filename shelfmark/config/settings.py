@@ -488,6 +488,17 @@ def search_mode_settings() -> list[SettingsField]:
             user_overridable=True,
         ),
         CheckboxField(
+            key="SHOW_DISCOVER_ROWS",
+            label="Show Discover Rows",
+            description=(
+                "Show trending and new-release rows on the home page before a "
+                "search. Sourced from Hardcover or Audible depending on the "
+                "configured metadata provider."
+            ),
+            default=True,
+            show_when={"field": "SEARCH_MODE", "value": "universal"},
+        ),
+        CheckboxField(
             key="FORCE_COMBINED_SEARCH",
             label="Always Use Combined Search",
             description="Force combined search whenever it's available. Locks the combined toggle on.",
