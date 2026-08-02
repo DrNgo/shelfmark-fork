@@ -2602,7 +2602,7 @@ function App() {
                 contentType={effectiveCombinedMode ? 'combined' : effectiveContentType}
                 providerName={
                   effectiveCombinedMode
-                    ? configuredCombinedMetadataProvider
+                    ? (configuredCombinedMetadataProvider ?? configuredMetadataProvider)
                     : (effectiveContentType === 'audiobook'
                         ? (configuredAudiobookMetadataProvider ?? configuredMetadataProvider)
                         : configuredMetadataProvider)

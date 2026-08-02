@@ -72,3 +72,31 @@ class TestDiscoverEndpoint:
         assert data["provider"] == "hardcover"
         assert data["stale"] is False
         assert data["books"][0]["title"] == "Book"
+
+    def test_cover_url_is_transformed_with_provider_cache_id(self, client, no_auth):
+        row = DiscoverRow(
+            key="trending",
+            label="Trending",
+            provider="hardcover",
+            books=[
+                BookMetadata(
+                    provider="hardcover",
+                    provider_id="1",
+                    title="Book",
+                    cover_url="https://img.example/x.jpg",
+                )
+            ],
+            stale=False,
+        )
+        with (
+            patch.object(main_module, "get_discover_row_service", return_value=row),
+            patch(
+                "shelfmark.core.utils.transform_cover_url",
+                return_value="/api/covers/hardcover_1?url=abc",
+            ) as mock_transform,
+        ):
+            resp = client.get("/api/discover?content_type=ebook&row=trending")
+        data = resp.get_json()
+        assert resp.status_code == 200
+        assert data["books"][0]["cover_url"] == "/api/covers/hardcover_1?url=abc"
+        mock_transform.assert_called_once_with("https://img.example/x.jpg", "hardcover_1")
