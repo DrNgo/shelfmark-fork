@@ -847,10 +847,11 @@ def get_providers() -> list[LibraryProvider]:
     which imports this package.
     """
     from shelfmark.library.providers.audiobookshelf import AudiobookshelfProvider
-    from shelfmark.library.providers.grimmory import GrimmoryProvider
 
-    return [AudiobookshelfProvider(), GrimmoryProvider()]
+    return [AudiobookshelfProvider()]
 ```
+
+Grimmory is deliberately absent here and is added in Task 6 — importing a module that does not exist yet would make `get_providers()` raise `ModuleNotFoundError` for every caller in this task, including its own tests.
 
 - [ ] **Step 4: Write the ABS provider**
 
@@ -1241,7 +1242,7 @@ def index(tmp_path):
 - [ ] **Step 9: Run the suite**
 
 Run: `pytest tests/library tests/audiobookshelf -q && ruff check shelfmark`
-Expected: PASS. `GrimmoryProvider` does not exist yet, so temporarily have `get_providers()` return only `AudiobookshelfProvider()`; Task 6 restores the second entry.
+Expected: PASS. `get_providers()` returns only `AudiobookshelfProvider()` at this point, by design — Task 6 adds the second entry.
 
 - [ ] **Step 10: Commit**
 
