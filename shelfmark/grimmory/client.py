@@ -166,8 +166,18 @@ def list_books(
         msg = f"Unexpected {BOOKLORE_DISPLAY_NAME} book listing payload"
         raise BookloreError(msg)
 
+    # A missing or non-list `content` is a malformed response, not an empty
+    # library: treating it as empty would let replace_items() wipe out every
+    # cached Grimmory row on a transient API hiccup, when a sync failure is
+    # supposed to record why and leave the previous index in place. An
+    # explicit `"content": []` is a legitimately empty library and must still
+    # succeed.
     content = payload.get("content")
-    books = [row for row in content if isinstance(row, dict)] if isinstance(content, list) else []
+    if not isinstance(content, list):
+        msg = f"Unexpected {BOOKLORE_DISPLAY_NAME} book listing payload: missing 'content' list"
+        raise BookloreError(msg)
+
+    books = [row for row in content if isinstance(row, dict)]
 
     raw_total = payload.get("totalPages")
     total_pages = raw_total if isinstance(raw_total, int) and raw_total > 0 else 1

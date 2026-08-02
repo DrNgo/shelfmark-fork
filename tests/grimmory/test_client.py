@@ -66,6 +66,36 @@ class TestListBooks:
         with pytest.raises(BookloreError):
             list_books(CONFIG, "token", page=0, size=500)
 
+    def test_raises_a_booklore_error_when_content_is_missing(self, monkeypatch):
+        """A 200 with no `content` field must never be read as an empty
+        library — that would let a sync silently wipe the entire cached
+        Grimmory index via replace_items() on a malformed response, when a
+        sync failure is supposed to leave the previous index in place.
+        """
+        monkeypatch.setattr(requests, "get", lambda url, **kw: _Response({"totalPages": 3}))
+
+        with pytest.raises(BookloreError):
+            list_books(CONFIG, "token", page=0, size=500)
+
+    def test_raises_a_booklore_error_when_content_is_not_a_list(self, monkeypatch):
+        monkeypatch.setattr(
+            requests, "get", lambda url, **kw: _Response({"content": "unexpected", "totalPages": 1})
+        )
+
+        with pytest.raises(BookloreError):
+            list_books(CONFIG, "token", page=0, size=500)
+
+    def test_an_explicit_empty_content_list_is_a_legitimately_empty_library(self, monkeypatch):
+        """`{"content": [], "totalPages": 0}` is a real answer from an account
+        that can see nothing — it must still succeed, not be mistaken for the
+        malformed-response case above.
+        """
+        monkeypatch.setattr(
+            requests, "get", lambda url, **kw: _Response({"content": [], "totalPages": 0})
+        )
+
+        assert list_books(CONFIG, "token", page=0, size=500) == ([], 1)
+
 
 class TestConnectionMessage:
     def test_reports_both_library_and_book_counts(self, monkeypatch):
@@ -89,4 +119,52 @@ class TestConnectionMessage:
 
         assert result["success"] is True
         assert "1 libraries" in result["message"]
-        assert "books" in result["message"]
+        assert "3 books" in result["message"]
+
+    def test_a_zero_book_account_is_not_reported_as_having_one_book(self, monkeypatch):
+        """list_books() clamps totalPages to a minimum of 1 for pagination
+        purposes. Reusing that clamp as a book count would report an account
+        that can see nothing as "Connected to Grimmory (0 libraries, 1
+        books)" -- inaccurate in exactly the diagnostic case this message
+        exists to expose.
+        """
+        from shelfmark.config import booklore_settings
+
+        monkeypatch.setattr(
+            booklore_settings, "_get_booklore_select_options", lambda *a, **kw: ([], [])
+        )
+        monkeypatch.setattr(booklore_settings, "booklore_login", lambda cfg: "token")
+        monkeypatch.setattr(booklore_settings, "list_books", lambda *a, **kw: ([], 1))
+
+        result = booklore_settings.check_booklore_connection(
+            {
+                "BOOKLORE_HOST": "http://grimmory:6060",
+                "BOOKLORE_USERNAME": "shelfmark",
+                "BOOKLORE_PASSWORD": "secret",
+            }
+        )
+
+        assert result["success"] is True
+        assert "1 books" not in result["message"]
+        assert "0 books" in result["message"]
+
+    def test_a_single_book_account_uses_grammatical_singular(self, monkeypatch):
+        from shelfmark.config import booklore_settings
+
+        monkeypatch.setattr(
+            booklore_settings, "_get_booklore_select_options", lambda *a, **kw: ([], [])
+        )
+        monkeypatch.setattr(booklore_settings, "booklore_login", lambda cfg: "token")
+        monkeypatch.setattr(booklore_settings, "list_books", lambda *a, **kw: ([{"id": 1}], 1))
+
+        result = booklore_settings.check_booklore_connection(
+            {
+                "BOOKLORE_HOST": "http://grimmory:6060",
+                "BOOKLORE_USERNAME": "shelfmark",
+                "BOOKLORE_PASSWORD": "secret",
+            }
+        )
+
+        assert result["success"] is True
+        assert "1 book)" in result["message"]
+        assert "1 books" not in result["message"]

@@ -190,3 +190,18 @@ export const applyInLibraryLock = (
 /** Whether the book is held in the very format being browsed. */
 export const isHeldInFormat = (match: LibraryMatch | undefined): boolean =>
   (match?.items.length ?? 0) > 0;
+
+/**
+ * The ownership message for the request-confirmation warning banner.
+ *
+ * A same-format holding is a real "you already have this" claim. A
+ * cross-format-only holding is not — telling someone they already own the
+ * ebook because they hold the audiobook is exactly the false-ownership claim
+ * this whole feature exists to prevent, and it must not read as a reason to
+ * abandon the request. So it names the format actually held instead of
+ * claiming ownership of the one being requested.
+ */
+export const libraryMatchOwnershipMessage = (match: LibraryMatch): string =>
+  isHeldInFormat(match)
+    ? 'You already have this. Requesting it anyway is fine — a better edition is still worth having.'
+    : `You already have ${mediaTypeLabel(match.other_formats[0]?.media_type ?? '')} of this — go ahead and request it.`;

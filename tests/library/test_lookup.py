@@ -120,6 +120,33 @@ class TestLookupBooks:
         assert result["enabled"] is False
         assert result["matches"] == {}
 
+    def test_a_disabled_source_contributes_nothing_even_with_indexed_rows(self, index):
+        """Disabling one source while the other stays on is the case
+        `test_reports_disabled_without_touching_the_index` cannot catch,
+        because it disables both sources at once. A user who switches
+        Grimmory off must lose its badges and its acquire lock immediately,
+        even though the rows are still sitting in the index (only a resync
+        removes them) — Grimmory's rows must not surface in `items` *or*
+        `other_formats`.
+        """
+        index.replace_items(
+            SOURCE_GRIMMORY,
+            [
+                _stored(SOURCE_GRIMMORY, MEDIA_TYPE_EBOOK, item_id="grim_ebook"),
+                _stored(SOURCE_GRIMMORY, MEDIA_TYPE_AUDIOBOOK, item_id="grim_audio"),
+            ],
+        )
+
+        with patch_config({**ENABLED, "BOOKLORE_ENABLED": False}):
+            result = lookup_books([_book("ebook")], index=index)
+
+        match = result["matches"].get("b1")
+        assert match is not None, "the still-enabled Audiobookshelf audiobook should surface"
+        assert match["items"] == [], "the disabled Grimmory ebook must not badge or lock"
+        other_sources = {item["source"] for item in match["other_formats"]}
+        assert other_sources == {SOURCE_AUDIOBOOKSHELF}
+        assert all(item["item_id"] != "grim_audio" for item in match["other_formats"])
+
     def test_skips_books_that_cannot_be_matched(self, index):
         """A missing author yields no key; matching on title alone is forbidden."""
         with patch_config(ENABLED):

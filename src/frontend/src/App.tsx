@@ -2674,6 +2674,7 @@ function App() {
                   : getDirectActionButtonState(selectedBook.id)
               }
               showReleaseSourceLinks={config?.show_release_source_links !== false}
+              defaultContentType={effectiveContentType}
             />
           )}
 

@@ -122,7 +122,7 @@ def lookup_books(books: list[Any], *, index: LibraryIndexDB | None = None) -> di
         if not keys:
             continue
 
-        found = library_index.find_matches(keys)
+        found = library_index.find_matches(keys, states.keys())
         if found:
             matches[book_id] = _match_payload(
                 found, media_type_for_content_type(book.get("content_type"))

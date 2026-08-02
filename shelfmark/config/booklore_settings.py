@@ -219,11 +219,18 @@ def check_booklore_connection(
             books_config = _config_from(base_url, username, password)
             token = booklore_login(books_config)
             books, total_pages = list_books(books_config, token, page=0, size=1)
-            if books or total_pages:
-                message = (
-                    f"{message[:-1]}, {total_pages} books)"
-                    if message.endswith(")")
-                    else f"{message} ({total_pages} books)"
-                )
+            # total_pages is list_books()'s paging clamp (never below 1), which
+            # is correct for pagination but not a real book count: reusing it
+            # directly would report an account that can see nothing as having
+            # "1 books". With size=1 each page holds exactly one book, so
+            # total_pages is only a trustworthy count once we know there is at
+            # least one book to count - otherwise it is honestly zero.
+            book_count = total_pages if books else 0
+            book_word = "book" if book_count == 1 else "books"
+            message = (
+                f"{message[:-1]}, {book_count} {book_word})"
+                if message.endswith(")")
+                else f"{message} ({book_count} {book_word})"
+            )
 
         return {"success": True, "message": message}

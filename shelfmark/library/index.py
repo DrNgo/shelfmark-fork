@@ -19,9 +19,13 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from shelfmark.core.logger import setup_logger
 from shelfmark.library.matching import build_match_keys
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 # Re-exported for backward compatibility: several modules and tests import
 # these constants from here rather than from shelfmark.library.media_type,
@@ -235,10 +239,25 @@ class LibraryIndexDB:
 
         return len(rows)
 
-    def find_matches(self, match_keys: set[str]) -> list[LibraryMatch]:
-        """Return every indexed item matching any of `match_keys`, across all sources."""
+    def find_matches(
+        self, match_keys: set[str], sources: Iterable[str] | None = None
+    ) -> list[LibraryMatch]:
+        """Return every indexed item matching any of `match_keys`.
+
+        `sources` restricts the search to that set of sources. Passing `None`
+        searches every source in the index, including ones the caller may have
+        since disabled — callers that need to honor per-source enablement
+        (like the lookup endpoint) must pass the enabled set explicitly, or a
+        switched-off source's stale rows will keep producing badges and
+        acquire locks. Passing an empty collection returns no matches rather
+        than falling back to "every source".
+        """
         keys = [key for key in match_keys if key]
         if not keys:
+            return []
+
+        source_list = list(sources) if sources is not None else None
+        if source_list is not None and not source_list:
             return []
 
         matches: dict[tuple[str, str], LibraryMatch] = {}
@@ -248,6 +267,12 @@ class LibraryIndexDB:
                 for start in range(0, len(keys), _MAX_QUERY_KEYS):
                     chunk = keys[start : start + _MAX_QUERY_KEYS]
                     placeholders = ",".join("?" * len(chunk))
+                    params: list[str] = list(chunk)
+                    source_filter = ""
+                    if source_list is not None:
+                        source_placeholders = ",".join("?" * len(source_list))
+                        source_filter = f" AND i.source IN ({source_placeholders})"
+                        params.extend(source_list)
                     cursor = conn.execute(
                         f"""
                         SELECT DISTINCT i.source, i.item_id, i.library_id, i.library_name,
@@ -255,9 +280,9 @@ class LibraryIndexDB:
                         FROM library_items i
                         JOIN library_item_keys k
                           ON k.item_id = i.item_id AND k.source = i.source
-                        WHERE k.match_key IN ({placeholders})
-                        """,  # noqa: S608 - placeholders only, keys are bound
-                        chunk,
+                        WHERE k.match_key IN ({placeholders}){source_filter}
+                        """,  # noqa: S608 - placeholders only, keys/sources are bound
+                        params,
                     )
                     for row in cursor.fetchall():
                         match = LibraryMatch(

@@ -617,8 +617,18 @@ def migrate_grimmory_connection_tab() -> None:
     moved = {key: downloads[key] for key in present if key not in grimmory}
 
     try:
-        if moved:
-            save_config_file("grimmory", moved)
+        if moved and not save_config_file("grimmory", moved):
+            # save_config_file() swallows its own exceptions and returns False
+            # on failure (e.g. an unwritable plugins/grimmory.json). Stripping
+            # the credentials from downloads.json anyway would delete them
+            # from disk entirely, breaking both uploads and indexing, and the
+            # migration would never retry because `present` would be empty on
+            # every subsequent boot. Leave downloads.json untouched instead.
+            logger.error(
+                "Failed to write Grimmory connection settings to their own tab; "
+                "leaving them in place on the downloads tab to avoid losing them"
+            )
+            return
 
         remaining = {k: v for k, v in downloads.items() if k not in _GRIMMORY_CONNECTION_KEYS}
         _ensure_config_dir("downloads")

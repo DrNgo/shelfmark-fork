@@ -6,6 +6,7 @@ import {
   booksLookupSignature,
   buildLibraryLookupPayload,
   isHeldInFormat,
+  libraryMatchOwnershipMessage,
   libraryMatchTooltip,
   singleBookLookup,
 } from '../utils/libraryMatches';
@@ -418,13 +419,23 @@ describe('acquire-button wiring: isHeldInFormat feeding applyInLibraryLock', () 
 // locks even though the reader already owns the audiobook.
 describe('single-book surfaces thread format and ISBN through the lookup', () => {
   it('DetailsModal-shaped audiobook lookup carries content_type and ISBN', () => {
+    // No Book on the search path ever sets content_type (transformMetadataToBook
+    // never assigns it), so DetailsModal cannot get "audiobook" from book.content_type
+    // itself — it falls back to the defaultContentType prop passed in from App.tsx,
+    // via `book?.content_type ?? defaultContentType`. Modeling anything else here
+    // (e.g. passing 'audiobook' as if it came straight from the book) would exercise
+    // a shape DetailsModal never actually produces.
+    const detailsModalBook: Partial<Book> = { content_type: undefined };
+    const defaultContentType = 'audiobook';
+    const effectiveContentType = detailsModalBook.content_type ?? defaultContentType;
+
     const payload = singleBookLookup(
       'details-bk1',
       'The Housemaid',
       'Freida McFadden',
       undefined,
       '9780593135204',
-      'audiobook',
+      effectiveContentType,
     );
 
     expect(payload).toEqual([
@@ -436,6 +447,81 @@ describe('single-book surfaces thread format and ISBN through the lookup', () =>
         content_type: 'audiobook',
       },
     ]);
+
+    // Close the loop: this is exactly the payload that reaches the backend,
+    // which (per lookup.py's format split) files an audiobook holding under
+    // `items` when the request says "audiobook". Confirm that response locks
+    // the modal's footer button instead of leaving it offering "Get".
+    const audiobookHeldHere: LibraryMatch = {
+      libraries: ['Audiobooks'],
+      items: [
+        {
+          source: 'audiobookshelf',
+          media_type: 'audiobook',
+          item_id: 'abs_1',
+          library_id: 'lib',
+          library_name: 'Audiobooks',
+          title: 'The Housemaid',
+          author: 'Freida McFadden',
+          asin: '',
+          isbn13: '9780593135204',
+        },
+      ],
+      other_formats: [],
+    };
+    const GET: ButtonStateInfo = { state: 'download', text: 'Get' };
+
+    expect(isHeldInFormat(audiobookHeldHere)).toBe(true);
+    expect(applyInLibraryLock(GET, isHeldInFormat(audiobookHeldHere))).toEqual({
+      state: 'blocked',
+      text: 'In library',
+    });
+  });
+
+  it('regresses to a false "Get" without defaultContentType (the pre-fix DetailsModal)', () => {
+    // Before DetailsModal accepted a defaultContentType prop, this is what it
+    // actually sent: book.content_type alone, which is always undefined for
+    // every Book on the search path. This test pins that failure mode so a
+    // future regression that drops the defaultContentType fallback is caught
+    // here, not in production.
+    const detailsModalBookNoFallback: Partial<Book> = { content_type: undefined };
+    const effectiveContentTypeWithoutFallback = detailsModalBookNoFallback.content_type;
+
+    const payload = singleBookLookup(
+      'details-bk1',
+      'The Housemaid',
+      'Freida McFadden',
+      undefined,
+      '9780593135204',
+      effectiveContentTypeWithoutFallback,
+    );
+
+    // No content_type on the wire means the backend classifies the request as
+    // an ebook (media_type_for_content_type's documented default), so the
+    // very same Audiobookshelf copy is filed under other_formats, not items.
+    expect(payload[0]?.content_type).toBeUndefined();
+
+    const audiobookFiledAsOtherFormat: LibraryMatch = {
+      libraries: ['Audiobooks'],
+      items: [],
+      other_formats: [
+        {
+          source: 'audiobookshelf',
+          media_type: 'audiobook',
+          item_id: 'abs_1',
+          library_id: 'lib',
+          library_name: 'Audiobooks',
+          title: 'The Housemaid',
+          author: 'Freida McFadden',
+          asin: '',
+          isbn13: '9780593135204',
+        },
+      ],
+    };
+    const GET: ButtonStateInfo = { state: 'download', text: 'Get' };
+
+    expect(isHeldInFormat(audiobookFiledAsOtherFormat)).toBe(false);
+    expect(applyInLibraryLock(GET, isHeldInFormat(audiobookFiledAsOtherFormat))).toBe(GET);
   });
 
   it('an audiobook holding lands in items (held) when content_type is passed, not other_formats', () => {
@@ -485,5 +571,68 @@ describe('single-book surfaces thread format and ISBN through the lookup', () =>
     };
 
     expect(isHeldInFormat(defaultedToEbook)).toBe(false);
+  });
+});
+
+describe('libraryMatchOwnershipMessage', () => {
+  const audiobookHeldHere: LibraryMatch = {
+    libraries: ['Audiobooks'],
+    items: [
+      {
+        source: 'audiobookshelf',
+        media_type: 'audiobook',
+        item_id: 'abs_1',
+        library_id: 'lib',
+        library_name: 'Audiobooks',
+        title: 'The Housemaid',
+        author: 'Freida McFadden',
+        asin: '',
+        isbn13: '',
+      },
+    ],
+    other_formats: [],
+  };
+
+  const audiobookOnly: LibraryMatch = {
+    libraries: ['Audiobooks'],
+    items: [],
+    other_formats: [
+      {
+        source: 'audiobookshelf',
+        media_type: 'audiobook',
+        item_id: 'abs_1',
+        library_id: 'lib',
+        library_name: 'Audiobooks',
+        title: 'The Housemaid',
+        author: 'Freida McFadden',
+        asin: '',
+        isbn13: '',
+      },
+    ],
+  };
+
+  it('claims ownership for a same-format holding', () => {
+    expect(libraryMatchOwnershipMessage(audiobookHeldHere)).toContain('You already have this');
+  });
+
+  it('does NOT claim ownership for a cross-format-only holding', () => {
+    // This is the exact failure mode the whole feature exists to prevent:
+    // telling an ebook requester they already own it because they hold the
+    // audiobook would talk them out of a request they are entitled to make.
+    const message = libraryMatchOwnershipMessage(audiobookOnly);
+
+    expect(message).not.toContain('You already have this');
+    expect(message).not.toMatch(/already have this/i);
+  });
+
+  it('names the format actually held for a cross-format-only holding', () => {
+    expect(libraryMatchOwnershipMessage(audiobookOnly)).toContain('an audiobook');
+  });
+
+  it('does not read as a reason to abandon the request', () => {
+    const message = libraryMatchOwnershipMessage(audiobookOnly);
+
+    expect(message.toLowerCase()).not.toContain("don't request");
+    expect(message.toLowerCase()).not.toContain('cannot request');
   });
 });

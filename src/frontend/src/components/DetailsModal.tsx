@@ -21,6 +21,13 @@ interface DetailsModalProps {
   buttonState: ButtonStateInfo;
   showReleaseSourceLinks?: boolean;
   onShowToast?: (message: string, type: 'success' | 'error' | 'info') => void;
+  /**
+   * Fills in for a book that carries no content_type of its own — no Book in
+   * the search path sets it, so without this the lookup always falls back to
+   * "ebook" and an owned audiobook never locks here, even though the grid
+   * card it was opened from already does.
+   */
+  defaultContentType?: string;
 }
 
 interface DetailsModalAutoCloseProps {
@@ -47,6 +54,7 @@ export const DetailsModal = ({
   buttonState,
   showReleaseSourceLinks = true,
   onShowToast,
+  defaultContentType,
 }: DetailsModalProps) => {
   const [isQueuing, setIsQueuing] = useState(false);
   const [isClosing, setIsClosing] = useState(false);
@@ -73,7 +81,7 @@ export const DetailsModal = ({
         book?.author,
         book?.asin,
         book?.isbn_13 ?? book?.isbn_10,
-        book?.content_type,
+        book?.content_type ?? defaultContentType,
       ),
     [
       book?.id,
@@ -83,6 +91,7 @@ export const DetailsModal = ({
       book?.isbn_13,
       book?.isbn_10,
       book?.content_type,
+      defaultContentType,
     ],
   );
   const libraryMatch = useLibraryMatches(lookupBooks)[`details-${book?.id ?? ''}`];

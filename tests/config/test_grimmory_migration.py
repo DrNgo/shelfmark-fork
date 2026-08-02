@@ -92,6 +92,35 @@ class TestConnectionTabMove:
 
         assert _read(config_dir, "grimmory") == {}
 
+    def test_leaves_credentials_in_place_when_the_destination_write_fails(
+        self, config_dir, monkeypatch
+    ):
+        """save_config_file() swallows its own exceptions and returns False on
+        failure (e.g. an unwritable plugins/grimmory.json after a container UID
+        change). If the migration stripped the credentials from downloads.json
+        regardless, they would be deleted from disk entirely -- breaking both
+        uploads and indexing -- and the migration would never retry, because
+        `present` would be empty on every subsequent boot.
+        """
+        _write(
+            config_dir,
+            "downloads",
+            {
+                "BOOKLORE_HOST": "http://grimmory:6060",
+                "BOOKLORE_USERNAME": "shelfmark",
+                "BOOKLORE_PASSWORD": "secret",
+            },
+        )
+        monkeypatch.setattr(settings_registry, "save_config_file", lambda *args, **kwargs: False)
+
+        settings_registry.migrate_grimmory_connection_tab()
+
+        downloads = _read(config_dir, "downloads")
+        assert downloads["BOOKLORE_HOST"] == "http://grimmory:6060"
+        assert downloads["BOOKLORE_USERNAME"] == "shelfmark"
+        assert downloads["BOOKLORE_PASSWORD"] == "secret"
+        assert _read(config_dir, "grimmory") == {}
+
 
 class TestEnablement:
     def test_switches_on_when_credentials_are_present(self, config_dir):
