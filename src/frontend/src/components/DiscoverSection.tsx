@@ -123,7 +123,10 @@ export const DiscoverSection = ({
 
   const allBooks = useMemo(() => rows.flatMap((row) => row.books ?? []), [rows]);
   // Record keyed by book.id (buildLibraryLookupPayload uses book.id).
-  const libraryMatches = useLibraryMatches(allBooks);
+  // The ABS library index matches by title/author with no format awareness, so
+  // an ebook tile would inherit the badge from an audiobook copy — only
+  // audiobook rows may consult it.
+  const libraryMatches = useLibraryMatches(contentType === 'audiobook' ? allBooks : []);
 
   const rendered = visibleRows(rows);
   if (rendered.length === 0) {
