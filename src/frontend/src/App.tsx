@@ -997,11 +997,15 @@ function App() {
     // Discover metadata never carries content_type (see discoverRows.ts), and
     // DiscoverSection only tags books internally for its own library lookup —
     // it renders (and hands off to onDetails) the untagged row.books entries.
-    // Tag it here the same way the grid does so DetailsModal's own lookup
-    // uses the book's real per-tile format instead of falling back to
-    // defaultContentType (the section-wide type combined rows deliberately
-    // don't use, since a combined row mixes formats).
-    const taggedBook = { ...book, content_type: contentTypeForDiscoverBook(book) };
+    // Mirror DiscoverSection's own gate (DiscoverSection.tsx:133-143): only
+    // combined mode mixes formats within a row, so only there does per-book
+    // tagging beat the section-wide type. In single-format mode (the whole
+    // section is one format), leave the book untagged so DetailsModal's
+    // `book?.content_type ?? defaultContentType` fallback keeps using the
+    // correct section-wide type instead of a provider-based guess.
+    const taggedBook = effectiveCombinedMode
+      ? { ...book, content_type: contentTypeForDiscoverBook(book) }
+      : book;
     try {
       const fullBook = await getMetadataBookInfo(taggedBook.provider, taggedBook.provider_id);
       setSelectedBook({
