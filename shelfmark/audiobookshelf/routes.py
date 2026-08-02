@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 from flask import Flask, jsonify, request, session
 
 from shelfmark.audiobookshelf.destinations import list_destination_options
-from shelfmark.audiobookshelf.library_lookup import lookup_books
+from shelfmark.library.lookup import lookup_books
 
 if TYPE_CHECKING:
     from collections.abc import Callable

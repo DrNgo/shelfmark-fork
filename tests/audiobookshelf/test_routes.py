@@ -155,8 +155,18 @@ class TestLookupLibraryMatches:
                 "/api/library-matches",
                 json={
                     "books": [
-                        {"id": "bk1", "title": "The Housemaid", "author": "Freida McFadden"},
-                        {"id": "bk2", "title": "The Coworker", "author": "Freida McFadden"},
+                        {
+                            "id": "bk1",
+                            "title": "The Housemaid",
+                            "author": "Freida McFadden",
+                            "content_type": "audiobook",
+                        },
+                        {
+                            "id": "bk2",
+                            "title": "The Coworker",
+                            "author": "Freida McFadden",
+                            "content_type": "audiobook",
+                        },
                     ]
                 },
             )
@@ -223,5 +233,6 @@ class TestLookupLibraryMatches:
             "enabled": False,
             "stale": False,
             "last_sync_at": None,
+            "sources": {},
             "matches": {},
         }
