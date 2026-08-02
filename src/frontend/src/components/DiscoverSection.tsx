@@ -51,17 +51,21 @@ const DiscoverTile = ({
       className="w-32 flex-none snap-start text-left"
       title={book.title}
     >
-      <div className="relative">
+      {/* Audiobook art is square; portrait would letterbox it (same rule as CardView). */}
+      <div
+        className="relative w-32"
+        style={{ aspectRatio: book.cover_aspect === 'square' ? '1/1' : '2/3' }}
+      >
         {book.preview && !imageError ? (
           <img
             src={book.preview}
             alt={book.title}
             loading="lazy"
             onError={() => setImageError(true)}
-            className="h-48 w-32 rounded-lg object-cover shadow-sm"
+            className="h-full w-full rounded-lg object-cover shadow-sm"
           />
         ) : (
-          <div className="flex h-48 w-32 items-center justify-center rounded-lg bg-(--bg-soft) p-2 text-center text-xs opacity-70">
+          <div className="flex h-full w-full items-center justify-center rounded-lg bg-(--bg-soft) p-2 text-center text-xs opacity-70">
             {book.title}
           </div>
         )}
@@ -136,7 +140,9 @@ export const DiscoverSection = ({
               {Array.from({ length: 6 }, (_, i) => (
                 <div
                   key={i}
-                  className="h-48 w-32 flex-none animate-pulse rounded-lg bg-(--bg-soft)"
+                  className="w-32 flex-none animate-pulse rounded-lg bg-(--bg-soft)"
+                  // Audible covers are square; match the skeleton so rows don't jump.
+                  style={{ aspectRatio: providerName === 'audible' ? '1/1' : '2/3' }}
                 />
               ))}
             </div>
