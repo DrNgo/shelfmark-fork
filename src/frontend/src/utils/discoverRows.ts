@@ -61,3 +61,18 @@ export const contentTypeForDiscoverBook = (book: Book): ContentType =>
   book.provider && AUDIOBOOK_ONLY_PROVIDERS.has(book.provider)
     ? MEDIA_TYPE_AUDIOBOOK
     : MEDIA_TYPE_EBOOK;
+
+// Discover metadata never carries its own content_type — BookMetadata (the
+// backend shape) has no such field, and transformMetadataToBook doesn't
+// invent one — so DetailsModal falls back to the section-wide
+// defaultContentType unless the caller tags the book itself. Mirror
+// DiscoverSection's own gate (DiscoverSection.tsx:133-143): only combined
+// mode mixes formats within a row, so only there does per-book tagging beat
+// the section-wide type. In single-format mode (the whole section is one
+// format), stay undefined so DetailsModal's
+// `book?.content_type ?? defaultContentType` fallback keeps using the
+// correct section-wide type instead of a provider-based guess.
+export const contentTypeForDiscoverDetails = (
+  book: Book,
+  isCombinedMode: boolean,
+): ContentType | undefined => (isCombinedMode ? contentTypeForDiscoverBook(book) : undefined);

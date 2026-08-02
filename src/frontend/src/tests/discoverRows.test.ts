@@ -5,6 +5,7 @@ import {
   applyRowError,
   applyRowResponse,
   contentTypeForDiscoverBook,
+  contentTypeForDiscoverDetails,
   getDiscoverRowsForProvider,
   initialRowStates,
   visibleRows,
@@ -18,6 +19,14 @@ const book = (id: string): Book => ({ id, title: `Book ${id}`, author: 'A' });
 // argument): `book.content_type ?? defaultContentType`.
 const resolveModalContentType = (candidate: Book, defaultContentType: string): string =>
   candidate.content_type ?? defaultContentType;
+
+// Reproduces handleShowDiscoverDetails's own call site verbatim
+// (App.tsx:1002-1004): the real gate under test, contentTypeForDiscoverDetails,
+// decides whether to tag; this just applies its answer the same way App.tsx does.
+const buildTaggedBook = (candidate: Book, isCombinedMode: boolean): Book => {
+  const discoverContentType = contentTypeForDiscoverDetails(candidate, isCombinedMode);
+  return discoverContentType ? { ...candidate, content_type: discoverContentType } : candidate;
+};
 
 describe('getDiscoverRowsForProvider', () => {
   it('returns trending + new releases for hardcover', () => {
@@ -103,86 +112,50 @@ describe('contentTypeForDiscoverBook', () => {
   });
 });
 
-describe('handleShowDiscoverDetails regression (App.tsx)', () => {
-  // App.tsx has no component-render harness available (no RTL/jsdom, and
-  // `npm install` is off-limits here), so this exercises the real
-  // `contentTypeForDiscoverBook` classifier plus the real composition
-  // expression the modal uses (resolveModalContentType, defined above).
+describe('contentTypeForDiscoverDetails', () => {
+  // This is the real gate handleShowDiscoverDetails (App.tsx) calls before
+  // opening a Discover tile's details modal — extracted so tests can exercise
+  // the actual decision instead of hardcoding its outcome. App.tsx has no
+  // component-render harness available (no RTL/jsdom, and `npm install` is
+  // off-limits here), so `buildTaggedBook` below reproduces App.tsx's own
+  // call site verbatim (App.tsx:1002-1005) and `resolveModalContentType`
+  // reproduces the exact composition DetailsModal applies to whatever comes
+  // out of it. Together they exercise the full path end to end.
   //
-  // Regression scenario: a combined-mode Discover row mixes an Audible
-  // audiobook tile with a Hardcover ebook tile. The section-wide
-  // defaultContentType passed to the modal reflects whichever tile the user
-  // is *currently viewing's neighbor row phase* — here simulated as
-  // 'audiobook' to match the bug report (user owns the audiobook; opens the
-  // ebook tile). Before the fix, handleShowDiscoverDetails put the book into
-  // setSelectedBook untagged, so DetailsModal fell back to defaultContentType
-  // and asked the library lookup for 'audiobook' — even though the tile is a
-  // Hardcover ebook. That produced a false "In library" lock on a book the
-  // user does not own as an ebook.
+  // Two regressions have hit this exact gate in opposite directions:
+  //   1. Untagged combined-mode books fell back to the section-wide type and
+  //      produced a false "already own this" lock.
+  //   2. Unconditional tagging misclassified single-format audiobook rows
+  //      served by an ebook-only provider (Hardcover, in audiobook-only mode)
+  //      as ebooks.
+  // The four quadrants below are the full matrix that must hold for both bugs
+  // to stay fixed.
 
-  it('tags an ebook-provider tile as ebook even when the section-wide type is audiobook', () => {
-    const hardcoverTile: Book = { id: 'hc-1', title: 'T', author: 'A', provider: 'hardcover' };
-    const defaultContentType = 'audiobook'; // effectiveContentType at the time the tile was opened
+  it('combined mode + Audible tile -> tags audiobook regardless of section default', () => {
+    const audibleTile: Book = { id: 'ab-1', title: 'T', author: 'A', provider: 'audible' };
+    const defaultContentType = 'ebook'; // section-wide default should be overridden by the tag
 
-    // This is the fix: handleShowDiscoverDetails now tags the book the same
-    // way DiscoverSection's own library lookup does before handing it to
-    // setSelectedBook, so DetailsModal never needs its defaultContentType
-    // fallback for a book that has a knowable per-tile format.
-    const taggedBook: Book = {
-      ...hardcoverTile,
-      content_type: contentTypeForDiscoverBook(hardcoverTile),
-    };
+    const taggedBook = buildTaggedBook(audibleTile, true);
 
-    expect(resolveModalContentType(taggedBook, defaultContentType)).toBe('ebook');
-  });
-
-  it('proves the bug: an UNTAGGED book falls back to the section-wide default and mislabels the tile', () => {
-    // This reproduces the pre-fix behaviour directly (no tagging applied —
-    // exactly what handleShowDiscoverDetails did before this change), to
-    // demonstrate why the fix above is necessary rather than a no-op.
-    const hardcoverTile: Book = { id: 'hc-1', title: 'T', author: 'A', provider: 'hardcover' };
-    const defaultContentType = 'audiobook';
-
-    expect(resolveModalContentType(hardcoverTile, defaultContentType)).toBe('audiobook');
-  });
-});
-
-describe('handleShowDiscoverDetails gating fix (App.tsx) — non-combined mode must not tag', () => {
-  // The unconditional-tagging fix above was itself wrong for single-format
-  // (non-combined) Discover. With METADATA_PROVIDER_AUDIOBOOK unset (default),
-  // get_configured_provider_name falls back to the main METADATA_PROVIDER,
-  // which can be 'hardcover' (shelfmark/config/settings.py:525-532;
-  // shelfmark/metadata_providers/__init__.py:589-598). In audiobook-only
-  // Discover mode, Hardcover then serves genuine audiobook rows via dedicated
-  // audio queries (shelfmark/core/discover.py:91,117) whose BookMetadata still
-  // carries provider: 'hardcover' (shelfmark/metadata_providers/hardcover.py:3078).
-  // 'hardcover' is NOT in AUDIOBOOK_ONLY_PROVIDERS (discoverRows.ts:58), so
-  // contentTypeForDiscoverBook misclassifies these tiles as 'ebook'.
-  //
-  // The fix: handleShowDiscoverDetails now only tags the book when
-  // effectiveCombinedMode is true (mirroring DiscoverSection's own gate at
-  // DiscoverSection.tsx:133-143). Outside combined mode it leaves the book
-  // untagged, so DetailsModal's `book?.content_type ?? defaultContentType`
-  // fallback uses the correct section-wide 'audiobook' type instead of a
-  // provider-based guess.
-
-  it('an audiobook-only hardcover tile resolves to audiobook via the defaultContentType fallback (fixed, non-combined mode)', () => {
-    const hardcoverAudiobookTile: Book = {
-      id: 'hc-2',
-      title: 'T',
-      author: 'A',
-      provider: 'hardcover',
-    };
-    const defaultContentType = 'audiobook'; // effectiveContentType in audiobook-only mode
-
-    // effectiveCombinedMode === false here, so handleShowDiscoverDetails
-    // leaves the book untagged — exactly like passing it straight through.
-    const taggedBook = hardcoverAudiobookTile;
-
+    expect(taggedBook.content_type).toBe('audiobook'); // the gate actually tagged it
     expect(resolveModalContentType(taggedBook, defaultContentType)).toBe('audiobook');
   });
 
-  it('proves the bug: unconditional tagging (pre-fix behaviour) mislabels the same tile as ebook', () => {
+  it('combined mode + Hardcover tile -> tags ebook regardless of section default', () => {
+    const hardcoverTile: Book = { id: 'hc-1', title: 'T', author: 'A', provider: 'hardcover' };
+    const defaultContentType = 'audiobook'; // section-wide default should be overridden by the tag
+
+    const taggedBook = buildTaggedBook(hardcoverTile, true);
+
+    expect(taggedBook.content_type).toBe('ebook'); // the gate actually tagged it
+    expect(resolveModalContentType(taggedBook, defaultContentType)).toBe('ebook');
+  });
+
+  it('audiobook-only mode (non-combined) + Hardcover tile -> stays untagged, resolves via defaultContentType fallback', () => {
+    // Audiobook-only Discover can be served by Hardcover (see module comment
+    // above); the provider alone can't tell contentTypeForDiscoverBook this
+    // is an audiobook row, so the gate must NOT tag here — the section-wide
+    // default carries the correct answer instead.
     const hardcoverAudiobookTile: Book = {
       id: 'hc-2',
       title: 'T',
@@ -191,17 +164,19 @@ describe('handleShowDiscoverDetails gating fix (App.tsx) — non-combined mode m
     };
     const defaultContentType = 'audiobook';
 
-    // This reproduces exactly what handleShowDiscoverDetails did before this
-    // fix: tag every discover book unconditionally, regardless of mode.
-    const unconditionallyTaggedBook: Book = {
-      ...hardcoverAudiobookTile,
-      content_type: contentTypeForDiscoverBook(hardcoverAudiobookTile),
-    };
+    const taggedBook = buildTaggedBook(hardcoverAudiobookTile, false);
 
-    // Wrong: the tile is a genuine audiobook, but contentTypeForDiscoverBook
-    // has no way to know that for a non-audiobook-only provider, so it
-    // defaults to 'ebook' — overriding the correct defaultContentType
-    // fallback and suppressing the audiobook lock.
-    expect(resolveModalContentType(unconditionallyTaggedBook, defaultContentType)).toBe('ebook');
+    expect(taggedBook).toBe(hardcoverAudiobookTile); // untagged: same object, no content_type stamped
+    expect(resolveModalContentType(taggedBook, defaultContentType)).toBe('audiobook');
+  });
+
+  it('ebook-only mode (non-combined) + Hardcover tile -> stays untagged, resolves via defaultContentType fallback', () => {
+    const hardcoverEbookTile: Book = { id: 'hc-3', title: 'T', author: 'A', provider: 'hardcover' };
+    const defaultContentType = 'ebook';
+
+    const taggedBook = buildTaggedBook(hardcoverEbookTile, false);
+
+    expect(taggedBook).toBe(hardcoverEbookTile); // untagged: same object, no content_type stamped
+    expect(resolveModalContentType(taggedBook, defaultContentType)).toBe('ebook');
   });
 });

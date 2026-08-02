@@ -87,7 +87,7 @@ import { withBasePath } from './utils/basePath';
 import { emitBookTargetChange } from './utils/bookTargetEvents';
 import { bookSupportsTargets } from './utils/bookTargetLoader';
 import { buildSearchQuery } from './utils/buildSearchQuery';
-import { contentTypeForDiscoverBook } from './utils/discoverRows';
+import { contentTypeForDiscoverDetails } from './utils/discoverRows';
 import { wasDownloadQueuedAfterResponseError } from './utils/downloadRecovery';
 import { getDynamicOptionGroup } from './utils/dynamicFieldOptions';
 import { getConfiguredMetadataProviderForContentType } from './utils/metadataProviders';
@@ -994,18 +994,13 @@ function App() {
       showToast('Failed to load book details', 'error');
       return;
     }
-    // Discover metadata never carries content_type (see discoverRows.ts), and
     // DiscoverSection only tags books internally for its own library lookup —
-    // it renders (and hands off to onDetails) the untagged row.books entries.
-    // Mirror DiscoverSection's own gate (DiscoverSection.tsx:133-143): only
-    // combined mode mixes formats within a row, so only there does per-book
-    // tagging beat the section-wide type. In single-format mode (the whole
-    // section is one format), leave the book untagged so DetailsModal's
-    // `book?.content_type ?? defaultContentType` fallback keeps using the
-    // correct section-wide type instead of a provider-based guess.
-    const taggedBook = effectiveCombinedMode
-      ? { ...book, content_type: contentTypeForDiscoverBook(book) }
-      : book;
+    // it renders (and hands off to onDetails) the untagged row.books entries,
+    // so this is where the tile gets its per-book content_type before the
+    // modal opens. See contentTypeForDiscoverDetails (discoverRows.ts) for
+    // why the gate is mode-dependent.
+    const discoverContentType = contentTypeForDiscoverDetails(book, effectiveCombinedMode);
+    const taggedBook = discoverContentType ? { ...book, content_type: discoverContentType } : book;
     try {
       const fullBook = await getMetadataBookInfo(taggedBook.provider, taggedBook.provider_id);
       setSelectedBook({
