@@ -81,7 +81,7 @@ git mv shelfmark/audiobookshelf/matching.py shelfmark/library/matching.py
 git mv tests/audiobookshelf/test_matching.py tests/library/test_matching.py
 ```
 
-- [ ] **Step 3: Update the three importers**
+- [ ] **Step 3: Update the importers — two production modules and the moved test**
 
 In `shelfmark/audiobookshelf/library_index.py`, `shelfmark/audiobookshelf/library_lookup.py`, and `tests/library/test_matching.py`, replace `shelfmark.audiobookshelf.matching` with `shelfmark.library.matching`.
 
@@ -540,12 +540,17 @@ In `initialize()`, after the `executescript` block:
         The index is a cache that rebuilds on the next sync, so the old file is
         dead weight rather than data. Failing to remove it must never stop the
         new index coming up.
+
+        The -wal and -shm sidecars go too: the old index ran in WAL mode, so
+        removing only the main file would leave two orphans behind and defeat
+        the point of cleaning up at all.
         """
-        legacy = Path(self._db_path).with_name(_LEGACY_DB_NAME)
-        with suppress(OSError):
-            if legacy.exists():
-                legacy.unlink()
-                logger.info("Removed superseded index %s", legacy)
+        base = Path(self._db_path).with_name(_LEGACY_DB_NAME)
+        for legacy in (base, base.with_name(f"{base.name}-wal"), base.with_name(f"{base.name}-shm")):
+            with suppress(OSError):
+                if legacy.exists():
+                    legacy.unlink()
+                    logger.info("Removed superseded index file %s", legacy)
 ```
 
 Add `from contextlib import suppress` to the imports.
@@ -1004,6 +1009,7 @@ from __future__ import annotations
 
 import threading
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -1031,16 +1037,25 @@ class SyncResult:
 
 
 def sync_provider(provider: LibraryProvider, index: LibraryIndexDB) -> SyncResult:
-    """Rebuild one source's slice of the index, or explain why it could not be."""
+    """Rebuild one source's slice of the index, or explain why it could not be.
+
+    The storage write is inside the guard, not just the fetch. A full disk or a
+    locked database is exactly as much a sync failure as an unreachable server,
+    and letting it escape would take down the caller — the settings action
+    button and the scheduler cycle both call straight through here.
+    """
     try:
         items = provider.fetch_items()
+        stored = index.replace_items(provider.source, items)
     except PROVIDER_ERRORS as e:
         message = f"Library sync failed: {e!s}"
         logger.warning("%s (%s)", message, provider.source)
-        index.record_failure(provider.source, message)
+        # Best effort: if the index itself is what failed, recording the failure
+        # may fail too, and that must not escape either.
+        with suppress(Exception):
+            index.record_failure(provider.source, message)
         return SyncResult(success=False, item_count=0, message=message)
 
-    stored = index.replace_items(provider.source, items)
     logger.info("Indexed %d items from %s", stored, provider.source)
     return SyncResult(
         success=True,
@@ -1181,6 +1196,20 @@ class TestSyncProvider:
         assert result.success is False
         assert index.get_state(SOURCE_GRIMMORY).item_count == 1
         assert "connection refused" in index.get_state(SOURCE_GRIMMORY).last_error
+
+    def test_a_storage_failure_is_reported_rather_than_raised(self, index, monkeypatch):
+        # The settings "Sync Library Now" button and the scheduler both call
+        # straight through here, so a locked or full database has to come back
+        # as a result, not as an exception.
+        def boom(*args, **kwargs):
+            raise OSError("database is locked")
+
+        monkeypatch.setattr(index, "replace_items", boom)
+
+        result = sync_provider(_StubProvider([_item()]), index)
+
+        assert result.success is False
+        assert "database is locked" in result.message
 ```
 
 Add the shared `index` fixture to `tests/library/conftest.py`:
@@ -1205,6 +1234,8 @@ def index(tmp_path):
 
 - `shelfmark/main.py:26` — `from shelfmark.audiobookshelf.library_sync import start_library_index_sync` becomes `from shelfmark.library.scheduler import start_library_index_sync`.
 - `shelfmark/audiobookshelf/settings.py` — `sync_library_index_now` calls `run_sync_now(SOURCE_AUDIOBOOKSHELF)`; import `LIBRARY_INDEX_ENABLED_KEY` and `LIBRARY_INDEX_INTERVAL_KEY` from `shelfmark.library.providers.audiobookshelf`.
+
+  `tests/audiobookshelf/test_library_index_settings.py:58` already asserts that an unexpected `OSError("disk full")` comes back as a structured failure response rather than escaping this callback. Keep that test passing unchanged — it is the contract the `sync_provider` guard above exists to satisfy, and the new Grimmory callback in Task 9 inherits the same guarantee through `run_sync_now`.
 - `shelfmark/audiobookshelf/library_lookup.py` — import `is_index_stale` from `shelfmark.library.scheduler`, and replace `library_index_enabled()` / `get_interval_hours()` with `AudiobookshelfProvider()` calls. This file is replaced in Task 7.
 
 - [ ] **Step 9: Run the suite**
@@ -1387,7 +1418,65 @@ def list_books(
 
 Add `from typing import Any` and `import requests` to the imports.
 
-- [ ] **Step 4: Re-point the two existing importers**
+- [ ] **Step 4: Report the visible book count from Test Connection**
+
+The spec requires Test Connection to show how many books the account can actually see, because `GET /api/v1/books` is user-scoped and a non-admin service account silently indexes only its assigned libraries — a failure that otherwise shows up as mysteriously missing badges. `check_booklore_connection` currently reports only the library count (`shelfmark/config/booklore_settings.py:195-204`).
+
+Add to `tests/grimmory/test_client.py`:
+
+```python
+class TestConnectionMessage:
+    def test_reports_both_library_and_book_counts(self, monkeypatch):
+        from shelfmark.config import booklore_settings
+
+        monkeypatch.setattr(
+            booklore_settings,
+            "_get_booklore_select_options",
+            lambda *a, **kw: ([{"value": "1", "label": "Ebooks"}], []),
+        )
+        monkeypatch.setattr(booklore_settings, "booklore_login", lambda cfg: "token")
+        monkeypatch.setattr(booklore_settings, "list_books", lambda *a, **kw: ([{"id": 1}], 3))
+
+        result = booklore_settings.check_booklore_connection(
+            {
+                "BOOKLORE_HOST": "http://grimmory:6060",
+                "BOOKLORE_USERNAME": "shelfmark",
+                "BOOKLORE_PASSWORD": "secret",
+            }
+        )
+
+        assert result["success"] is True
+        assert "1 libraries" in result["message"]
+        assert "books" in result["message"]
+```
+
+Then extend the success branch of `check_booklore_connection`. One page is enough — `totalPages × size` bounds the count without walking the library:
+
+```python
+    else:
+        message = f"Connected to {BOOKLORE_DISPLAY_NAME}"
+        if library_options:
+            message = f"Connected to {BOOKLORE_DISPLAY_NAME} ({len(library_options)} libraries)"
+
+        # One page bounds the total without walking the whole library. The count
+        # is what makes a too-narrow service account visible here rather than as
+        # absent badges hours later.
+        with suppress(BookloreError):
+            token = booklore_login(_config_from(base_url, username, password))
+            books, total_pages = list_books(
+                _config_from(base_url, username, password), token, page=0, size=1
+            )
+            if books or total_pages:
+                message = f"{message[:-1]}, {total_pages} books)" if message.endswith(")") else (
+                    f"{message} ({total_pages} books)"
+                )
+
+        return {"success": True, "message": message}
+```
+
+Add a small `_config_from(base_url, username, password) -> BookloreConfig` helper beside it rather than repeating the construction. Wrapping in `suppress` is deliberate: the connection genuinely succeeded, so a book-count hiccup should cost the extra detail, not turn a passing test into a failure.
+
+- [ ] **Step 5: Re-point the two existing importers**
 
 In `shelfmark/download/outputs/booklore.py`, delete the moved definitions and import them instead:
 
@@ -1408,12 +1497,12 @@ Rename `_parse_destination` and `_parse_int` to `parse_destination` and `parse_i
 
 In `shelfmark/config/booklore_settings.py`, change the import block to read from `shelfmark.grimmory.client`. That removes a config module's dependency on `shelfmark.download.outputs`.
 
-- [ ] **Step 5: Run the suite**
+- [ ] **Step 6: Run the suite**
 
 Run: `pytest tests/grimmory tests/core/test_processing_integration.py tests/config -q && ruff check shelfmark`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add -A shelfmark tests
@@ -1532,7 +1621,66 @@ class TestMediaTypeDerivation:
         raw["alternativeFormats"] = []
 
         assert extract_library_items([raw])[0].media_type == MEDIA_TYPE_EBOOK
+
+
+class TestPagination:
+    def test_walks_every_page(self, monkeypatch):
+        from shelfmark.library.providers import grimmory as provider_module
+
+        pages = {0: ([_book(book_id=1)], 3), 1: ([_book(book_id=2)], 3), 2: ([_book(book_id=3)], 3)}
+        monkeypatch.setattr(provider_module, "booklore_login", lambda cfg: "token")
+        monkeypatch.setattr(
+            provider_module, "list_books", lambda cfg, token, *, page, size: pages[page]
+        )
+        monkeypatch.setattr(
+            provider_module.GrimmoryProvider, "is_enabled", lambda self: True
+        )
+
+        items = provider_module.GrimmoryProvider().fetch_items()
+
+        assert [item.item_id for item in items] == ["1", "2", "3"]
+
+    def test_stops_at_the_page_cap(self, monkeypatch):
+        # A server reporting an absurd totalPages must not spin forever.
+        from shelfmark.library.providers import grimmory as provider_module
+
+        calls = {"n": 0}
+
+        def endless(cfg, token, *, page, size):
+            calls["n"] += 1
+            return ([_book(book_id=page)], 10_000)
+
+        monkeypatch.setattr(provider_module, "booklore_login", lambda cfg: "token")
+        monkeypatch.setattr(provider_module, "list_books", endless)
+        monkeypatch.setattr(
+            provider_module.GrimmoryProvider, "is_enabled", lambda self: True
+        )
+
+        provider_module.GrimmoryProvider().fetch_items()
+
+        assert calls["n"] == provider_module._MAX_PAGES
+
+    def test_a_single_page_library_makes_one_call(self, monkeypatch):
+        from shelfmark.library.providers import grimmory as provider_module
+
+        calls = {"n": 0}
+
+        def one_page(cfg, token, *, page, size):
+            calls["n"] += 1
+            return ([_book(book_id=1)], 1)
+
+        monkeypatch.setattr(provider_module, "booklore_login", lambda cfg: "token")
+        monkeypatch.setattr(provider_module, "list_books", one_page)
+        monkeypatch.setattr(
+            provider_module.GrimmoryProvider, "is_enabled", lambda self: True
+        )
+
+        provider_module.GrimmoryProvider().fetch_items()
+
+        assert calls["n"] == 1
 ```
+
+`fetch_items` reads credentials from config, so these tests need `BOOKLORE_HOST`/`USERNAME`/`PASSWORD` present or the `BookloreConfig` construction yields empty strings. Since `booklore_login` is stubbed, empty values are harmless — but if `BookloreConfig` ever validates in `__post_init__`, patch config instead.
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -2419,13 +2567,16 @@ def config_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
+# Non-core settings tabs live in {CONFIG_DIR}/plugins/<tab>.json, NOT settings/ —
+# see _get_config_file_path (settings_registry.py:392). Only "general" and
+# "search_mode" share the top-level settings.json.
 def _write(config_dir, tab, values):
-    (config_dir / "settings").mkdir(parents=True, exist_ok=True)
-    (config_dir / "settings" / f"{tab}.json").write_text(json.dumps(values))
+    (config_dir / "plugins").mkdir(parents=True, exist_ok=True)
+    (config_dir / "plugins" / f"{tab}.json").write_text(json.dumps(values))
 
 
 def _read(config_dir, tab):
-    path = config_dir / "settings" / f"{tab}.json"
+    path = config_dir / "plugins" / f"{tab}.json"
     return json.loads(path.read_text()) if path.exists() else {}
 
 
@@ -2524,6 +2675,38 @@ class TestEnablement:
         settings_registry.migrate_grimmory_enablement()
 
         assert _read(config_dir, "grimmory")["BOOKLORE_ENABLED"] is False
+
+
+class TestMigrationOrdering:
+    def test_the_real_chain_moves_credentials_and_enables(self, config_dir):
+        """The end-to-end guard on ordering.
+
+        Testing the two migrations directly cannot catch this: run through the
+        real sync_env_to_config(), initialize_default_configs() will have written
+        BOOKLORE_ENABLED into a fresh grimmory.json before the migration looks,
+        and enablement silently never happens.
+        """
+        _write(
+            config_dir,
+            "downloads",
+            {
+                "BOOKLORE_HOST": "http://grimmory:6060",
+                "BOOKLORE_USERNAME": "shelfmark",
+                "BOOKLORE_PASSWORD": "secret",
+            },
+        )
+
+        settings_registry.sync_env_to_config()
+
+        grimmory = _read(config_dir, "grimmory")
+        assert grimmory["BOOKLORE_HOST"] == "http://grimmory:6060"
+        assert grimmory["BOOKLORE_ENABLED"] is True
+        assert "BOOKLORE_HOST" not in _read(config_dir, "downloads")
+
+    def test_a_fresh_install_stays_disabled(self, config_dir):
+        settings_registry.sync_env_to_config()
+
+        assert _read(config_dir, "grimmory").get("BOOKLORE_ENABLED") is not True
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -2580,6 +2763,10 @@ def migrate_grimmory_enablement() -> None:
     Keyed off whether BOOKLORE_ENABLED was ever persisted rather than off its
     value — keying off the value would produce a setting that silently turns
     itself back on at every boot.
+
+    This only works if the migration runs BEFORE initialize_default_configs(),
+    which writes every field default into a missing tab file. Called after it,
+    "was it ever persisted?" is always true and this function does nothing.
     """
     grimmory = load_config_file("grimmory")
     if "BOOKLORE_ENABLED" in grimmory:
@@ -2597,16 +2784,25 @@ def migrate_grimmory_enablement() -> None:
 
 `save_config_file` merges into the existing file rather than replacing it (`shelfmark/core/settings_registry.py:436-445`), which is why the additive writes above are safe. The `downloads` rewrite deliberately bypasses it and writes the file directly, because merging cannot *remove* the keys being moved out.
 
-- [ ] **Step 4: Wire them into the migration chain**
+- [ ] **Step 4: Wire them in — before `initialize_default_configs()`, not with the other migrations**
 
-In `sync_env_to_config()`, after `migrate_download_to_browser_settings()`:
+These two do **not** go in the migration block at the end of `sync_env_to_config()`. They must run *before* the `initialize_default_configs()` call at `shelfmark/core/settings_registry.py:533`, because that function creates any missing tab file populated with every non-`None` field default — including `BOOKLORE_ENABLED: false`. Run after it and the enablement check can no longer tell a fresh default from a user's decision, so it never fires.
+
+In `sync_env_to_config()`, immediately before `initialize_default_configs()`:
 
 ```python
-    # Order matters: the enablement check reads the credentials the tab move
-    # relocates.
+    # Ahead of initialize_default_configs(): it would create grimmory.json with
+    # BOOKLORE_ENABLED already defaulted, and "never persisted" would stop being
+    # a usable signal. Within this pair, the tab move runs first because the
+    # enablement check reads the credentials it relocates.
     migrate_grimmory_connection_tab()
     migrate_grimmory_enablement()
+
+    # Initialize default configs first (for fresh installs)
+    initialize_default_configs()
 ```
+
+A consequence worth knowing: on an upgrade the tab move creates `grimmory.json`, so `initialize_default_configs()` then skips that file and never writes `BOOKLORE_LIBRARY_INDEX_ENABLED` or `BOOKLORE_INDEX_INTERVAL_HOURS` into it. That is harmless — `get_setting_value` falls back to the field default when a key is absent — but do not "fix" it by reordering.
 
 - [ ] **Step 5: Run to verify they pass**
 
@@ -2916,7 +3112,52 @@ export const libraryMatchTooltip = (match: LibraryMatch): string => {
 };
 ```
 
-Update `singleBookLookup` to accept an optional `isbn` and include it, mirroring the widened eligibility rule.
+Replace `singleBookLookup` so the one-book surfaces can state their format. Every caller is updated in Task 12 Step 5:
+
+```typescript
+/**
+ * Wrap a single book for the surfaces that ask about one — the details modal,
+ * the request form and the approve panel.
+ *
+ * `contentType` is not optional in practice: the backend reads a missing content
+ * type as "ebook", so an audiobook surface that omits it would match against the
+ * ebook library and file its real audiobook holding under other_formats.
+ *
+ * The ISBN is stored as `isbn_13` regardless of which spelling it came in as —
+ * the backend canonicalizes ISBN-10 to ISBN-13 anyway, so picking one field here
+ * saves callers deciding which they hold.
+ *
+ * Returns a shared empty array when there is no usable key, so callers can pass
+ * the result straight into the lookup hook without churning its dependency.
+ */
+export const singleBookLookup = (
+  id: string,
+  title: string | undefined,
+  author: string | undefined,
+  asin?: string,
+  isbn?: string,
+  contentType?: string,
+): Book[] => {
+  const trimmedTitle = (title ?? '').trim();
+  const trimmedAuthor = (author ?? '').trim();
+  const trimmedAsin = (asin ?? '').trim();
+  const trimmedIsbn = (isbn ?? '').trim();
+  if (!trimmedAsin && !trimmedIsbn && (!trimmedTitle || !trimmedAuthor)) return NO_BOOKS;
+
+  return [
+    {
+      id,
+      title: trimmedTitle,
+      author: trimmedAuthor,
+      asin: trimmedAsin || undefined,
+      isbn_13: trimmedIsbn || undefined,
+      content_type: contentType || undefined,
+    },
+  ];
+};
+```
+
+Add a test that `singleBookLookup('x', 'T', 'A', undefined, undefined, 'audiobook')` produces a payload whose `content_type` is `'audiobook'`.
 
 - [ ] **Step 4: Run to verify they pass**
 
@@ -3057,17 +3298,41 @@ In `App.tsx:2626`, replace the boolean with the content type:
             defaultContentType={effectiveContentType}
 ```
 
-- [ ] **Step 4: Switch every lock call site**
+- [ ] **Step 4: Switch every lock decision — there are seven, and only two are `applyInLibraryLock` calls**
 
-At each `applyInLibraryLock(...)` call, replace the truthiness test with `isHeldInFormat(match)`:
+Grepping for `applyInLibraryLock` finds only two sites and would miss five. The result views never call it; they pass a boolean into `BookActionButton`, which calls it for them. Every one of these must change, or a cross-format-only match still locks the button and the feature does nothing.
+
+Direct calls (2):
+
+- `src/frontend/src/components/DetailsModal.tsx:108` — `applyInLibraryLock(buttonState, Boolean(libraryMatch))` → `applyInLibraryLock(buttonState, isHeldInFormat(libraryMatch))`
+- `src/frontend/src/components/BookActionButton.tsx:44` — takes `isInLibrary` as a prop; leave the call as-is and fix the callers below.
+
+Boolean props into `BookActionButton` (5):
+
+- `src/frontend/src/components/resultsViews/CompactView.tsx:301` and `:315` — `isInLibrary={Boolean(libraryMatch)}` → `isInLibrary={isHeldInFormat(libraryMatch)}`
+- `src/frontend/src/components/resultsViews/CardView.tsx:259` and `:274` — same change
+- `src/frontend/src/components/resultsViews/ListView.tsx:365` — `isInLibrary={Boolean(libraryMatches[book.id])}` → `isInLibrary={isHeldInFormat(libraryMatches[book.id])}`
+
+Import `isHeldInFormat` from `../../utils/libraryMatches` in the result views and `../utils/libraryMatches` in `DetailsModal`.
+
+Verify none were missed:
 
 ```bash
-grep -rn "applyInLibraryLock" src/frontend/src
+grep -rn "isInLibrary={Boolean\|applyInLibraryLock(.*Boolean(" src/frontend/src
 ```
+Expected: no output.
 
-Work through every hit, importing `isHeldInFormat` from `../utils/libraryMatches` where needed.
+- [ ] **Step 5: Give the single-book surfaces their format and ISBNs**
 
-- [ ] **Step 5: Verify**
+Three surfaces build their own one-book lookup and none currently pass a content type, so the backend would default them all to ebook — an audiobook request would lock against a Grimmory ebook and file the real Audiobookshelf holding under `other_formats`.
+
+- `src/frontend/src/components/DetailsModal.tsx:78` — `singleBookLookup(\`details-${book?.id ?? ''}\`, book?.title, book?.author, book?.asin, book?.isbn_13 ?? book?.isbn_10, book?.content_type)`
+- `src/frontend/src/components/RequestConfirmationModal.tsx:185` — pass `preview.isbn_13 ?? preview.isbn_10` and `preview.content_type`
+- `src/frontend/src/components/activity/ActivityCard.tsx:313` — pass the record's ISBN and `content_type`
+
+Add a test that an audiobook detail view reports the Audiobookshelf holding in `items` rather than `other_formats`.
+
+- [ ] **Step 6: Verify**
 
 Run from `src/frontend/`: `npm run test:unit && npm run typecheck && npm run lint`
 Expected: PASS, and no remaining reference to `showInLibraryBadges`:
@@ -3077,7 +3342,7 @@ grep -rn "showInLibraryBadges" src/frontend/src
 ```
 Expected: no output.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add -A src/frontend/src
@@ -3109,9 +3374,9 @@ Expected: all PASS.
 
 ```bash
 grep -rn "audiobookshelf.library_index\|audiobookshelf.library_sync\|audiobookshelf.library_lookup\|audiobookshelf.matching" shelfmark tests
-grep -rn "audiobookshelf_index.db" shelfmark tests
+grep -rn "audiobookshelf_index.db" shelfmark tests | grep -v "_LEGACY_DB_NAME"
 ```
-Expected: no output from either.
+Expected: no output from either. The second grep excludes `_LEGACY_DB_NAME` in `shelfmark/library/index.py`, which is the one intentional remaining mention — it is what performs the cleanup.
 
 - [ ] **Step 4: Manual smoke test**
 
@@ -3140,6 +3405,22 @@ git commit -m "docs: document Grimmory library indexing"
 **Naming consistency.** `replace_items(source, items)`, `get_state(source)`, `record_failure(source, message)` and `find_matches(keys)` are used identically in Tasks 3, 4, 6 and 7. `LibraryItem` and `LibraryMatch` field lists match between the dataclasses in Task 3 and every construction site. `isHeldInFormat` is defined in Task 11 and consumed in Task 12. `LIBRARY_INDEX_ENABLED_KEY` is defined per provider module, so the ABS and Grimmory constants never collide.
 
 **Verified while writing.** Field classes are exported from `shelfmark.core.settings_registry` alongside `register_settings` (there is no `settings_fields` module), and `save_config_file` merges rather than replaces — both are now stated correctly in Tasks 9 and 10.
+
+**Corrections from the Codex review (all verified against the codebase before applying).**
+
+| Was wrong | Now |
+|---|---|
+| Enablement migration placed with the others at registry:558 | Moved ahead of `initialize_default_configs()` (registry:533), which writes `BOOKLORE_ENABLED: false` into a missing tab file and would make "never persisted" always true |
+| Migration tests seeded `{CONFIG_DIR}/settings/` | Corrected to `{CONFIG_DIR}/plugins/<tab>.json`; only `general` and `search_mode` use the top-level `settings.json` |
+| Task 12 said to grep for `applyInLibraryLock` | There are only two such calls; five more lock decisions ride on `isInLibrary={Boolean(...)}` props in the result views. All seven are now listed explicitly |
+| `singleBookLookup` took no content type | Now takes `isbn` and `contentType`; its three callers are updated in Task 12 Step 5, without which every one-book surface would classify as ebook |
+| `replace_items` sat outside the `try` in `sync_provider` | Inside it, so a locked or full database returns a result instead of taking down the settings button and the scheduler |
+| Test Connection never gained a book count | Task 5 Step 4 adds it, with a test |
+| No pagination coverage for `GrimmoryProvider` | Task 6 adds page-progression, page-cap and single-page tests |
+| Task 13's legacy-DB grep contradicted Task 3 | Excludes the intentional `_LEGACY_DB_NAME` definition |
+| Legacy cleanup left `-wal`/`-shm` orphans | Removes all three files |
+
+Two review points were resolved as spec changes rather than plan changes: Grimmory `AUDIOBOOK` entries now legitimately match audiobook searches (the spec's out-of-scope line was too broad), and the badge derives its ownership state from the match rather than a second `variant` prop.
 
 **One thing the implementer should watch.** Task 5 renames `_parse_int`/`_parse_destination` to public names during the move. If any test imports the underscored names, update it in the same commit.
 

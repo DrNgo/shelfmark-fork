@@ -276,9 +276,11 @@ badges off for entirely.
   content type, or a format switch will not refetch.
 - `applyInLibraryLock` fires only on `items`, never `other_formats`.
 - `libraryMatchTooltip` appends cross-format lines: "Also in your library as an audiobook: …"
-- `InLibraryBadge` gains a `variant`: the existing solid lock for same-format, and a
-  muted non-blocking variant for cross-format-only. Without it the two states would look
-  identical while behaving differently, which is worse than no badge.
+- `InLibraryBadge` renders same-format holdings solid and cross-format-only holdings
+  muted. Without the distinction the two states would look identical while behaving
+  differently, which is worse than no badge. The state is **derived from the match**
+  rather than passed as a prop: `variant` is already taken for placement
+  (`'inline' | 'overlay'`), and two props that must agree is a bug waiting to happen.
 - `ResultsSection` swaps `showInLibraryBadges` for `defaultContentType`, used when a book
   carries no `content_type` of its own. `App.tsx:2626` passes `effectiveContentType`
   instead of a boolean — one call site, now enabling the feature rather than suppressing it.
@@ -346,9 +348,13 @@ the lock-vs-tooltip split.
   `downloads.json`. `BOOKLORE_DESTINATION`, `BOOKLORE_LIBRARY_ID` and `BOOKLORE_PATH_ID`
   stay on the `downloads` tab and must not move.
 
-  Both migrations join the existing chain in `sync_env_to_config()`
-  (`shelfmark/core/settings_registry.py:558-565`), and the tab move must run **before**
-  the enablement migration, which reads the moved credentials to decide.
+  Both migrations run inside `sync_env_to_config()`, and **must be placed before the
+  `initialize_default_configs()` call** at `shelfmark/core/settings_registry.py:533` —
+  not with the other migrations at 558-565. That function creates any missing tab file
+  populated with every non-`None` field default, so by line 558 `grimmory.json` already
+  contains `BOOKLORE_ENABLED: false` and "was it ever persisted?" can no longer
+  distinguish a fresh default from a user's choice. Within that placement the tab move
+  still runs first, since the enablement check reads the credentials it relocates.
 - No key is renamed, so env vars and `docker-compose` files need no changes.
 - `library_index.db` rebuilds itself on first start, since a missing timestamp already
   counts as stale.
@@ -361,5 +367,9 @@ the lock-vs-tooltip split.
 - Renaming `BOOKLORE_*` config keys or adding `GRIMMORY_*` aliases.
 - Exposing `verify_tls` for the Grimmory connection (a pre-existing gap in the upload
   path, unchanged here).
-- Using Grimmory as an audiobook source, or Audiobookshelf as an ebook source.
+- Treating Grimmory as a *primary* audiobook source, or Audiobookshelf as an ebook source.
+  Grimmory's `AUDIOBOOK`-typed entries are still indexed as audiobooks and will match an
+  audiobook search — the index reports what you own rather than what the split says you
+  should. What is out of scope is building for that case: no audiobook-specific Grimmory
+  features, and Audiobookshelf remains where audiobooks are expected to live.
 - Series- or edition-level matching beyond the existing title+author, ASIN and new ISBN keys.
