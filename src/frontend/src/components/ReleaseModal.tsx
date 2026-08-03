@@ -33,6 +33,7 @@ import {
   releaseLanguageMatchesFilter,
   buildLanguageNormalizer,
 } from '../utils/languageFilters';
+import { coverAspectForContentType } from '../utils/mediaType';
 import { getNestedValue, toComparableText, toStringValue } from '../utils/objectHelpers';
 import { getReleaseFormats } from '../utils/releaseFormats';
 import {
@@ -220,14 +221,26 @@ function StarRating({ rating, maxRating = 5 }: { rating: number; maxRating?: num
 }
 
 // Thumbnail component for release rows
-const ReleaseThumbnail = ({ preview, title }: { preview?: string; title?: string }) => {
+const ReleaseThumbnail = ({
+  preview,
+  title,
+  coverAspect,
+}: {
+  preview?: string;
+  title?: string;
+  coverAspect?: string;
+}) => {
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
+  // Audiobook art is square; a 2:3 frame would crop its sides (same rule as
+  // ListViewThumbnail). Row height stays put either way so rows stay aligned.
+  const isSquare = coverAspect === 'square';
+  const sizeClass = isSquare ? 'h-10 w-10 sm:h-12 sm:w-12' : 'h-10 w-7 sm:h-12 sm:w-8';
 
   if (!preview || imageError) {
     return (
       <div
-        className="flex h-10 w-7 shrink-0 items-center justify-center rounded-sm bg-zinc-200 text-[7px] font-medium text-zinc-500 sm:h-12 sm:w-8 sm:text-[8px] dark:bg-zinc-700 dark:text-zinc-400"
+        className={`${sizeClass} flex shrink-0 items-center justify-center rounded-sm bg-zinc-200 text-[7px] font-medium text-zinc-500 sm:text-[8px] dark:bg-zinc-700 dark:text-zinc-400`}
         aria-label="No cover available"
       >
         No Cover
@@ -236,14 +249,16 @@ const ReleaseThumbnail = ({ preview, title }: { preview?: string; title?: string
   }
 
   return (
-    <div className="relative h-10 w-7 shrink-0 overflow-hidden rounded-sm border border-white/40 bg-zinc-100 sm:h-12 sm:w-8 dark:border-zinc-700/70 dark:bg-zinc-800">
+    <div
+      className={`relative ${sizeClass} shrink-0 overflow-hidden rounded-sm border border-white/40 bg-zinc-100 dark:border-zinc-700/70 dark:bg-zinc-800`}
+    >
       {!imageLoaded && (
         <div className="absolute inset-0 animate-pulse bg-linear-to-r from-gray-200 via-gray-100 to-gray-200 dark:from-gray-700 dark:via-gray-600 dark:to-gray-700" />
       )}
       <img
         src={preview}
         alt={title || 'Book cover'}
-        className="h-full w-full object-cover object-top"
+        className={`h-full w-full object-cover ${isSquare ? 'object-center' : 'object-top'}`}
         loading="lazy"
         onLoad={() => setImageLoaded(true)}
         onError={() => setImageError(true)}
@@ -254,7 +269,15 @@ const ReleaseThumbnail = ({ preview, title }: { preview?: string; title?: string
 };
 
 // Leading cell component - shows thumbnail, badge, or nothing based on config
-const LeadingCell = ({ config, release }: { config?: LeadingCellConfig; release: Release }) => {
+const LeadingCell = ({
+  config,
+  release,
+  coverAspect,
+}: {
+  config?: LeadingCellConfig;
+  release: Release;
+  coverAspect?: string;
+}) => {
   // Default to thumbnail mode if no config
   const cellType = config?.type || 'thumbnail';
 
@@ -265,7 +288,7 @@ const LeadingCell = ({ config, release }: { config?: LeadingCellConfig; release:
   if (cellType === 'thumbnail') {
     const key = config?.key || 'extra.preview';
     const preview = toStringValue(getNestedValue(release, key));
-    return <ReleaseThumbnail preview={preview} title={release.title} />;
+    return <ReleaseThumbnail preview={preview} title={release.title} coverAspect={coverAspect} />;
   }
 
   // Badge type
@@ -288,7 +311,7 @@ const LeadingCell = ({ config, release }: { config?: LeadingCellConfig; release:
   }
 
   // Fallback
-  return <ReleaseThumbnail preview={undefined} title={release.title} />;
+  return <ReleaseThumbnail preview={undefined} title={release.title} coverAspect={coverAspect} />;
 };
 
 // Radio indicator for selection mode
@@ -409,6 +432,7 @@ const ReleaseRow = ({
   columns,
   gridTemplate,
   leadingCell,
+  coverAspect,
   onlineServers,
   showReleaseSourceLinks,
   selectionMode = false,
@@ -422,6 +446,7 @@ const ReleaseRow = ({
   columns: ColumnSchema[];
   gridTemplate: string;
   leadingCell?: LeadingCellConfig;
+  coverAspect?: string;
   onlineServers?: string[];
   showReleaseSourceLinks: boolean;
   selectionMode?: boolean;
@@ -482,7 +507,9 @@ const ReleaseRow = ({
         style={{ gridTemplateColumns: desktopGridTemplate }}
       >
         {/* Leading cell: Thumbnail, Badge, or nothing */}
-        {showLeadingCell && <LeadingCell config={leadingCell} release={release} />}
+        {showLeadingCell && (
+          <LeadingCell config={leadingCell} release={release} coverAspect={coverAspect} />
+        )}
 
         {/* Fixed: Title and author */}
         <div className="min-w-0">
@@ -529,7 +556,9 @@ const ReleaseRow = ({
         style={{ gridTemplateColumns: mobileGridTemplate }}
       >
         {/* Leading cell: Thumbnail, Badge, or nothing */}
-        {showLeadingCell && <LeadingCell config={leadingCell} release={release} />}
+        {showLeadingCell && (
+          <LeadingCell config={leadingCell} release={release} coverAspect={coverAspect} />
+        )}
 
         <div className="min-w-0">
           {/* Title and author on same line */}
@@ -2238,6 +2267,7 @@ const ReleaseModalSession = ({
                           columns={columnConfig.columns}
                           gridTemplate={columnConfig.grid_template}
                           leadingCell={columnConfig.leading_cell}
+                          coverAspect={coverAspectForContentType(contentType)}
                           onlineServers={columnConfig.online_servers}
                           showReleaseSourceLinks={showReleaseSourceLinks}
                           selectionMode={isCombinedMode}
