@@ -1149,8 +1149,19 @@ async def _close_websocket_connection(conn: Any) -> None:
 
 
 def _start_ffmpeg_recording(display: str) -> None:
-    """Start FFmpeg screen recording for debug mode."""
+    """Start FFmpeg screen recording for debug mode.
+
+    FFmpeg is not installed in the runtime image — it pulled ~100MB of codec
+    libraries (libflite, libcodec2, libx265, ...) to serve a DEBUG-only nicety.
+    Recording is therefore best-effort: without the binary, debug bypasses run
+    exactly as before, just unrecorded. `apt-get install -y ffmpeg` in a shell
+    on the container restores it for a session.
+    """
     global DISPLAY
+    if shutil.which("ffmpeg") is None:
+        logger.debug("FFmpeg not installed — skipping debug screen recording")
+        return
+
     RECORDING_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%y%m%d-%H%M%S")
     output_file = RECORDING_DIR / f"screen_recording_{timestamp}.mp4"

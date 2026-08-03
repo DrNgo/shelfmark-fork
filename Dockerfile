@@ -123,6 +123,11 @@ COPY . .
 # Copy built frontend from frontend-builder stage
 COPY --from=frontend-builder /frontend/dist /app/frontend-dist
 
+# The frontend SOURCE cannot be excluded via .dockerignore — that file applies
+# to every stage and frontend-builder needs src/. Only the built dist (copied
+# above) is served at runtime, so drop the source here.
+RUN rm -rf /app/src
+
 # Final setup: create image-owned runtime paths for the fixed non-root user.
 # Root/PUID mode still re-homes ownership at startup when needed.
 RUN mkdir -p \
@@ -173,8 +178,10 @@ RUN echo "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-
     apt-get install -y --no-install-recommends -o Acquire::Retries=5 \
     # For dumb display
     xvfb \
-    # For screen recording
-    ffmpeg \
+    # NOTE: ffmpeg is deliberately NOT installed. It existed only to record
+    # bypass sessions under DEBUG, and dragged in ~100MB of codec libraries
+    # (libflite1 27MB of speech synthesis, libcodec2, libavcodec, libx265, ...).
+    # _start_ffmpeg_recording() now no-ops when the binary is absent.
     chromium=${CHROMIUM_VERSION} \
     chromium-common=${CHROMIUM_VERSION} \
     # For tkinter (pyautogui)
@@ -191,6 +198,22 @@ RUN echo "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-
     apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+
+# Drop Debian's software-GL stack: 181MB that Chromium never loads.
+# WebGL here comes from Chromium's OWN bundled SwiftShader (via
+# --enable-unsafe-swiftshader in _get_browser_args), which is statically linked
+# and reports "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 16.0.0)))"
+# — byte-identical with and without these packages, verified against a live CDP
+# Runtime.evaluate of WEBGL_debug_renderer_info. Mesa's llvmpipe (libLLVM 120MB
+# + libgallium 34MB + libz3 26MB) is pure dead weight in a headless container.
+# libgl1-mesa-dri is a hard Depends of chromium-common, so apt-get remove would
+# take chromium with it — dpkg --force-depends is the only way to drop it.
+RUN dpkg --force-depends --purge \
+        libgl1-mesa-dri \
+        mesa-libgallium \
+        libllvm19 \
+        libz3-4 && \
+    chromium --version
 
 # Install the browser automation stack used by the full image
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -212,7 +235,14 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     /app/.venv/bin/python -c "import Xlib.X; assert hasattr(Xlib.X, 'FamilyServerInterpreted'), 'Xlib.X.FamilyServerInterpreted missing after fix'; print('Xlib namespace OK:', Xlib.__version__)"
 
 # uv is only needed while building the image.
-RUN rm -f /usr/bin/uv /usr/bin/uvx
+# The venv's own pip goes too — the base image's system pip is already stripped
+# above, but uv seeded a second copy into /app/.venv. Nothing installs at
+# runtime. setuptools deliberately STAYS: several deps still import
+# pkg_resources on the hot path.
+RUN rm -f /usr/bin/uv /usr/bin/uvx && \
+    rm -rf /app/.venv/bin/pip /app/.venv/bin/pip3 /app/.venv/bin/pip3.* \
+           /app/.venv/lib/python*/site-packages/pip \
+           /app/.venv/lib/python*/site-packages/pip-*.dist-info
 
 # Keep SeleniumBase's bundled driver cache writable for the fixed non-root user.
 RUN SELENIUMBASE_DRIVERS_DIR=$(/app/.venv/bin/python -c "import pathlib, seleniumbase; print(pathlib.Path(seleniumbase.__file__).resolve().parent / 'drivers')") && \
