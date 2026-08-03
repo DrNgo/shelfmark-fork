@@ -23,6 +23,17 @@ AUTH_SOURCES = (
     AUTH_SOURCE_ABS,
 )
 AUTH_SOURCE_SET = frozenset(AUTH_SOURCES)
+
+# Deny-all sentinel. Deliberately NOT a member of AUTH_SOURCES/AUTH_SOURCE_SET: no user's
+# `auth_source` can ever equal it, so `is_user_active_for_auth_mode` reports every user as
+# inactive and nobody can sign in.
+#
+# It exists to split the two incompatible meanings that "none" used to carry. "none" is the
+# OPEN mode -- consumers read it as "no accounts exist, allow anonymous" (request_routes,
+# activity_routes, audiobookshelf/routes) or enforce on `!= "none"` (admin_routes,
+# self_user_routes). Because every one of those treats anything-but-"none" as "enforce",
+# returning this sentinel fails CLOSED at every call site without changing any of them.
+AUTH_SOURCE_LOCKED = "locked"
 _ALWAYS_ADMIN_SETTINGS_TABS = frozenset({"security", "users"})
 
 
@@ -103,6 +114,14 @@ def determine_auth_mode(
     ):
         return AUTH_SOURCE_OIDC
 
+    if auth_mode in AUTH_SOURCE_SET:
+        # A real mode was configured but its precondition failed (no local admin, missing
+        # OIDC_CLIENT_ID, absent proxy header, no CWA db...). Falling through to the open
+        # "none" here is what made every mode fail OPEN. Deny instead.
+        return AUTH_SOURCE_LOCKED
+
+    # Only reached when AUTH_METHOD is absent, "none", or unrecognised -- i.e. auth was
+    # never configured. That is a deliberate operator choice, so it keeps the open default.
     return "none"
 
 
@@ -129,7 +148,11 @@ def load_active_auth_mode(
             disable_local_auth=DISABLE_LOCAL_AUTH,
         )
     except ImportError, OSError, RuntimeError, TypeError, ValueError, sqlite3.Error:
-        return "none"
+        # A fault while RESOLVING the mode says nothing about whether auth is configured,
+        # so it must not be reported as the open mode. A transient sqlite3.Error reading
+        # users.db previously opened the app to the internet. Deny; it self-heals on the
+        # next successful resolution.
+        return AUTH_SOURCE_LOCKED
 
 
 def is_user_active_for_auth_mode(user: Mapping[str, Any], auth_mode: str) -> bool:

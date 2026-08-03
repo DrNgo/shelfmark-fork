@@ -5,6 +5,7 @@ import sqlite3
 import pytest
 
 from shelfmark.core.auth_modes import (
+    AUTH_SOURCE_LOCKED,
     determine_auth_mode,
     get_auth_check_admin_status,
     get_settings_tab_from_path,
@@ -24,19 +25,21 @@ class TestDetermineAuthMode:
         }
         assert determine_auth_mode(config, cwa_db_path=None) == "oidc"
 
-    def test_returns_none_when_oidc_missing_client_id(self):
+    def test_locks_when_oidc_missing_client_id(self):
+        # Was asserted as "none" (the OPEN mode). A half-configured OIDC must deny,
+        # never open -- see tests/core/test_auth_mode_fail_closed.py.
         config = {
             "AUTH_METHOD": "oidc",
             "OIDC_DISCOVERY_URL": "https://auth.example.com/.well-known/openid-configuration",
         }
-        assert determine_auth_mode(config, cwa_db_path=None) == "none"
+        assert determine_auth_mode(config, cwa_db_path=None) == AUTH_SOURCE_LOCKED
 
-    def test_returns_none_when_oidc_missing_discovery_url(self):
+    def test_locks_when_oidc_missing_discovery_url(self):
         config = {
             "AUTH_METHOD": "oidc",
             "OIDC_CLIENT_ID": "shelfmark",
         }
-        assert determine_auth_mode(config, cwa_db_path=None) == "none"
+        assert determine_auth_mode(config, cwa_db_path=None) == AUTH_SOURCE_LOCKED
 
     def test_builtin_still_works(self):
         config = {
@@ -45,10 +48,13 @@ class TestDetermineAuthMode:
         assert determine_auth_mode(config, cwa_db_path=None) == "builtin"
 
     def test_builtin_requires_local_admin(self):
+        # Intent unchanged (builtin must not activate without an admin); the degradation
+        # target is now deny rather than the OPEN "none".
         config = {
             "AUTH_METHOD": "builtin",
         }
-        assert determine_auth_mode(config, cwa_db_path=None, has_local_admin=False) == "none"
+        result = determine_auth_mode(config, cwa_db_path=None, has_local_admin=False)
+        assert result == AUTH_SOURCE_LOCKED
 
     def test_proxy_still_works(self):
         config = {
@@ -63,7 +69,8 @@ class TestDetermineAuthMode:
             "OIDC_DISCOVERY_URL": "https://auth.example.com/.well-known/openid-configuration",
             "OIDC_CLIENT_ID": "shelfmark",
         }
-        assert determine_auth_mode(config, cwa_db_path=None, has_local_admin=False) == "none"
+        result = determine_auth_mode(config, cwa_db_path=None, has_local_admin=False)
+        assert result == AUTH_SOURCE_LOCKED
 
     @pytest.mark.parametrize(
         ("auth_mode", "config"),

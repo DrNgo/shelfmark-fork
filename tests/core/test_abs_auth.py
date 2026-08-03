@@ -6,6 +6,7 @@ import pytest
 
 from shelfmark.core.auth_modes import (
     AUTH_SOURCE_ABS,
+    AUTH_SOURCE_LOCKED,
     AUTH_SOURCE_SET,
     determine_auth_mode,
     is_user_active_for_auth_mode,
@@ -19,9 +20,12 @@ class TestDetermineAuthModeAbs:
         result = determine_auth_mode({"AUTH_METHOD": "abs"}, None, has_local_admin=True)
         assert result == AUTH_SOURCE_ABS
 
-    def test_returns_none_without_local_admin(self):
+    def test_locks_without_local_admin(self):
+        # Previously asserted "none" -- the OPEN mode. `abs` was documented as failing
+        # closed, but that only held for the ABS *connection* config; without a local
+        # admin it fell through and opened the app. It now denies.
         result = determine_auth_mode({"AUTH_METHOD": "abs"}, None, has_local_admin=False)
-        assert result == "none"
+        assert result == AUTH_SOURCE_LOCKED
 
     def test_disable_local_auth_substitutes_for_local_admin(self):
         result = determine_auth_mode(
