@@ -155,7 +155,12 @@ HEALTHCHECK --interval=60s --timeout=60s --start-period=60s --retries=3 \
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 
 
-FROM base AS shelfmark
+# Everything the browser stack needs, with Debian's software-GL still installed.
+# The two leaf targets below both purge it as their LAST step — `shelfmark-debug`
+# has to apt-get ffmpeg first, and that purge leaves apt permanently unable to
+# resolve (libgbm1/libglx-mesa0 keep an unmet dep on mesa-libgallium, and
+# purging THOSE stops Chromium starting). So the branch point is here.
+FROM base AS shelfmark-browser
 
 # --- Chromium (PINNED to 149.0.7827.196) ---
 # Debian's chromium 150.0.7871.46-1~deb13u1 security update (trixie-security,
@@ -199,22 +204,6 @@ RUN echo "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Drop Debian's software-GL stack: 181MB that Chromium never loads.
-# WebGL here comes from Chromium's OWN bundled SwiftShader (via
-# --enable-unsafe-swiftshader in _get_browser_args), which is statically linked
-# and reports "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 16.0.0)))"
-# — byte-identical with and without these packages, verified against a live CDP
-# Runtime.evaluate of WEBGL_debug_renderer_info. Mesa's llvmpipe (libLLVM 120MB
-# + libgallium 34MB + libz3 26MB) is pure dead weight in a headless container.
-# libgl1-mesa-dri is a hard Depends of chromium-common, so apt-get remove would
-# take chromium with it — dpkg --force-depends is the only way to drop it.
-RUN dpkg --force-depends --purge \
-        libgl1-mesa-dri \
-        mesa-libgallium \
-        libllvm19 \
-        libz3-4 && \
-    chromium --version
-
 # Install the browser automation stack used by the full image
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-default-groups --extra browser
@@ -253,8 +242,66 @@ RUN SELENIUMBASE_DRIVERS_DIR=$(/app/.venv/bin/python -c "import pathlib, seleniu
 # Grant read/execute permissions to others
 RUN chmod -R o+rx /usr/bin/chromium
 
-# Default command to run the application entrypoint script
+
+# --- The software-GL purge, shared by both leaf targets below -----------------
+# Drop Debian's software-GL stack: 181MB that Chromium never loads. WebGL here
+# comes from Chromium's OWN bundled SwiftShader (via --enable-unsafe-swiftshader
+# in _get_browser_args), which is statically linked and reports "ANGLE (Google,
+# Vulkan 1.3.0 (SwiftShader Device (LLVM 16.0.0)))" — byte-identical with and
+# without these packages, verified against a live CDP Runtime.evaluate of
+# WEBGL_debug_renderer_info. Mesa's llvmpipe (libLLVM 120MB + libgallium 34MB +
+# libz3 26MB) is pure dead weight in a headless container.
+#
+# libgl1-mesa-dri is a hard Depends of chromium-common, so apt-get remove would
+# take chromium with it — dpkg --force-depends is the only way. The cost is that
+# apt can no longer resolve ANYTHING afterwards: libgbm1 and libglx-mesa0 keep an
+# unmet dep on mesa-libgallium, and purging those two stops Chromium starting.
+# Hence this runs LAST in each leaf, and any apt-get you need goes above it.
+#
+# Keep the two copies below identical.
+
+# Released image — what scripts/release-local.sh builds and ships.
+FROM shelfmark-browser AS shelfmark
+
+RUN dpkg --force-depends --purge \
+        libgl1-mesa-dri \
+        mesa-libgallium \
+        libllvm19 \
+        libz3-4 && \
+    chromium --version
+
 CMD ["/app/entrypoint.sh"]
+
+
+# Released image plus ffmpeg, for local development.
+#
+# The DEBUG env var cannot gate an apt-get: it is read at runtime, by which point
+# the image's layers are already fixed and published. So "install ffmpeg only
+# when debugging" has to be decided one level up, at build time — which is what
+# this target is. Every docker-compose.dev file sets DEBUG=true and builds from
+# source, so they build THIS and get bypass screen recording; the release builds
+# `shelfmark` and ships without the ~100MB codec chain.
+#
+# Deliberately NOT the reverse (ship ffmpeg, strip it in prod): the debug image
+# must stay a strict superset of the released one, or you end up debugging a
+# build that differs from the one that broke. That is also why the purge is
+# repeated verbatim here rather than skipped.
+FROM shelfmark-browser AS shelfmark-debug
+
+RUN apt-get update -o Acquire::Retries=5 && \
+    apt-get install -y --no-install-recommends -o Acquire::Retries=5 ffmpeg && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN dpkg --force-depends --purge \
+        libgl1-mesa-dri \
+        mesa-libgallium \
+        libllvm19 \
+        libz3-4 && \
+    chromium --version
+
+CMD ["/app/entrypoint.sh"]
+
 
 FROM base AS shelfmark-lite
 

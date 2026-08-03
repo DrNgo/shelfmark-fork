@@ -7,7 +7,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      target: shelfmark
+      target: shelfmark-debug
     environment:
       DEBUG: true
       USING_TOR: true

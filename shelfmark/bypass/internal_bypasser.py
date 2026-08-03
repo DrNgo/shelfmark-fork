@@ -1151,11 +1151,11 @@ async def _close_websocket_connection(conn: Any) -> None:
 def _start_ffmpeg_recording(display: str) -> None:
     """Start FFmpeg screen recording for debug mode.
 
-    FFmpeg is not installed in the runtime image — it pulled ~100MB of codec
-    libraries (libflite, libcodec2, libx265, ...) to serve a DEBUG-only nicety.
-    Recording is therefore best-effort: without the binary, debug bypasses run
-    exactly as before, just unrecorded. `apt-get install -y ffmpeg` in a shell
-    on the container restores it for a session.
+    FFmpeg ships in the `shelfmark-debug` image (what every docker-compose.dev
+    builds) but not in the released `shelfmark` one, where it pulled ~100MB of
+    codec libraries to serve a DEBUG-only nicety. Recording is therefore
+    best-effort: on a released image a debug bypass runs exactly as before, just
+    unrecorded, rather than dying on a missing binary.
     """
     global DISPLAY
     if shutil.which("ffmpeg") is None:

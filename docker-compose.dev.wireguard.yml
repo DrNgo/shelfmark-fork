@@ -7,7 +7,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      target: shelfmark
+      target: shelfmark-debug
     environment:
       # Quoted so they are passed as the literal string "true" (entrypoint.sh and
       # the app compare against "true"); a bare YAML boolean can be stringified as

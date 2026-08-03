@@ -7,7 +7,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      target: shelfmark
+      target: shelfmark-debug
     cap_add:
       - SYS_PTRACE
     environment:
