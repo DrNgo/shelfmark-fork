@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from shelfmark.core import audible_topics as topic_service
 from shelfmark.core import discover
 from shelfmark.core.audible_topics import AudibleTopicResolution
 from shelfmark.core.cache import get_metadata_cache
@@ -120,6 +121,8 @@ class TestDispatch:
         resolution = AudibleTopicResolution(
             node=_topic("99", "Science Fiction & Fantasy", "Fantasy"),
             failed=False,
+            region="us",
+            tld="com",
         )
         with (
             patch.object(
@@ -146,6 +149,8 @@ class TestDispatch:
         resolution = AudibleTopicResolution(
             node=_topic("101", "Romance", "Historical"),
             failed=False,
+            region="us",
+            tld="com",
         )
         with (
             patch.object(discover, "get_configured_provider_name", return_value="audible"),
@@ -186,6 +191,29 @@ class TestDispatch:
             row = discover.get_discover_row("audiobook", "topic_fantasy", user_id=9)
         assert row is None
         resolve.assert_not_called()
+
+    def test_topic_storefront_mismatch_is_uncached_and_never_fetched(self):
+        product_provider = _audible_mock(topic_books=_books(1))
+        taxonomy_provider = MagicMock()
+        taxonomy_provider.region = "de"
+        taxonomy_provider.tld = "de"
+        taxonomy_provider.fetch_topic_tree.return_value = (
+            _topic("222", "Science Fiction & Fantasy", "Fantasy"),
+        )
+        p1, p2, p3, p4 = _patch_provider("audible", product_provider)
+        with (
+            p1,
+            p2,
+            p3,
+            p4,
+            patch.object(topic_service, "get_provider", return_value=taxonomy_provider),
+            patch.object(topic_service, "get_provider_kwargs", return_value={}),
+        ):
+            row = discover.get_discover_row("audiobook", "topic_fantasy")
+        assert row is not None and row.books == [] and row.stale is False
+        product_provider.discover_topic.assert_not_called()
+        assert get_metadata_cache().get("discover:audible:com:topic_fantasy:222:fresh") is None
+        assert get_metadata_cache().get("discover:audible:com:topic_fantasy:222:last_good") is None
 
 
 class TestCaching:
@@ -276,6 +304,8 @@ class TestCaching:
         resolution = AudibleTopicResolution(
             node=_topic("99", "Science Fiction & Fantasy", "Fantasy"),
             failed=False,
+            region="us",
+            tld="com",
         )
         p1, p2, p3, p4 = _patch_provider("audible", provider)
         with (
@@ -296,8 +326,15 @@ class TestCaching:
         hit = AudibleTopicResolution(
             node=_topic("99", "Science Fiction & Fantasy", "Fantasy"),
             failed=False,
+            region="us",
+            tld="com",
         )
-        miss = AudibleTopicResolution(node=None, failed=False)
+        miss = AudibleTopicResolution(
+            node=None,
+            failed=False,
+            region="us",
+            tld="com",
+        )
         p1, p2, p3, p4 = _patch_provider("audible", provider)
         with p1, p2, p3, p4, patch.object(discover, "resolve_audible_topic", return_value=hit):
             discover.get_discover_row("audiobook", "topic_fantasy")
@@ -317,6 +354,8 @@ class TestCaching:
         resolution = AudibleTopicResolution(
             node=_topic("99", "Science Fiction & Fantasy", "Fantasy"),
             failed=False,
+            region="us",
+            tld="com",
         )
         p1, p2, p3, p4 = _patch_provider("audible", provider)
         with (
@@ -367,10 +406,14 @@ class TestCaching:
             AudibleTopicResolution(
                 node=_topic("99", "Science Fiction & Fantasy", "Fantasy"),
                 failed=False,
+                region="us",
+                tld="com",
             ),
             AudibleTopicResolution(
                 node=_topic("100", "Science Fiction & Fantasy", "Fantasy"),
                 failed=False,
+                region="us",
+                tld="com",
             ),
         ]
         p1, p2, p3, p4 = _patch_provider("audible", provider)
@@ -396,6 +439,8 @@ class TestCaching:
         resolution = AudibleTopicResolution(
             node=_topic("101", *path),
             failed=False,
+            region="us",
+            tld="com",
         )
         p1, p2, p3, p4 = _patch_provider("audible", provider)
         with (

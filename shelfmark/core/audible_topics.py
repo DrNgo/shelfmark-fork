@@ -42,6 +42,8 @@ class AudibleTopicResolution:
     node: AudibleTopicNode | None
     failed: bool
     stale: bool = False
+    region: str | None = None
+    tld: str | None = None
 
 
 def _lock_for(key: str) -> threading.Lock:
@@ -125,6 +127,8 @@ def resolve_audible_topic(path: object) -> AudibleTopicResolution:
         node=find_audible_topic(tree.topics, normalized),
         failed=False,
         stale=tree.stale,
+        region=tree.region,
+        tld=tree.tld,
     )
 
 

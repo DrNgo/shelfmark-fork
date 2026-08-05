@@ -178,6 +178,22 @@ def _get_audible_topic_row(
             stale=False,
         )
 
+    if (resolution.region, resolution.tld) != (provider.region, provider.tld):
+        logger.warning(
+            "Audible topic storefront changed during resolution: product=%s/%s taxonomy=%s/%s",
+            provider.region,
+            provider.tld,
+            resolution.region,
+            resolution.tld,
+        )
+        return DiscoverRow(
+            key=row_key,
+            label=label,
+            provider="audible",
+            books=[],
+            stale=False,
+        )
+
     category_id = resolution.node.category_id if resolution.node is not None else None
     category_token = category_id or "unsupported"
     base_key = f"discover:audible:{provider.tld}:{preferred_key}:{category_token}"

@@ -169,6 +169,7 @@ def test_resolution_distinguishes_missing_from_failure(nodes):
     with patch.object(topic_service, "get_audible_topic_tree", return_value=tree):
         result = topic_service.resolve_audible_topic(["Missing"])
     assert result.failed is False and result.node is None
+    assert (result.region, result.tld) == ("us", "com")
 
 
 def test_resolution_returns_exact_node_and_propagates_stale(nodes):
@@ -177,6 +178,7 @@ def test_resolution_returns_exact_node_and_propagates_stale(nodes):
         result = topic_service.resolve_audible_topic([" Romance ", " Historical "])
     assert result.node == nodes[0].children[0]
     assert result.failed is False and result.stale is True
+    assert (result.region, result.tld) == ("us", "com")
 
 
 @pytest.mark.parametrize(
