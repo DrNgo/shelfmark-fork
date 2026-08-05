@@ -1,5 +1,6 @@
 import type { ComponentType, ReactNode } from 'react';
 
+import { AudibleTopicSelectorField } from './AudibleTopicSelectorField';
 import { NamingTemplateField } from './NamingTemplateField';
 import { OidcAdminHint } from './OidcAdminHint';
 import { OidcEnvInfo } from './OidcEnvInfo';
@@ -27,6 +28,9 @@ function isSaveHandler(value: unknown): value is () => void | Promise<void> {
 }
 
 const CUSTOM_FIELD_DEFINITIONS: Record<string, CustomFieldDefinition> = {
+  audible_topic_selector: {
+    renderer: AudibleTopicSelectorField,
+  },
   users_management: {
     renderer: UsersManagementField,
     getLayout: ({ uiState }) => {

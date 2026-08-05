@@ -339,6 +339,21 @@ export const getMetadataProviders = async (): Promise<MetadataProvidersResponse>
   return fetchJSON<MetadataProvidersResponse>(API.metadataProviders);
 };
 
+export interface AudibleTopicNode {
+  name: string;
+  path: string[];
+  children: AudibleTopicNode[];
+}
+
+export interface AudibleTopicsResponse {
+  region: string;
+  stale: boolean;
+  topics: AudibleTopicNode[];
+}
+
+export const getAudibleTopics = async (): Promise<AudibleTopicsResponse> =>
+  fetchJSON<AudibleTopicsResponse>(`${API_BASE}/metadata/audible/topics`);
+
 export interface DiscoverRowResponse {
   row: string;
   label?: string;

@@ -12,6 +12,7 @@ export interface PerUserSettings {
   SEARCH_MODE?: string;
   METADATA_PROVIDER?: string;
   METADATA_PROVIDER_AUDIOBOOK?: string;
+  DEFAULT_DISCOVER_TOPIC?: string[];
   DEFAULT_RELEASE_SOURCE?: string;
   DEFAULT_RELEASE_SOURCE_AUDIOBOOK?: string;
   USER_NOTIFICATION_ROUTES?: Array<Record<string, unknown>>;

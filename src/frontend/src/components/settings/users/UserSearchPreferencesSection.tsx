@@ -1,8 +1,18 @@
 import type { DeliveryPreferencesResponse } from '../../../services/api';
-import type { HeadingFieldConfig, SelectFieldConfig } from '../../../types/settings';
+import type {
+  HeadingFieldConfig,
+  SelectFieldConfig,
+  TagListFieldConfig,
+} from '../../../types/settings';
+import { AudibleTopicSelector } from '../AudibleTopicSelector';
 import { HeadingField, SelectField } from '../fields';
 import { FieldWrapper } from '../shared';
-import { getFieldByKey, toNormalizedLowercaseTextValue, toTextValue } from './fieldHelpers';
+import {
+  getFieldByKey,
+  toComparableValue,
+  toNormalizedLowercaseTextValue,
+  toTextValue,
+} from './fieldHelpers';
 import type { PerUserSettings } from './types';
 
 interface UserSearchPreferencesSectionProps {
@@ -16,6 +26,7 @@ type SearchSettingKey =
   | 'SEARCH_MODE'
   | 'METADATA_PROVIDER'
   | 'METADATA_PROVIDER_AUDIOBOOK'
+  | 'DEFAULT_DISCOVER_TOPIC'
   | 'DEFAULT_RELEASE_SOURCE'
   | 'DEFAULT_RELEASE_SOURCE_AUDIOBOOK';
 
@@ -56,6 +67,14 @@ const fallbackDefaultReleaseSourceField: SelectFieldConfig = {
   description: 'The release source tab to open by default in the release modal for books.',
   value: 'direct_download',
   options: [],
+};
+
+const fallbackDefaultDiscoverTopicField: TagListFieldConfig = {
+  type: 'TagListField',
+  key: 'DEFAULT_DISCOVER_TOPIC',
+  label: 'Default Discover Topic',
+  description: 'Choose an Audible topic or subgenre to pin first on the home page.',
+  value: [],
 };
 
 const fallbackDefaultAudiobookReleaseSourceField: SelectFieldConfig = {
@@ -110,6 +129,11 @@ export const UserSearchPreferencesSection = ({
     'METADATA_PROVIDER_AUDIOBOOK',
     fallbackAudiobookMetadataProviderField,
   );
+  const defaultDiscoverTopicField = getFieldByKey(
+    fields,
+    'DEFAULT_DISCOVER_TOPIC',
+    fallbackDefaultDiscoverTopicField,
+  );
   const defaultReleaseSourceField = getFieldByKey(
     fields,
     'DEFAULT_RELEASE_SOURCE',
@@ -130,7 +154,7 @@ export const UserSearchPreferencesSection = ({
       return false;
     }
 
-    return toStringValue(userSettings[key]) !== toStringValue(globalValues[key]);
+    return toComparableValue(userSettings[key]) !== toComparableValue(globalValues[key]);
   };
 
   const readValue = (key: SearchSettingKey, fallback = ''): string => {
@@ -141,6 +165,15 @@ export const UserSearchPreferencesSection = ({
       return toStringValue(globalValues[key]);
     }
     return fallback;
+  };
+
+  const readTopicValue = (): string[] => {
+    const value = isOverridden('DEFAULT_DISCOVER_TOPIC')
+      ? userSettings.DEFAULT_DISCOVER_TOPIC
+      : globalValues.DEFAULT_DISCOVER_TOPIC;
+    return Array.isArray(value) && value.every((segment) => typeof segment === 'string')
+      ? value
+      : [];
   };
 
   const resetKeys = (keys: SearchSettingKey[]) => {
@@ -157,6 +190,10 @@ export const UserSearchPreferencesSection = ({
   const effectiveSearchMode = normalizeSearchMode(searchModeValue);
   const metadataProviderValue = readValue('METADATA_PROVIDER');
   const metadataProviderAudiobookValue = readValue('METADATA_PROVIDER_AUDIOBOOK');
+  const effectiveAudiobookProvider = toNormalizedLowercaseTextValue(
+    metadataProviderAudiobookValue || metadataProviderValue,
+  );
+  const defaultDiscoverTopicValue = readTopicValue();
   const defaultReleaseSourceValue = readValue('DEFAULT_RELEASE_SOURCE');
   const defaultAudiobookReleaseSourceValue = readValue('DEFAULT_RELEASE_SOURCE_AUDIOBOOK');
 
@@ -167,6 +204,8 @@ export const UserSearchPreferencesSection = ({
   const canOverrideAudiobookMetadataProvider =
     isUserOverridable('METADATA_PROVIDER_AUDIOBOOK') &&
     preferenceKeySet.has('METADATA_PROVIDER_AUDIOBOOK');
+  const canOverrideDefaultDiscoverTopic =
+    isUserOverridable('DEFAULT_DISCOVER_TOPIC') && preferenceKeySet.has('DEFAULT_DISCOVER_TOPIC');
   const canOverrideDefaultReleaseSource =
     isUserOverridable('DEFAULT_RELEASE_SOURCE') && preferenceKeySet.has('DEFAULT_RELEASE_SOURCE');
   const canOverrideDefaultAudiobookReleaseSource =
@@ -177,6 +216,7 @@ export const UserSearchPreferencesSection = ({
     !canOverrideSearchMode &&
     !canOverrideMetadataProvider &&
     !canOverrideAudiobookMetadataProvider &&
+    !canOverrideDefaultDiscoverTopic &&
     !canOverrideDefaultReleaseSource &&
     !canOverrideDefaultAudiobookReleaseSource
   ) {
@@ -251,6 +291,30 @@ export const UserSearchPreferencesSection = ({
           />
         </FieldWrapper>
       )}
+
+      {effectiveSearchMode === 'universal' &&
+        effectiveAudiobookProvider === 'audible' &&
+        canOverrideDefaultDiscoverTopic && (
+          <FieldWrapper
+            field={defaultDiscoverTopicField}
+            resetAction={
+              isOverridden('DEFAULT_DISCOVER_TOPIC')
+                ? {
+                    disabled: Boolean(defaultDiscoverTopicField.fromEnv),
+                    onClick: () => resetKeys(['DEFAULT_DISCOVER_TOPIC']),
+                  }
+                : undefined
+            }
+          >
+            <AudibleTopicSelector
+              value={defaultDiscoverTopicValue}
+              onChange={(path) =>
+                setUserSettings((prev) => ({ ...prev, DEFAULT_DISCOVER_TOPIC: path }))
+              }
+              disabled={Boolean(defaultDiscoverTopicField.fromEnv)}
+            />
+          </FieldWrapper>
+        )}
 
       {effectiveSearchMode === 'universal' && canOverrideDefaultReleaseSource && (
         <FieldWrapper
