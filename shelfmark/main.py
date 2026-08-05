@@ -41,6 +41,9 @@ from shelfmark.config.env import (
 from shelfmark.config.security import _migrate_security_settings
 from shelfmark.config.settings import _SUPPORTED_BOOK_LANGUAGE
 from shelfmark.core.activity_view_state_service import ActivityViewStateService
+from shelfmark.core.audible_topics import (
+    get_audible_topic_tree as get_audible_topic_tree_service,
+)
 from shelfmark.core.auth_modes import (
     get_auth_check_admin_status,
     is_settings_or_onboarding_path,
@@ -87,6 +90,7 @@ from shelfmark.core.user_db import UserDB
 from shelfmark.core.utils import normalize_base_path
 from shelfmark.download import orchestrator as backend
 from shelfmark.library.scheduler import start_library_index_sync
+from shelfmark.metadata_providers.audible_taxonomy import public_topic_nodes
 from shelfmark.release_sources import (
     BrowseRecord,
     Release,
@@ -2623,6 +2627,21 @@ def api_metadata_config() -> Response | tuple[Response, int]:
 
 _DISCOVER_CONTENT_TYPES = {"ebook", "audiobook", "combined"}
 _DISCOVER_ROW_KEYS = {key for rows in ROWS_BY_PROVIDER.values() for key, _ in rows}
+
+
+@app.route("/api/metadata/audible/topics", methods=["GET"])
+@login_required
+def api_audible_topics() -> Response | tuple[Response, int]:
+    tree = get_audible_topic_tree_service()
+    if tree is None:
+        return jsonify({"error": "Audible topics are temporarily unavailable"}), 503
+    return jsonify(
+        {
+            "region": tree.region,
+            "stale": tree.stale,
+            "topics": public_topic_nodes(tree.topics),
+        }
+    )
 
 
 @app.route("/api/discover", methods=["GET"])
