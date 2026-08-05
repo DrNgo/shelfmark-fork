@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 
 import type { SelectFieldConfig } from '../../../types/settings';
+import { getSelectFieldAccessibleName } from '../../../utils/dropdownAccessibility';
 import { DropdownList } from '../../DropdownList';
 
 interface SelectFieldProps {
@@ -68,7 +69,12 @@ export const SelectField = ({
 
   return (
     <DropdownList
-      ariaLabel={field.label}
+      ariaLabel={getSelectFieldAccessibleName(
+        field.label,
+        effectiveValue,
+        dropdownOptions,
+        'Select...',
+      )}
       options={dropdownOptions}
       value={effectiveValue}
       onChange={handleChange}
