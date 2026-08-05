@@ -282,6 +282,8 @@ export interface AppConfig {
   show_release_source_links: boolean;
   show_combined_selector: boolean;
   show_discover_rows: boolean;
+  default_discover_topic: string[];
+  default_discover_topic_core_key?: string | null;
   force_combined_search: boolean;
   books_output_mode: BooksOutputMode;
   auto_open_downloads_sidebar: boolean; // Auto-open sidebar when download is queued

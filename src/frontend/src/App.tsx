@@ -877,6 +877,14 @@ function App() {
   const effectiveCombinedMode = combinedModeAllowed && (combinedMode || combinedModeLocked);
   const effectiveCombinedState = effectiveCombinedMode ? combinedState : null;
 
+  const singleContentDiscoverProviderName =
+    effectiveContentType === 'audiobook'
+      ? (configuredAudiobookMetadataProvider ?? configuredMetadataProvider)
+      : configuredMetadataProvider;
+  const discoverStandardProviderName = effectiveCombinedMode
+    ? (configuredCombinedMetadataProvider ?? configuredMetadataProvider)
+    : singleContentDiscoverProviderName;
+
   const defaultMetadataProviderForContentType =
     effectiveCombinedMode && configuredCombinedMetadataProvider
       ? configuredCombinedMetadataProvider
@@ -2609,13 +2617,12 @@ function App() {
             effectiveSearchMode === 'universal' && (
               <DiscoverSection
                 contentType={effectiveCombinedMode ? 'combined' : effectiveContentType}
-                providerName={
-                  effectiveCombinedMode
-                    ? (configuredCombinedMetadataProvider ?? configuredMetadataProvider)
-                    : (effectiveContentType === 'audiobook'
-                        ? (configuredAudiobookMetadataProvider ?? configuredMetadataProvider)
-                        : configuredMetadataProvider)
+                standardProviderName={discoverStandardProviderName}
+                audiobookProviderName={
+                  configuredAudiobookMetadataProvider ?? configuredMetadataProvider
                 }
+                preferredTopicPath={config.default_discover_topic}
+                preferredCoreTopicKey={config.default_discover_topic_core_key ?? null}
                 openRequestKeys={openRequestKeys}
                 getButtonState={getUniversalActionButtonState}
                 onDetails={(book) => void handleShowDiscoverDetails(book)}

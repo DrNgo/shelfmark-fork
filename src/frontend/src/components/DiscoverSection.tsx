@@ -9,8 +9,8 @@ import type { DiscoverRowState } from '../utils/discoverRows';
 import {
   applyRowError,
   applyRowResponse,
+  buildDiscoverRowDefs,
   contentTypeForDiscoverBook,
-  getDiscoverRowsForProvider,
   initialRowStates,
   visibleRows,
 } from '../utils/discoverRows';
@@ -20,7 +20,10 @@ import { InLibraryBadge, RequestedBadge } from './shared';
 
 interface DiscoverSectionProps {
   contentType: ContentType | 'combined';
-  providerName: string | null;
+  standardProviderName: string | null;
+  audiobookProviderName: string | null;
+  preferredTopicPath: string[];
+  preferredCoreTopicKey: string | null;
   openRequestKeys: Set<string>;
   getButtonState: (bookId: string) => ButtonStateInfo;
   onDetails: (book: Book) => void;
@@ -88,7 +91,10 @@ const DiscoverTile = ({
 
 export const DiscoverSection = ({
   contentType,
-  providerName,
+  standardProviderName,
+  audiobookProviderName,
+  preferredTopicPath,
+  preferredCoreTopicKey,
   openRequestKeys,
   getButtonState,
   onDetails,
@@ -96,7 +102,13 @@ export const DiscoverSection = ({
   const [rows, setRows] = useState<DiscoverRowState[]>([]);
 
   useDependencyEffect(() => {
-    const rowDefs = getDiscoverRowsForProvider(providerName);
+    const rowDefs = buildDiscoverRowDefs({
+      contentType,
+      standardProvider: standardProviderName,
+      audiobookProvider: audiobookProviderName,
+      hasPreferredTopic: preferredTopicPath.length > 0,
+      preferredCoreKey: preferredCoreTopicKey,
+    });
     if (rowDefs.length === 0) {
       setRows([]);
       return undefined;
@@ -120,7 +132,13 @@ export const DiscoverSection = ({
     return () => {
       cancelled = true;
     };
-  }, [contentType, providerName]);
+  }, [
+    contentType,
+    standardProviderName,
+    audiobookProviderName,
+    preferredTopicPath,
+    preferredCoreTopicKey,
+  ]);
 
   const allBooks = useMemo(() => rows.flatMap((row) => row.books ?? []), [rows]);
   // Record keyed by book.id (buildLibraryLookupPayload uses book.id). The
@@ -159,7 +177,7 @@ export const DiscoverSection = ({
                   key={i}
                   className="w-32 flex-none animate-pulse rounded-lg bg-(--bg-soft)"
                   // Audible covers are square; match the skeleton so rows don't jump.
-                  style={{ aspectRatio: providerName === 'audible' ? '1/1' : '2/3' }}
+                  style={{ aspectRatio: row.coverAspect === 'square' ? '1/1' : '2/3' }}
                 />
               ))}
             </div>

@@ -4,11 +4,11 @@ import { MEDIA_TYPE_AUDIOBOOK, MEDIA_TYPE_EBOOK } from './mediaType';
 export interface DiscoverRowDef {
   key: string;
   label: string;
+  provider: string;
+  coverAspect: 'square' | 'portrait';
 }
 
-export interface DiscoverRowState {
-  key: string;
-  label: string;
+export interface DiscoverRowState extends DiscoverRowDef {
   books: Book[] | null; // null = still loading
 }
 
@@ -16,20 +16,104 @@ export interface DiscoverRowState {
 // ROWS_BY_PROVIDER in shelfmark/core/discover.py — keep in sync.
 export const DISCOVER_ROWS_BY_PROVIDER: Record<string, DiscoverRowDef[]> = {
   hardcover: [
-    { key: 'trending', label: 'Trending' },
-    { key: 'new_releases', label: 'New Releases' },
+    {
+      key: 'trending',
+      label: 'Trending',
+      provider: 'hardcover',
+      coverAspect: 'portrait',
+    },
+    {
+      key: 'new_releases',
+      label: 'New Releases',
+      provider: 'hardcover',
+      coverAspect: 'portrait',
+    },
   ],
   audible: [
-    { key: 'best_sellers', label: 'Best Sellers' },
-    { key: 'new_releases', label: 'New Releases' },
+    {
+      key: 'best_sellers',
+      label: 'Best Sellers',
+      provider: 'audible',
+      coverAspect: 'square',
+    },
+    {
+      key: 'new_releases',
+      label: 'New Releases',
+      provider: 'audible',
+      coverAspect: 'square',
+    },
   ],
 };
+
+const AUDIBLE_TOPIC_ROWS: DiscoverRowDef[] = [
+  { key: 'topic_fantasy', label: 'Fantasy', provider: 'audible', coverAspect: 'square' },
+  { key: 'topic_romance', label: 'Romance', provider: 'audible', coverAspect: 'square' },
+  {
+    key: 'topic_mystery_thriller',
+    label: 'Mystery, Thriller & Suspense',
+    provider: 'audible',
+    coverAspect: 'square',
+  },
+  {
+    key: 'topic_science_fiction',
+    label: 'Science Fiction',
+    provider: 'audible',
+    coverAspect: 'square',
+  },
+  {
+    key: 'topic_historical_fiction',
+    label: 'Historical Fiction',
+    provider: 'audible',
+    coverAspect: 'square',
+  },
+  { key: 'topic_horror', label: 'Horror', provider: 'audible', coverAspect: 'square' },
+];
+
+interface BuildDiscoverRowDefsContext {
+  contentType: ContentType | 'combined';
+  standardProvider: string | null;
+  audiobookProvider: string | null;
+  hasPreferredTopic: boolean;
+  preferredCoreKey: string | null;
+}
 
 export const getDiscoverRowsForProvider = (provider: string | null): DiscoverRowDef[] =>
   provider ? (DISCOVER_ROWS_BY_PROVIDER[provider] ?? []) : [];
 
+export const buildDiscoverRowDefs = ({
+  contentType,
+  standardProvider,
+  audiobookProvider,
+  hasPreferredTopic,
+  preferredCoreKey,
+}: BuildDiscoverRowDefsContext): DiscoverRowDef[] => {
+  const standardRows = getDiscoverRowsForProvider(standardProvider);
+  if (contentType === 'ebook' || audiobookProvider !== 'audible') {
+    return standardRows;
+  }
+
+  const preferredCoreRow = hasPreferredTopic
+    ? AUDIBLE_TOPIC_ROWS.find((row) => row.key === preferredCoreKey)
+    : undefined;
+  const preferredRows = hasPreferredTopic
+    ? [
+        preferredCoreRow ?? {
+          key: 'preferred_topic',
+          label: 'Preferred Topic',
+          provider: 'audible',
+          coverAspect: 'square' as const,
+        },
+      ]
+    : [];
+  const remainingTopicRows = preferredCoreRow
+    ? AUDIBLE_TOPIC_ROWS.filter((row) => row.key !== preferredCoreRow.key)
+    : AUDIBLE_TOPIC_ROWS;
+
+  return [...preferredRows, ...standardRows, ...remainingTopicRows];
+};
+
 export const initialRowStates = (defs: DiscoverRowDef[]): DiscoverRowState[] =>
-  defs.map((def) => ({ key: def.key, label: def.label, books: null }));
+  defs.map((def) => ({ ...def, books: null }));
 
 export const applyRowResponse = (
   rows: DiscoverRowState[],

@@ -4,6 +4,7 @@ import type { Book } from '../types';
 import {
   applyRowError,
   applyRowResponse,
+  buildDiscoverRowDefs,
   contentTypeForDiscoverBook,
   contentTypeForDiscoverDetails,
   getDiscoverRowsForProvider,
@@ -47,6 +48,133 @@ describe('getDiscoverRowsForProvider', () => {
     expect(getDiscoverRowsForProvider('openlibrary')).toEqual([]);
     expect(getDiscoverRowsForProvider('googlebooks')).toEqual([]);
     expect(getDiscoverRowsForProvider(null)).toEqual([]);
+  });
+});
+
+describe('buildDiscoverRowDefs', () => {
+  it('keeps ebook rows free of Audible topics', () => {
+    expect(
+      buildDiscoverRowDefs({
+        contentType: 'ebook',
+        standardProvider: 'hardcover',
+        audiobookProvider: 'audible',
+        hasPreferredTopic: true,
+        preferredCoreKey: null,
+      }).map((row) => row.key),
+    ).toEqual(['trending', 'new_releases']);
+  });
+
+  it('adds preferred then standard and permanent rows in combined mode', () => {
+    expect(
+      buildDiscoverRowDefs({
+        contentType: 'combined',
+        standardProvider: 'hardcover',
+        audiobookProvider: 'audible',
+        hasPreferredTopic: true,
+        preferredCoreKey: null,
+      }).map((row) => row.key),
+    ).toEqual([
+      'preferred_topic',
+      'trending',
+      'new_releases',
+      'topic_fantasy',
+      'topic_romance',
+      'topic_mystery_thriller',
+      'topic_science_fiction',
+      'topic_historical_fiction',
+      'topic_horror',
+    ]);
+  });
+
+  it('moves an exact permanent preference without duplicating it', () => {
+    const keys = buildDiscoverRowDefs({
+      contentType: 'audiobook',
+      standardProvider: 'audible',
+      audiobookProvider: 'audible',
+      hasPreferredTopic: true,
+      preferredCoreKey: 'topic_horror',
+    }).map((row) => row.key);
+    expect(keys[0]).toBe('topic_horror');
+    expect(keys.filter((key) => key === 'topic_horror')).toHaveLength(1);
+  });
+
+  it('returns only standard rows when Audible is not the effective audiobook provider', () => {
+    expect(
+      buildDiscoverRowDefs({
+        contentType: 'audiobook',
+        standardProvider: 'hardcover',
+        audiobookProvider: 'hardcover',
+        hasPreferredTopic: true,
+        preferredCoreKey: null,
+      }).map((row) => row.key),
+    ).toEqual(['trending', 'new_releases']);
+  });
+
+  it('keeps standard rows first when there is no preferred topic', () => {
+    expect(
+      buildDiscoverRowDefs({
+        contentType: 'audiobook',
+        standardProvider: 'audible',
+        audiobookProvider: 'audible',
+        hasPreferredTopic: false,
+        preferredCoreKey: null,
+      }).map((row) => row.key),
+    ).toEqual([
+      'best_sellers',
+      'new_releases',
+      'topic_fantasy',
+      'topic_romance',
+      'topic_mystery_thriller',
+      'topic_science_fiction',
+      'topic_historical_fiction',
+      'topic_horror',
+    ]);
+  });
+
+  it('uses portrait Hardcover standard rows beside square Audible topic rows', () => {
+    const rows = buildDiscoverRowDefs({
+      contentType: 'combined',
+      standardProvider: 'hardcover',
+      audiobookProvider: 'audible',
+      hasPreferredTopic: false,
+      preferredCoreKey: null,
+    });
+
+    expect(rows.slice(0, 2)).toEqual([
+      {
+        key: 'trending',
+        label: 'Trending',
+        provider: 'hardcover',
+        coverAspect: 'portrait',
+      },
+      {
+        key: 'new_releases',
+        label: 'New Releases',
+        provider: 'hardcover',
+        coverAspect: 'portrait',
+      },
+    ]);
+    expect(rows.slice(2).every((row) => row.provider === 'audible')).toBe(true);
+    expect(rows.slice(2).every((row) => row.coverAspect === 'square')).toBe(true);
+  });
+
+  it('uses the permanent topic labels exposed by the backend', () => {
+    expect(
+      buildDiscoverRowDefs({
+        contentType: 'audiobook',
+        standardProvider: null,
+        audiobookProvider: 'audible',
+        hasPreferredTopic: false,
+        preferredCoreKey: null,
+      }).map(({ key, label }) => [key, label]),
+    ).toEqual([
+      ['topic_fantasy', 'Fantasy'],
+      ['topic_romance', 'Romance'],
+      ['topic_mystery_thriller', 'Mystery, Thriller & Suspense'],
+      ['topic_science_fiction', 'Science Fiction'],
+      ['topic_historical_fiction', 'Historical Fiction'],
+      ['topic_horror', 'Horror'],
+    ]);
   });
 });
 
