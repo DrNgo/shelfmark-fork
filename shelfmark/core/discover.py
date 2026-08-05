@@ -35,6 +35,35 @@ from shelfmark.metadata_providers.audible_taxonomy import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from typing import Protocol
+
+    from shelfmark.metadata_providers import MetadataProvider
+
+    class _HardcoverDiscoverProvider(Protocol):
+        def is_available(self) -> bool: ...
+
+        def discover_trending(
+            self, limit: int, *, audio_only: bool
+        ) -> list[BookMetadata] | None: ...
+
+        def discover_new_releases(
+            self, limit: int, *, audio_only: bool
+        ) -> list[BookMetadata] | None: ...
+
+    class _AudibleDiscoverProvider(Protocol):
+        region: str
+
+        @property
+        def tld(self) -> str: ...
+
+        def is_available(self) -> bool: ...
+
+        def discover_best_sellers(self, limit: int) -> list[BookMetadata] | None: ...
+
+        def discover_new_releases(self, limit: int) -> list[BookMetadata] | None: ...
+
+        def discover_topic(self, category_id: str, limit: int) -> list[BookMetadata] | None: ...
+
 
 logger = setup_logger(__name__)
 
@@ -84,15 +113,17 @@ def _lock_for(key: str) -> threading.Lock:
 
 
 def _fetch(
-    provider: object, provider_name: str, row_key: str, *, audio_only: bool
+    provider: MetadataProvider, provider_name: str, row_key: str, *, audio_only: bool
 ) -> list[BookMetadata] | None:
     if provider_name == "hardcover":
+        hardcover_provider = cast("_HardcoverDiscoverProvider", provider)
         if row_key == "trending":
-            return provider.discover_trending(ROW_LIMIT, audio_only=audio_only)
-        return provider.discover_new_releases(ROW_LIMIT, audio_only=audio_only)
+            return hardcover_provider.discover_trending(ROW_LIMIT, audio_only=audio_only)
+        return hardcover_provider.discover_new_releases(ROW_LIMIT, audio_only=audio_only)
+    audible_provider = cast("_AudibleDiscoverProvider", provider)
     if row_key == "best_sellers":
-        return provider.discover_best_sellers(ROW_LIMIT)
-    return provider.discover_new_releases(ROW_LIMIT)
+        return audible_provider.discover_best_sellers(ROW_LIMIT)
+    return audible_provider.discover_new_releases(ROW_LIMIT)
 
 
 def _row_ttl(row_key: str) -> int:
@@ -150,7 +181,10 @@ def _get_audible_topic_row(
     if provider_name != "audible" or not is_provider_enabled("audible"):
         return None
 
-    provider = get_provider("audible", **get_provider_kwargs("audible"))
+    provider = cast(
+        "_AudibleDiscoverProvider",
+        get_provider("audible", **get_provider_kwargs("audible")),
+    )
     if not provider.is_available():
         return None
 
@@ -241,7 +275,8 @@ def get_discover_row(
         base_key = f"discover:hardcover:{row_key}:{variant}"
     else:
         # Region changes must not serve the old storefront (stale included).
-        base_key = f"discover:audible:{provider.tld}:{row_key}"
+        audible_provider = cast("_AudibleDiscoverProvider", provider)
+        base_key = f"discover:audible:{audible_provider.tld}:{row_key}"
 
     return _cached_row(
         base_key=base_key,

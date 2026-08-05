@@ -42,7 +42,9 @@ def test_fetch_topic_tree_uses_genres_root(provider):
 
 def test_discover_topic_passes_category_and_best_sellers(provider):
     products = [_product("B000000000")]
-    with patch.object(provider.session, "get", return_value=_response({"products": products})) as mock_get:
+    with patch.object(
+        provider.session, "get", return_value=_response({"products": products})
+    ) as mock_get:
         books = provider.discover_topic("18580607011", limit=1)
     assert books is not None and books[0].provider_id == "B000000000"
     params = mock_get.call_args.kwargs["params"]

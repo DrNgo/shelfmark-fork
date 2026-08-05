@@ -74,18 +74,14 @@ class TestDiscoverBestSellers:
 
     def test_full_first_page_makes_single_request(self, provider):
         products = [_product(f"B0000000{i:02d}") for i in range(50)]
-        with patch.object(
-            provider.session, "get", return_value=_response(products)
-        ) as mock_get:
+        with patch.object(provider.session, "get", return_value=_response(products)) as mock_get:
             result = provider.discover_best_sellers(limit=20)
         assert result is not None
         assert len(result) == 20
         assert mock_get.call_count == 1
 
     def test_request_error_returns_none(self, provider):
-        with patch.object(
-            provider.session, "get", side_effect=requests.ConnectionError("down")
-        ):
+        with patch.object(provider.session, "get", side_effect=requests.ConnectionError("down")):
             assert provider.discover_best_sellers() is None
 
     def test_malformed_payload_returns_none(self, provider):

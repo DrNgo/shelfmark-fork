@@ -45,9 +45,7 @@ _ENGLISH_PATHS = {
     "topic_horror": ("Literature & Fiction", "Horror"),
 }
 
-CORE_TOPIC_PATHS_BY_REGION = {
-    region: dict(_ENGLISH_PATHS) for region in ("us", "ca", "uk", "au")
-}
+CORE_TOPIC_PATHS_BY_REGION = {region: dict(_ENGLISH_PATHS) for region in ("us", "ca", "uk", "au")}
 CORE_TOPIC_PATHS_BY_REGION["in"] = {
     **_ENGLISH_PATHS,
     "topic_historical_fiction": ("Literature & Fiction", "Historical"),
@@ -104,12 +102,16 @@ CORE_TOPIC_PATHS_BY_REGION["jp"] = {
 
 def parse_audible_topic_tree(payload: object) -> tuple[AudibleTopicNode, ...] | None:
     """Parse an Audible category response, ignoring malformed category entries."""
-    if not isinstance(payload, dict) or not isinstance(categories := payload.get("categories"), list):
+    if not isinstance(payload, dict) or not isinstance(
+        categories := payload.get("categories"), list
+    ):
         return None
 
     accepted_nodes = 0
 
-    def parse_nodes(raw_nodes: list[Any], parent_path: tuple[str, ...]) -> tuple[AudibleTopicNode, ...]:
+    def parse_nodes(
+        raw_nodes: list[Any], parent_path: tuple[str, ...]
+    ) -> tuple[AudibleTopicNode, ...]:
         nonlocal accepted_nodes
         parsed: list[AudibleTopicNode] = []
         for raw_node in raw_nodes:

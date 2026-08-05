@@ -315,7 +315,7 @@ class AudibleProvider(MetadataProvider):
             )
             response.raise_for_status()
             payload = response.json()
-        except (requests.RequestException, ValueError):
+        except requests.RequestException, ValueError:
             logger.warning("Audible discover browse failed (sort=%s page=%s)", sort, page)
             return None
 
@@ -361,12 +361,11 @@ class AudibleProvider(MetadataProvider):
                     if not issue_date or issue_date > today:
                         continue
                 parsed = self._parse_product(product)
-                if parsed is not None:
-                    if parsed.provider_id not in seen_ids:
-                        seen_ids.add(parsed.provider_id)
-                        books.append(parsed)
-                        if len(books) >= limit:
-                            return books
+                if parsed is not None and parsed.provider_id not in seen_ids:
+                    seen_ids.add(parsed.provider_id)
+                    books.append(parsed)
+                    if len(books) >= limit:
+                        return books
         return books
 
     def discover_best_sellers(self, limit: int = 20) -> list[BookMetadata] | None:
@@ -396,7 +395,7 @@ class AudibleProvider(MetadataProvider):
             )
             response.raise_for_status()
             payload = response.json()
-        except (requests.RequestException, TypeError, ValueError):
+        except requests.RequestException, TypeError, ValueError:
             logger.warning("Audible topic taxonomy fetch failed for region %s", self.region)
             return None
         return parse_audible_topic_tree(payload)
