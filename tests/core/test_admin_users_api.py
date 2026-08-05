@@ -508,6 +508,36 @@ class TestAdminUserUpdateEndpoint:
         settings = user_db.get_user_settings(user["id"])
         assert settings["DESTINATION_AUDIOBOOK"] == "/audiobooks/alice"
 
+    def test_update_user_settings_normalizes_topic_and_preserves_existing_values(
+        self, admin_client, user_db
+    ):
+        user = user_db.create_user(username="topic-reader")
+        user_db.set_user_settings(user["id"], {"DESTINATION": "/books/topic-reader"})
+
+        with patch(
+            "shelfmark.config.users_settings.validate_audible_topic_path",
+            return_value=(["Science Fiction & Fantasy", "Fantasy"], None),
+        ):
+            resp = admin_client.put(
+                f"/api/admin/users/{user['id']}",
+                json={
+                    "settings": {
+                        "DEFAULT_DISCOVER_TOPIC": [
+                            " Science Fiction & Fantasy ",
+                            " Fantasy ",
+                        ]
+                    }
+                },
+            )
+
+        assert resp.status_code == 200
+        settings = user_db.get_user_settings(user["id"])
+        assert settings["DEFAULT_DISCOVER_TOPIC"] == [
+            "Science Fiction & Fantasy",
+            "Fantasy",
+        ]
+        assert settings["DESTINATION"] == "/books/topic-reader"
+
     def test_update_user_settings_accepts_notification_overrides(self, admin_client, user_db):
         user = user_db.create_user(username="alice")
 
@@ -1240,6 +1270,7 @@ class TestAdminSearchPreferences:
             "METADATA_PROVIDER_AUDIOBOOK": "",
             "DEFAULT_RELEASE_SOURCE": "direct_download",
             "DEFAULT_RELEASE_SOURCE_AUDIOBOOK": "",
+            "DEFAULT_DISCOVER_TOPIC": ["Romance"],
         }
         (plugins_dir / "search_mode.json").write_text(json.dumps(search_mode_config))
 
@@ -1256,6 +1287,7 @@ class TestAdminSearchPreferences:
                 "METADATA_PROVIDER": "openlibrary",
                 "DEFAULT_RELEASE_SOURCE": "prowlarr",
                 "DEFAULT_RELEASE_SOURCE_AUDIOBOOK": "audiobookbay",
+                "DEFAULT_DISCOVER_TOPIC": ["Science Fiction & Fantasy", "Fantasy"],
             },
         )
 
@@ -1267,6 +1299,7 @@ class TestAdminSearchPreferences:
         assert data["keys"] == [
             "SEARCH_MODE",
             "SHOW_COMBINED_SELECTOR",
+            "DEFAULT_DISCOVER_TOPIC",
             "FORCE_COMBINED_SEARCH",
             "METADATA_PROVIDER",
             "METADATA_PROVIDER_AUDIOBOOK",
@@ -1282,6 +1315,10 @@ class TestAdminSearchPreferences:
         assert data["userOverrides"]["METADATA_PROVIDER"] == "openlibrary"
         assert data["userOverrides"]["DEFAULT_RELEASE_SOURCE"] == "prowlarr"
         assert data["userOverrides"]["DEFAULT_RELEASE_SOURCE_AUDIOBOOK"] == "audiobookbay"
+        assert data["userOverrides"]["DEFAULT_DISCOVER_TOPIC"] == [
+            "Science Fiction & Fantasy",
+            "Fantasy",
+        ]
 
         assert data["effective"]["SEARCH_MODE"]["source"] == "user_override"
         assert data["effective"]["SEARCH_MODE"]["value"] == "universal"
@@ -1294,6 +1331,10 @@ class TestAdminSearchPreferences:
         assert data["effective"]["DEFAULT_RELEASE_SOURCE"]["value"] == "prowlarr"
         assert data["effective"]["DEFAULT_RELEASE_SOURCE_AUDIOBOOK"]["source"] == "user_override"
         assert data["effective"]["DEFAULT_RELEASE_SOURCE_AUDIOBOOK"]["value"] == "audiobookbay"
+        assert data["effective"]["DEFAULT_DISCOVER_TOPIC"] == {
+            "source": "user_override",
+            "value": ["Science Fiction & Fantasy", "Fantasy"],
+        }
 
     def test_returns_404_for_unknown_user(self, admin_client):
         resp = admin_client.get("/api/admin/users/9999/search-preferences")

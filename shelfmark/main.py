@@ -90,7 +90,10 @@ from shelfmark.core.user_db import UserDB
 from shelfmark.core.utils import normalize_base_path
 from shelfmark.download import orchestrator as backend
 from shelfmark.library.scheduler import start_library_index_sync
-from shelfmark.metadata_providers.audible_taxonomy import public_topic_nodes
+from shelfmark.metadata_providers.audible_taxonomy import (
+    matching_core_topic_key,
+    public_topic_nodes,
+)
 from shelfmark.release_sources import (
     BrowseRecord,
     Release,
@@ -1153,6 +1156,20 @@ def api_config() -> Response | tuple[Response, int]:
             "",
             user_id=db_user_id,
         )
+        raw_default_discover_topic = app_config.get(
+            "DEFAULT_DISCOVER_TOPIC",
+            [],
+            user_id=db_user_id,
+        )
+        default_discover_topic = (
+            [segment.strip() for segment in raw_default_discover_topic]
+            if isinstance(raw_default_discover_topic, list)
+            and all(
+                isinstance(segment, str) and bool(segment.strip())
+                for segment in raw_default_discover_topic
+            )
+            else []
+        )
         configured_metadata_provider = normalize_optional_text(
             app_config.get(
                 "METADATA_PROVIDER",
@@ -1187,6 +1204,11 @@ def api_config() -> Response | tuple[Response, int]:
             "metadata_search_fields": get_provider_search_fields(metadata_ui_provider),
             "default_release_source": default_release_source,
             "default_release_source_audiobook": default_release_source_audiobook,
+            "default_discover_topic": default_discover_topic,
+            "default_discover_topic_core_key": matching_core_topic_key(
+                str(app_config.get("AUDIBLE_REGION", "us") or "us"),
+                default_discover_topic,
+            ),
             "show_release_source_links": app_config.get("SHOW_RELEASE_SOURCE_LINKS", True),
             "show_combined_selector": app_config.get(
                 "SHOW_COMBINED_SELECTOR", True, user_id=db_user_id

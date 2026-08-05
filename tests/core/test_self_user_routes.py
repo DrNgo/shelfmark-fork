@@ -85,6 +85,7 @@ def test_users_me_edit_context_includes_search_preferences_when_visible(app, use
         {
             "SEARCH_MODE": "universal",
             "METADATA_PROVIDER": "openlibrary",
+            "DEFAULT_DISCOVER_TOPIC": ["Science Fiction & Fantasy", "Fantasy"],
         },
     )
     client = _authed_client_for_user(app, user)
@@ -104,6 +105,11 @@ def test_users_me_edit_context_includes_search_preferences_when_visible(app, use
     assert resp.json["searchPreferences"]["effective"]["SEARCH_MODE"]["source"] == "user_override"
     assert "SEARCH_MODE" in resp.json["userOverridableKeys"]
     assert "METADATA_PROVIDER" in resp.json["userOverridableKeys"]
+    assert "DEFAULT_DISCOVER_TOPIC" in resp.json["userOverridableKeys"]
+    assert resp.json["searchPreferences"]["effective"]["DEFAULT_DISCOVER_TOPIC"] == {
+        "source": "user_override",
+        "value": ["Science Fiction & Fantasy", "Fantasy"],
+    }
     assert resp.json["notificationPreferences"] is None
     assert resp.json["userOverridableKeys"] == sorted(resp.json["userOverridableKeys"])
 
@@ -168,6 +174,42 @@ def test_users_me_update_accepts_visible_section_settings(app, user_db):
     assert resp.status_code == 200
     assert user_db.get_user_settings(user["id"]).get("DESTINATION") == "/books/alice"
     assert resp.json["settings"]["DESTINATION"] == "/books/alice"
+
+
+def test_users_me_update_normalizes_visible_topic_setting_and_preserves_existing_values(
+    app, user_db
+):
+    user = user_db.create_user(username="topic-reader")
+    user_db.set_user_settings(user["id"], {"DESTINATION": "/books/topic-reader"})
+    client = _authed_client_for_user(app, user)
+
+    with (
+        patch("shelfmark.core.self_user_routes.load_active_auth_mode", return_value="builtin"),
+        patch(
+            "shelfmark.core.self_user_routes.app_config.get",
+            side_effect=_visible_sections_config_get(["search"]),
+        ),
+        patch(
+            "shelfmark.config.users_settings.validate_audible_topic_path",
+            return_value=(["Science Fiction & Fantasy", "Fantasy"], None),
+        ),
+    ):
+        resp = client.put(
+            "/api/users/me",
+            json={
+                "settings": {
+                    "DEFAULT_DISCOVER_TOPIC": [
+                        " Science Fiction & Fantasy ",
+                        " Fantasy ",
+                    ]
+                }
+            },
+        )
+
+    assert resp.status_code == 200
+    settings = user_db.get_user_settings(user["id"])
+    assert settings["DEFAULT_DISCOVER_TOPIC"] == ["Science Fiction & Fantasy", "Fantasy"]
+    assert settings["DESTINATION"] == "/books/topic-reader"
 
 
 def test_users_me_update_rejects_non_object_settings_payload(app, user_db):

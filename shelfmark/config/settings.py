@@ -14,6 +14,7 @@ from shelfmark.config.download_settings_handlers import (
     check_books_destination,
 )
 from shelfmark.config.email_settings import check_email_connection
+from shelfmark.core.audible_topics import validate_audible_topic_path
 from shelfmark.core.languages import supported_book_languages
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.settings_registry import (
@@ -293,6 +294,28 @@ def _get_audiobook_release_source_options() -> list[dict[str, str]]:
     ]
 
 
+def _on_save_search_mode(values: dict[str, Any]) -> dict[str, Any]:
+    """Validate and normalize search-mode settings before persistence."""
+    if "DEFAULT_DISCOVER_TOPIC" not in values:
+        return {"error": False, "values": values}
+
+    normalized_topic, validation_error = validate_audible_topic_path(
+        values["DEFAULT_DISCOVER_TOPIC"]
+    )
+    if validation_error:
+        return {
+            "error": True,
+            "message": validation_error,
+            "values": values,
+        }
+
+    values["DEFAULT_DISCOVER_TOPIC"] = normalized_topic
+    return {"error": False, "values": values}
+
+
+register_on_save("search_mode", _on_save_search_mode)
+
+
 _LANGUAGE_OPTIONS = [
     {"value": lang["code"], "label": lang["language"]} for lang in _SUPPORTED_BOOK_LANGUAGE
 ]
@@ -497,6 +520,23 @@ def search_mode_settings() -> list[SettingsField]:
             ),
             default=True,
             show_when={"field": "SEARCH_MODE", "value": "universal"},
+        ),
+        CustomComponentField(
+            key="audible_topic_selector",
+            component="audible_topic_selector",
+            label="Default Discover Topic",
+            description="Choose an Audible topic or subgenre to pin first on the home page.",
+            wrap_in_field_wrapper=True,
+            show_when={"field": "SEARCH_MODE", "value": "universal"},
+            value_fields=[
+                TagListField(
+                    key="DEFAULT_DISCOVER_TOPIC",
+                    label="Default Discover Topic",
+                    default=[],
+                    env_supported=False,
+                    user_overridable=True,
+                )
+            ],
         ),
         CheckboxField(
             key="FORCE_COMBINED_SEARCH",

@@ -47,6 +47,8 @@ def test_config_endpoint_uses_user_scope_and_runtime_flags(main_module, client):
             "METADATA_PROVIDER_AUDIOBOOK": "",
             "DEFAULT_RELEASE_SOURCE": "prowlarr",
             "DEFAULT_RELEASE_SOURCE_AUDIOBOOK": "audiobookbay",
+            "DEFAULT_DISCOVER_TOPIC": ["Science Fiction & Fantasy", "Fantasy"],
+            "AUDIBLE_REGION": "us",
             "DOWNLOAD_TO_BROWSER_CONTENT_TYPES": ["book", "audiobook"],
             "AUTO_OPEN_DOWNLOADS_SIDEBAR": False,
             "HARDCOVER_AUTO_REMOVE_ON_DOWNLOAD": True,
@@ -74,6 +76,8 @@ def test_config_endpoint_uses_user_scope_and_runtime_flags(main_module, client):
     assert data["metadata_search_fields"] == ["field-a"]
     assert data["default_release_source"] == "prowlarr"
     assert data["default_release_source_audiobook"] == "audiobookbay"
+    assert data["default_discover_topic"] == ["Science Fiction & Fantasy", "Fantasy"]
+    assert data["default_discover_topic_core_key"] == "topic_fantasy"
     assert data["download_to_browser_content_types"] == ["book", "audiobook"]
     assert data["settings_enabled"] is True
     assert data["metadata_default_sort"] == "relevance"
@@ -81,6 +85,43 @@ def test_config_endpoint_uses_user_scope_and_runtime_flags(main_module, client):
     assert ("SHOW_RELEASE_SOURCE_LINKS", None) in calls
     assert ("SHOW_COMBINED_SELECTOR", 42) in calls
     assert ("DOWNLOAD_TO_BROWSER_CONTENT_TYPES", 42) in calls
+    assert ("DEFAULT_DISCOVER_TOPIC", 42) in calls
+
+
+@pytest.mark.parametrize(
+    ("stored_value", "expected"),
+    [
+        (None, []),
+        ("Science Fiction & Fantasy", []),
+        (["Science Fiction & Fantasy", 123], []),
+    ],
+)
+def test_config_endpoint_normalizes_malformed_topic_values(
+    main_module, client, stored_value, expected
+):
+    _set_session(client, user_id="reader-topic", db_user_id=91, is_admin=False)
+
+    def fake_get(key, default=None, user_id=None):
+        values = {
+            "METADATA_PROVIDER": "openlibrary",
+            "DEFAULT_DISCOVER_TOPIC": stored_value,
+            "AUDIBLE_REGION": "us",
+        }
+        return values.get(key, default)
+
+    with (
+        patch.object(main_module.app_config, "get", side_effect=fake_get),
+        patch("shelfmark.config.env._is_config_dir_writable", return_value=True),
+        patch("shelfmark.core.onboarding.is_onboarding_complete", return_value=True),
+        patch("shelfmark.metadata_providers.get_provider_sort_options", return_value=[]),
+        patch("shelfmark.metadata_providers.get_provider_search_fields", return_value=[]),
+        patch("shelfmark.metadata_providers.get_provider_default_sort", return_value="relevance"),
+    ):
+        resp = client.get("/api/config")
+
+    assert resp.status_code == 200
+    assert resp.get_json()["default_discover_topic"] == expected
+    assert resp.get_json()["default_discover_topic_core_key"] is None
 
 
 def test_config_endpoint_falls_back_to_audiobook_metadata_provider(main_module, client):

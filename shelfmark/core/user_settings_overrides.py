@@ -30,7 +30,11 @@ def get_ordered_user_overridable_fields(tab_name: str) -> list[tuple[str, Any]]:
     if not tab:
         return []
     overridable_map = settings_registry.get_user_overridable_fields(tab_name=tab_name)
-    return [(field.key, field) for field in tab.fields if field.key in overridable_map]
+    return [
+        (field.key, field)
+        for field in settings_registry.iter_value_fields(tab)
+        if field.key in overridable_map
+    ]
 
 
 def build_user_preferences_payload(user_db: UserDB, user_id: int, tab_name: str) -> dict[str, Any]:

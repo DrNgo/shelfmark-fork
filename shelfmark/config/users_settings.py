@@ -7,6 +7,7 @@ that talks to /api/admin/users endpoints.
 
 from typing import Any
 
+from shelfmark.core.audible_topics import validate_audible_topic_path
 from shelfmark.core.request_policy import (
     get_source_content_type_capabilities,
     parse_policy_mode,
@@ -79,6 +80,7 @@ _SEARCH_PREFERENCE_PROVIDER_KEYS = {
 }
 _SEARCH_PREFERENCE_VALIDATABLE_KEYS = {
     "SEARCH_MODE",
+    "DEFAULT_DISCOVER_TOPIC",
     "DEFAULT_RELEASE_SOURCE",
     "DEFAULT_RELEASE_SOURCE_AUDIOBOOK",
     "SHOW_COMBINED_SELECTOR",
@@ -185,6 +187,9 @@ def validate_search_preference_value(key: str, value: Any) -> tuple[Any, str | N
 
     if value is None:
         return None, None
+
+    if key == "DEFAULT_DISCOVER_TOPIC":
+        return validate_audible_topic_path(value)
 
     normalized_value = str(value).strip()
 

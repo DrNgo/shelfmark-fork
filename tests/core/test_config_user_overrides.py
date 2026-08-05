@@ -143,3 +143,50 @@ def test_build_user_preferences_payload_reports_effective_sources(monkeypatch):
     fields_by_key = {field["key"]: field for field in payload["fields"]}
     assert fields_by_key["DESTINATION"]["fromEnv"] is False
     assert fields_by_key["BOOKS_OUTPUT_MODE"]["fromEnv"] is True
+
+
+def test_search_preferences_include_custom_backing_topic_field():
+    import shelfmark.config.settings  # noqa: F401
+    from shelfmark.core.user_settings_overrides import build_user_preferences_payload
+
+    user = {"id": 17}
+    user_db = SimpleNamespace(
+        create_user=lambda **_kwargs: user,
+        get_user_settings=lambda _user_id: {},
+    )
+
+    payload = build_user_preferences_payload(user_db, user["id"], "search_mode")
+
+    assert "DEFAULT_DISCOVER_TOPIC" in payload["keys"]
+    assert payload["globalValues"]["DEFAULT_DISCOVER_TOPIC"] == []
+
+
+def test_validate_user_settings_normalizes_topic_path():
+    from shelfmark.core.admin_settings_routes import validate_user_settings
+
+    with patch(
+        "shelfmark.config.users_settings.validate_audible_topic_path",
+        return_value=(["Science Fiction & Fantasy", "Fantasy"], None),
+    ):
+        valid, errors = validate_user_settings(
+            {"DEFAULT_DISCOVER_TOPIC": [" Science Fiction & Fantasy ", "Fantasy"]}
+        )
+
+    assert errors == []
+    assert valid["DEFAULT_DISCOVER_TOPIC"] == ["Science Fiction & Fantasy", "Fantasy"]
+
+
+def test_validate_user_settings_rejects_unverified_topic_path():
+    from shelfmark.core.admin_settings_routes import validate_user_settings
+
+    with patch(
+        "shelfmark.config.users_settings.validate_audible_topic_path",
+        return_value=(
+            [],
+            "The selected Audible topic is no longer available. Choose another topic.",
+        ),
+    ):
+        valid, errors = validate_user_settings({"DEFAULT_DISCOVER_TOPIC": ["123"]})
+
+    assert "DEFAULT_DISCOVER_TOPIC" not in valid
+    assert errors == ["The selected Audible topic is no longer available. Choose another topic."]
