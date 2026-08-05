@@ -48,6 +48,11 @@ from shelfmark.metadata_providers import (
     register_provider,
     register_provider_kwargs,
 )
+from shelfmark.metadata_providers.audible_taxonomy import (
+    MAX_TAXONOMY_DEPTH,
+    AudibleTopicNode,
+    parse_audible_topic_tree,
+)
 
 logger = setup_logger(__name__)
 
@@ -288,18 +293,23 @@ class AudibleProvider(MetadataProvider):
             has_more=total_found > seen,
         )
 
-    def _discover_fetch_page(self, sort: str, page: int) -> list[dict] | None:
+    def _discover_fetch_page(
+        self, sort: str, page: int, *, category_id: str | None = None
+    ) -> list[dict] | None:
         """Fetch one no-keyword browse page. None on failure."""
+        params: dict[str, Any] = {
+            "num_results": MAX_RESULTS_PER_PAGE,
+            "page": page,
+            "products_sort_by": sort,
+            "response_groups": RESPONSE_GROUPS,
+            "image_sizes": "500,1024",
+        }
+        if category_id is not None:
+            params["category_id"] = category_id
         try:
             response = self.session.get(
                 f"{self.base_url}/1.0/catalog/products",
-                params={
-                    "num_results": MAX_RESULTS_PER_PAGE,
-                    "page": page,
-                    "products_sort_by": sort,
-                    "response_groups": RESPONSE_GROUPS,
-                    "image_sizes": "500,1024",
-                },
+                params=params,
                 timeout=15,
                 verify=get_ssl_verify(self.base_url),
             )
@@ -327,6 +337,7 @@ class AudibleProvider(MetadataProvider):
         limit: int,
         *,
         released_only: bool = False,
+        category_id: str | None = None,
     ) -> list[BookMetadata] | None:
         """Shared browse loop: up to DISCOVER_MAX_PAGES, filter, parse.
 
@@ -337,7 +348,7 @@ class AudibleProvider(MetadataProvider):
         books: list[BookMetadata] = []
         seen_ids: set[str] = set()
         for page in range(DISCOVER_MAX_PAGES):
-            products = self._discover_fetch_page(sort, page)
+            products = self._discover_fetch_page(sort, page, category_id=category_id)
             if products is None:
                 return None
             for product in products:
@@ -369,6 +380,33 @@ class AudibleProvider(MetadataProvider):
         over-fetches and drops anything not yet released.
         """
         return self._discover_browse("-ReleaseDate", limit, released_only=True)
+
+    def fetch_topic_tree(self) -> tuple[AudibleTopicNode, ...] | None:
+        """Fetch and parse the storefront's genre taxonomy."""
+        try:
+            response = self.session.get(
+                f"{self.base_url}/1.0/catalog/categories",
+                params={
+                    "root": "Genres",
+                    "categories_num_levels": MAX_TAXONOMY_DEPTH,
+                    "response_groups": "category_metadata",
+                },
+                timeout=15,
+                verify=get_ssl_verify(self.base_url),
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (requests.RequestException, TypeError, ValueError):
+            logger.warning("Audible topic taxonomy fetch failed for region %s", self.region)
+            return None
+        return parse_audible_topic_tree(payload)
+
+    def discover_topic(self, category_id: str, limit: int = 20) -> list[BookMetadata] | None:
+        """Browse best-selling audiobooks within one Audible category."""
+        normalized_id = str(category_id or "").strip()
+        if not normalized_id.isdigit():
+            return []
+        return self._discover_browse("BestSellers", limit, category_id=normalized_id)
 
     @cacheable(ttl_key="METADATA_CACHE_SEARCH_TTL", ttl_default=300, key_prefix="audible:search")
     def _search_cached(self, cache_key: str, options: MetadataSearchOptions) -> dict[str, Any]:
