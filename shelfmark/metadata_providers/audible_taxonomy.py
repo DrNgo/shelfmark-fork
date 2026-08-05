@@ -125,11 +125,13 @@ def parse_audible_topic_tree(payload: object) -> tuple[AudibleTopicNode, ...] | 
                 not isinstance(category_id, str)
                 or not category_id.isdigit()
                 or not isinstance(name, str)
-                or not name
                 or not isinstance(children, list)
             ):
                 continue
 
+            name = name.strip()
+            if not name:
+                continue
             path = (*parent_path, name)
             accepted_nodes += 1
             parsed_children = ()
@@ -145,7 +147,7 @@ def find_audible_topic(
     nodes: Sequence[AudibleTopicNode], path: Sequence[str]
 ) -> AudibleTopicNode | None:
     """Find a category only when its full path exactly matches."""
-    target_path = tuple(path)
+    target_path = tuple(segment.strip() for segment in path)
     for node in nodes:
         if node.path == target_path:
             return node
@@ -161,7 +163,7 @@ def core_topic_path(region: str, key: str) -> tuple[str, ...] | None:
 
 def matching_core_topic_key(region: str, path: Sequence[str]) -> str | None:
     """Return the permanent topic key whose localized path matches exactly."""
-    target_path = tuple(path)
+    target_path = tuple(segment.strip() for segment in path)
     for key, mapped_path in CORE_TOPIC_PATHS_BY_REGION.get(region, {}).items():
         if mapped_path == target_path:
             return key

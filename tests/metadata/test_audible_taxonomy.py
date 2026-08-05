@@ -53,6 +53,29 @@ def test_repeated_leaf_names_require_complete_path():
     assert find_audible_topic(nodes, ["Science Fiction & Fantasy", "Fantasy"]).category_id == "4"
 
 
+def test_path_matching_trims_segment_edges():
+    nodes = parse_audible_topic_tree(
+        {
+            "categories": [
+                {
+                    "id": "1",
+                    "name": " Science Fiction & Fantasy ",
+                    "children": [{"id": "2", "name": " Fantasy "}],
+                }
+            ]
+        }
+    )
+
+    assert nodes is not None
+    fantasy = find_audible_topic(nodes, [" Science Fiction & Fantasy ", " Fantasy "])
+    assert fantasy is not None
+    assert fantasy.path == ("Science Fiction & Fantasy", "Fantasy")
+    assert (
+        matching_core_topic_key("us", [" Science Fiction & Fantasy ", " Fantasy "])
+        == "topic_fantasy"
+    )
+
+
 def test_every_region_defines_every_permanent_topic():
     expected_keys = {definition.key for definition in CORE_TOPIC_DEFINITIONS}
 
