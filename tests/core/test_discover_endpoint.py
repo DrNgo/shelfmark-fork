@@ -56,6 +56,17 @@ class TestDiscoverEndpoint:
         resp = client.get("/api/discover?content_type=ebook&row=bogus")
         assert resp.status_code == 400
 
+    @pytest.mark.parametrize("row_key", ["topic_fantasy", "preferred_topic"])
+    def test_topic_rows_are_valid_and_user_scoped(self, client, no_auth, row_key):
+        with (
+            patch.object(main_module, "get_session_db_user_id", return_value=8),
+            patch.object(main_module, "get_discover_row_service", return_value=None) as service,
+        ):
+            resp = client.get(f"/api/discover?content_type=audiobook&row={row_key}")
+        assert resp.status_code == 200
+        assert resp.get_json() == {"row": row_key, "books": []}
+        service.assert_called_once_with("audiobook", row_key, user_id=8)
+
     def test_unavailable_provider_returns_empty_row(self, client, no_auth):
         with patch.object(main_module, "get_discover_row_service", return_value=None):
             resp = client.get("/api/discover?content_type=ebook&row=trending")

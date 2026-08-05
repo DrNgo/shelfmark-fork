@@ -53,7 +53,7 @@ from shelfmark.core.auth_modes import (
 )
 from shelfmark.core.config import config as app_config
 from shelfmark.core.cwa_user_sync import upsert_cwa_user
-from shelfmark.core.discover import ROWS_BY_PROVIDER
+from shelfmark.core.discover import ALL_DISCOVER_ROW_KEYS
 from shelfmark.core.discover import get_discover_row as get_discover_row_service
 from shelfmark.core.download_history_service import DownloadHistoryService
 from shelfmark.core.external_user_linking import upsert_external_user
@@ -2648,7 +2648,6 @@ def api_metadata_config() -> Response | tuple[Response, int]:
 
 
 _DISCOVER_CONTENT_TYPES = {"ebook", "audiobook", "combined"}
-_DISCOVER_ROW_KEYS = {key for rows in ROWS_BY_PROVIDER.values() for key, _ in rows}
 
 
 @app.route("/api/metadata/audible/topics", methods=["GET"])
@@ -2677,7 +2676,7 @@ def api_discover() -> Response | tuple[Response, int]:
     row_key = request.args.get("row", "").strip().lower()
     if content_type not in _DISCOVER_CONTENT_TYPES:
         return jsonify({"error": f"Invalid content_type: {content_type}"}), 400
-    if row_key not in _DISCOVER_ROW_KEYS:
+    if row_key not in ALL_DISCOVER_ROW_KEYS:
         return jsonify({"error": f"Invalid row: {row_key}"}), 400
 
     db_user_id = get_session_db_user_id(session)
