@@ -129,7 +129,16 @@ To use Audible topics in Discover:
 
 The selected topic is pinned only for your user. Its topic rows appear in Audiobook and Combined
 views. Categories follow the selected Audible region; if a saved category path is not supported in
-the current region, it remains hidden until you reset or reselect it.
+the current region, it remains hidden until you reset or reselect it, and Best Sellers remains the
+first row. Unsupported or unavailable categories do not fall back to keywords or broader
+categories.
+
+Shelfmark caches a fresh Audible taxonomy for 24 hours. If Audible is temporarily unavailable,
+last-good taxonomy data and topic rows may be served as stale. When an uncached taxonomy request
+fails, the selector shows a retryable unavailable state without breaking the other Discover rows.
+
+Clearing the selection removes the preferred topic for your user. Resetting it instead removes your
+override and restores the deployment's inherited default.
 
 ## Common Mistakes
 
