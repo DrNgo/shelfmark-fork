@@ -37,6 +37,27 @@ const descendantField = (options: SelectOption[]): SelectFieldConfig => ({
   options,
 });
 
+export const AudibleTopicClearAction = ({
+  value,
+  onChange,
+  disabled = false,
+}: AudibleTopicSelectorProps) => {
+  if (value.length === 0) {
+    return null;
+  }
+
+  return (
+    <button
+      type="button"
+      className="text-xs font-medium underline disabled:cursor-not-allowed disabled:opacity-50"
+      onClick={() => onChange([])}
+      disabled={disabled}
+    >
+      Clear selection
+    </button>
+  );
+};
+
 export const AudibleTopicSelector = ({
   value,
   onChange,
@@ -150,6 +171,7 @@ export const AudibleTopicSelector = ({
           disabled={disabled || loading || !broadTopic}
         />
       </div>
+      <AudibleTopicClearAction value={value} onChange={onChange} disabled={disabled} />
       <div className="space-y-1" aria-live="polite">
         {loading && <p className="text-xs opacity-60">Loading Audible topics…</p>}
         {response?.stale && (
