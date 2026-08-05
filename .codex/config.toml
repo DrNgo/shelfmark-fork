@@ -1,0 +1,3 @@
+# Reuse directory-scoped Claude Code instructions when the repository defines them.
+# AGENTS.md remains preferred wherever both files exist.
+project_doc_fallback_filenames = ["CLAUDE.md"]

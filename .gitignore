@@ -234,8 +234,9 @@ pyrightconfig.json
 /downloaded_files
 /.local/
 *.local.*
-AGENTS.md
-.claude/
+# Keep Claude Code runtime state local while allowing repository skills to be shared.
+.claude/*
+!.claude/skills/
 .nvmrc
 .playwright-mcp/
 frontend-dist/
