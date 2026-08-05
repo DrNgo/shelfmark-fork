@@ -118,6 +118,19 @@ Shelfmark supports three organization modes for the destination:
 
 Configure templates in Settings -> Downloads. Template syntax details are documented separately.
 
+## Audible topic discovery
+
+To use Audible topics in Discover:
+
+1. Enable Audible and select it as the audiobook metadata provider.
+2. Enable Discover rows.
+3. Open **My Account -> Search Preferences**.
+4. Choose a broad Audible topic and, optionally, a subgenre.
+
+The selected topic is pinned only for your user. Its topic rows appear in Audiobook and Combined
+views. Categories follow the selected Audible region; if a saved category path is not supported in
+the current region, it remains hidden until you reset or reselect it.
+
 ## Common Mistakes
 
 - "Download failed - file not found": Path mismatch between Shelfmark and the download client. Ensure container paths match or use Remote Path Mappings.
