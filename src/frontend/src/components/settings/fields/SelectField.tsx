@@ -68,6 +68,7 @@ export const SelectField = ({
 
   return (
     <DropdownList
+      ariaLabel={field.label}
       options={dropdownOptions}
       value={effectiveValue}
       onChange={handleChange}

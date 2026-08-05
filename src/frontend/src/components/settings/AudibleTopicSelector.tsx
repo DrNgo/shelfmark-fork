@@ -1,12 +1,14 @@
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 
 import { useMountEffect } from '../../hooks/useMountEffect';
 import { getAudibleTopics, type AudibleTopicsResponse } from '../../services/api';
 import type { SelectFieldConfig, SelectOption } from '../../types/settings';
 import {
+  createAudibleTopicRequestCoordinator,
   findTopicByPath,
   flattenTopicDescendants,
   topicPathsEqual,
+  type AudibleTopicRequest,
 } from '../../utils/audibleTopics';
 import { SelectField } from './fields';
 
@@ -43,33 +45,35 @@ export const AudibleTopicSelector = ({
   const [response, setResponse] = useState<AudibleTopicsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const mountedRef = useRef(true);
+  const [requestCoordinator] = useState(() =>
+    createAudibleTopicRequestCoordinator<AudibleTopicsResponse>(),
+  );
 
-  const loadTopics = () => {
-    void getAudibleTopics()
+  const settleRequest = (request: AudibleTopicRequest<AudibleTopicsResponse>) => {
+    void request.promise
       .then((nextResponse) => {
-        if (mountedRef.current) {
+        if (requestCoordinator.isCurrent(request)) {
           setResponse(nextResponse);
           setError(null);
         }
       })
       .catch((reason: unknown) => {
-        if (mountedRef.current) {
+        if (requestCoordinator.isCurrent(request)) {
           setError(reason instanceof Error ? reason.message : 'Unable to load Audible topics.');
         }
       })
       .finally(() => {
-        if (mountedRef.current) {
+        if (requestCoordinator.isCurrent(request)) {
           setLoading(false);
         }
       });
   };
 
   useMountEffect(() => {
-    mountedRef.current = true;
-    loadTopics();
+    requestCoordinator.activate();
+    settleRequest(requestCoordinator.initial(getAudibleTopics));
     return () => {
-      mountedRef.current = false;
+      requestCoordinator.deactivate();
     };
   });
 
@@ -117,7 +121,7 @@ export const AudibleTopicSelector = ({
   const retry = () => {
     setLoading(true);
     setError(null);
-    loadTopics();
+    settleRequest(requestCoordinator.replace(getAudibleTopics));
   };
 
   return (

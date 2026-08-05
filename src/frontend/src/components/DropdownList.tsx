@@ -13,6 +13,7 @@ export interface DropdownListOption {
 
 interface DropdownListProps {
   label?: string;
+  ariaLabel?: string;
   placeholder?: string;
   options: DropdownListOption[];
   multiple?: boolean;
@@ -33,6 +34,7 @@ interface DropdownListProps {
 
 export const DropdownList = ({
   label,
+  ariaLabel,
   placeholder = 'Select an option',
   options,
   multiple = false,
@@ -110,6 +112,7 @@ export const DropdownList = ({
   return (
     <Dropdown
       label={label}
+      ariaLabel={ariaLabel}
       summary={renderSummary()}
       align={align}
       widthClassName={widthClassName}

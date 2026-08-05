@@ -24,6 +24,7 @@ function getPositioningAncestor(element: HTMLElement | null): HTMLElement | null
 
 interface DropdownProps {
   label?: string;
+  ariaLabel?: string;
   summary?: ReactNode;
   children: (helpers: { close: () => void }) => ReactNode;
   align?: 'left' | 'right' | 'auto';
@@ -41,6 +42,7 @@ interface DropdownProps {
 
 export const Dropdown = ({
   label,
+  ariaLabel,
   summary,
   children,
   align = 'left',
@@ -254,6 +256,7 @@ export const Dropdown = ({
           <button
             id={dropdownId}
             type="button"
+            aria-label={ariaLabel}
             onClick={toggleOpen}
             disabled={disabled}
             className={`flex w-full items-center justify-between gap-2 border px-3 py-2 text-left text-sm focus:outline-hidden focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:outline-hidden ${triggerChrome !== 'minimal' ? 'dropdown-trigger' : ''} ${buttonClassName}`}

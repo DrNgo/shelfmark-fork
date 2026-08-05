@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import type { AudibleTopicNode } from '../services/api';
-import { findTopicByPath, flattenTopicDescendants, topicPathsEqual } from '../utils/audibleTopics';
+import {
+  createAudibleTopicRequestCoordinator,
+  findTopicByPath,
+  flattenTopicDescendants,
+  topicPathsEqual,
+} from '../utils/audibleTopics';
 
 const root: AudibleTopicNode = {
   name: 'Science Fiction & Fantasy',
@@ -44,5 +49,45 @@ describe('Audible topic helpers', () => {
     expect(topicPathsEqual(['Fantasy', 'Epic'], ['Fantasy', 'Epic'])).toBe(true);
     expect(topicPathsEqual(['Fantasy', 'Epic'], ['Epic', 'Fantasy'])).toBe(false);
     expect(topicPathsEqual(['Fantasy'], ['Fantasy', 'Epic'])).toBe(false);
+  });
+
+  it('shares the initial request across a Strict Mode cleanup and setup', () => {
+    const coordinator = createAudibleTopicRequestCoordinator<string>();
+    let requestCount = 0;
+    const request = () => {
+      requestCount += 1;
+      return Promise.resolve('topics');
+    };
+
+    coordinator.activate();
+    const firstSetup = coordinator.initial(request);
+    coordinator.deactivate();
+    coordinator.activate();
+    const secondSetup = coordinator.initial(request);
+
+    expect(requestCount).toBe(1);
+    expect(secondSetup.promise).toBe(firstSetup.promise);
+    expect(coordinator.isCurrent(firstSetup)).toBe(false);
+    expect(coordinator.isCurrent(secondSetup)).toBe(true);
+  });
+
+  it('lets retry supersede the initial request and invalidates work on unmount', () => {
+    const coordinator = createAudibleTopicRequestCoordinator<string>();
+    let requestCount = 0;
+    const request = () => {
+      requestCount += 1;
+      return Promise.resolve(`topics-${requestCount}`);
+    };
+
+    coordinator.activate();
+    const initial = coordinator.initial(request);
+    const retry = coordinator.replace(request);
+
+    expect(requestCount).toBe(2);
+    expect(coordinator.isCurrent(initial)).toBe(false);
+    expect(coordinator.isCurrent(retry)).toBe(true);
+
+    coordinator.deactivate();
+    expect(coordinator.isCurrent(retry)).toBe(false);
   });
 });
