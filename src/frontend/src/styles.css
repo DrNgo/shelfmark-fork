@@ -676,7 +676,7 @@
   @media (max-width: 639px) {
     .search-initial-state {
       justify-content: flex-start;
-      padding-top: 18vh; /* push the search UI toward the upper third */
+      padding-top: 1rem;
     }
 
     /* When advanced filters are visible, pull the search bar to the very top */
