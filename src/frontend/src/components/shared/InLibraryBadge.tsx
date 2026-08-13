@@ -21,14 +21,21 @@ interface InLibraryBadgeProps {
  */
 export function InLibraryBadge({ match, className = '', variant = 'inline' }: InLibraryBadgeProps) {
   if (!match) return null;
-  if (match.items.length === 0 && match.other_formats.length === 0) return null;
+  if (
+    match.items.length === 0 &&
+    match.other_editions.length === 0 &&
+    match.other_formats.length === 0
+  ) {
+    return null;
+  }
 
   const held = match.items.length > 0;
   const label = libraryMatchTooltip(match);
 
-  // A cross-format holding is not the same claim as owning this edition, and it
-  // does not lock the button, so it must not wear the same badge. Muted and
-  // hollow reads as "related" where solid reads as "you have this".
+  // Neither a cross-format nor a different-edition holding is the same claim as
+  // owning this edition, and neither locks the button, so they must not wear the
+  // same badge. Muted and hollow reads as "related" where solid reads as "you
+  // have this".
   const palette = held
     ? (variant === 'overlay'
         ? 'border-emerald-700 bg-emerald-600 text-white shadow-md'

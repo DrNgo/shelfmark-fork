@@ -183,6 +183,31 @@ def isbn_match_key(value: object) -> str:
     return f"{ISBN_KEY_PREFIX}{normalized}" if normalized else ""
 
 
+# The bracketed segments `_BRACKETED_NOISE` deletes, recovered for ranking.
+# Deleting them is right for keying — an edition marker must never break a
+# match — but once two items key together the marker is the only thing left
+# saying they are different recordings.
+_EDITION_QUALIFIER = re.compile(r"[(\[{]([^)\]}]*)[)\]}]")
+
+# Completeness, not edition. "(Unabridged)" is near-universal shelf noise: one
+# side carries it and the other does not, for the very same recording.
+_NON_EDITION_QUALIFIERS = frozenset({"unabridged", "abridged"})
+
+
+def edition_qualifiers(title: str | None) -> frozenset[str]:
+    """Return the normalized edition markers bracketed in a title.
+
+    Only the title is read, never the subtitle. Library items carry a subtitle
+    where a search result does not, so comparing subtitles would find a
+    difference on every match and demote holdings the user really has.
+    """
+    if not isinstance(title, str):
+        return frozenset()
+
+    found = {_fold(segment) for segment in _EDITION_QUALIFIER.findall(title)}
+    return frozenset(found - _NON_EDITION_QUALIFIERS - {""})
+
+
 def build_match_keys(
     title: str | None,
     author: str | None,

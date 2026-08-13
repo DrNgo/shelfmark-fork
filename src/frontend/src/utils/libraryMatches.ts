@@ -17,6 +17,12 @@ export interface LibraryMatch {
   libraries: string[];
   /** Holdings in the format being browsed. These drive the badge and the lock. */
   items: LibraryMatchItem[];
+  /**
+   * Holdings that are demonstrably a different recording — a full-cast
+   * adaptation against the single-narrator original, say. Same book, same
+   * format, different edition, so they report but never block.
+   */
+  other_editions: LibraryMatchItem[];
   /** Holdings in another format. Worth mentioning, never worth blocking on. */
   other_formats: LibraryMatchItem[];
 }
@@ -148,13 +154,21 @@ const describeLibraryMatchItem = (item: LibraryMatchItem): string => {
  * Full tooltip text, one line per held edition.
  *
  * Names the edition but never the library holding it: which shelf a book sits on
- * is the operator's filing concern. Cross-format holdings are labelled as such,
- * so "you have the audiobook" never reads as "you have this".
+ * is the operator's filing concern. Cross-format and cross-edition holdings are
+ * labelled as such, so "you have the audiobook" and "you have the original
+ * recording" never read as "you have this".
  */
 export const libraryMatchTooltip = (match: LibraryMatch): string => {
   const lines = match.items.map(
     (item, index) =>
       `${index === 0 ? 'Already in your library: ' : ''}${describeLibraryMatchItem(item)}`,
+  );
+
+  lines.push(
+    ...match.other_editions.map(
+      (item, index) =>
+        `${index === 0 ? 'You have a different edition: ' : ''}${describeLibraryMatchItem(item)}`,
+    ),
   );
 
   lines.push(
@@ -200,8 +214,21 @@ export const isHeldInFormat = (match: LibraryMatch | undefined): boolean =>
  * this whole feature exists to prevent, and it must not read as a reason to
  * abandon the request. So it names the format actually held instead of
  * claiming ownership of the one being requested.
+ *
+ * A different-edition holding is the same mistake one step finer: a full-cast
+ * adaptation is not the recording you own, and saying otherwise is what locked
+ * this request in the first place. Editions are checked before formats because
+ * a match can carry both, and the same-format news is the more relevant of the
+ * two.
  */
-export const libraryMatchOwnershipMessage = (match: LibraryMatch): string =>
-  isHeldInFormat(match)
-    ? 'You already have this. Requesting it anyway is fine — a better edition is still worth having.'
-    : `You already have ${mediaTypeLabel(match.other_formats[0]?.media_type ?? '')} of this — go ahead and request it.`;
+export const libraryMatchOwnershipMessage = (match: LibraryMatch): string => {
+  if (isHeldInFormat(match)) {
+    return 'You already have this. Requesting it anyway is fine — a better edition is still worth having.';
+  }
+
+  if (match.other_editions.length > 0) {
+    return 'You have a different edition of this — go ahead and request it.';
+  }
+
+  return `You already have ${mediaTypeLabel(match.other_formats[0]?.media_type ?? '')} of this — go ahead and request it.`;
+};

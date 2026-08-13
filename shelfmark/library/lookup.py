@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from shelfmark.library.index import LibraryIndexDB, LibraryMatch, get_library_index
-from shelfmark.library.matching import build_match_keys
+from shelfmark.library.matching import build_match_keys, edition_qualifiers, normalize_asin
 from shelfmark.library.media_type import media_type_for_content_type
 from shelfmark.library.providers import get_providers
 from shelfmark.library.scheduler import is_index_stale
@@ -38,20 +38,59 @@ def _item_payload(match: LibraryMatch) -> dict[str, Any]:
     }
 
 
-def _match_payload(matches: list[LibraryMatch], requested_media_type: str) -> dict[str, Any]:
-    """Split matches into same-format holdings and everything else.
+def _is_other_edition(match: LibraryMatch, book_asin: str, book_qualifiers: frozenset[str]) -> bool:
+    """Whether this holding is demonstrably a different recording of the book.
+
+    Two signals, either sufficient. A two-sided ASIN disagreement is the
+    stronger one, but it is silent on sideloaded items, which carry no ASIN at
+    all — and those are exactly where alternate editions collect. So an edition
+    marker on one title and not the other counts too.
+
+    Both are read only as *disagreement*, never as absence. A missing ASIN and
+    a bare title say nothing, and must leave a real holding alone.
+    """
+    match_asin = normalize_asin(match.asin)
+    if book_asin and match_asin and book_asin != match_asin:
+        return True
+
+    return edition_qualifiers(match.title) != book_qualifiers
+
+
+def _match_payload(
+    matches: list[LibraryMatch],
+    requested_media_type: str,
+    book_asin: str = "",
+    book_qualifiers: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    """Split matches into same-format holdings, other editions, and other formats.
 
     "In library" is not "same edition" — a 2021 rip and a 2024 re-recording are
     both *The Locked Door* — so each entry carries its own title and identifiers
     rather than collapsing to a boolean.
+
+    A same-format match that is provably a different recording moves to
+    `other_editions`: still worth reporting, never worth blocking on. Only
+    `items` locks the acquire button, so a full-cast release stays acquirable
+    while the original sits on the shelf beside it.
+
+    Cross-format matches are not split further. They already decline to lock
+    the button, so a second bucket there would be one nothing reads.
     """
     ordered = sorted(matches, key=lambda m: (m.library_name, m.title))
-    same = [m for m in ordered if m.media_type == requested_media_type]
     other = [m for m in ordered if m.media_type != requested_media_type]
 
+    held: list[LibraryMatch] = []
+    editions: list[LibraryMatch] = []
+    for match in ordered:
+        if match.media_type != requested_media_type:
+            continue
+        target = editions if _is_other_edition(match, book_asin, book_qualifiers) else held
+        target.append(match)
+
     return {
-        "libraries": sorted({m.library_name for m in same}),
-        "items": [_item_payload(m) for m in same],
+        "libraries": sorted({m.library_name for m in held}),
+        "items": [_item_payload(m) for m in held],
+        "other_editions": [_item_payload(m) for m in editions],
         "other_formats": [_item_payload(m) for m in other],
     }
 
@@ -125,7 +164,10 @@ def lookup_books(books: list[Any], *, index: LibraryIndexDB | None = None) -> di
         found = library_index.find_matches(keys, states.keys())
         if found:
             matches[book_id] = _match_payload(
-                found, media_type_for_content_type(book.get("content_type"))
+                found,
+                media_type_for_content_type(book.get("content_type")),
+                normalize_asin(book.get("asin")),
+                edition_qualifiers(book.get("title")),
             )
 
     result["matches"] = matches

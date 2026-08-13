@@ -34,6 +34,7 @@ const match = (overrides: Partial<LibraryMatch> = {}): LibraryMatch => ({
       isbn13: '',
     },
   ],
+  other_editions: [],
   other_formats: [],
   ...overrides,
 });
@@ -285,6 +286,7 @@ describe('isHeldInFormat', () => {
         isbn13: '9780593135204',
       },
     ],
+    other_editions: [],
     other_formats: [],
   };
   const otherOnly: LibraryMatch = { ...held, items: [], other_formats: held.items };
@@ -307,6 +309,7 @@ describe('applyInLibraryLock', () => {
     const otherOnly: LibraryMatch = {
       libraries: [],
       items: [],
+      other_editions: [],
       other_formats: [
         {
           source: 'audiobookshelf',
@@ -332,6 +335,7 @@ describe('libraryMatchTooltip', () => {
     const otherOnly: LibraryMatch = {
       libraries: [],
       items: [],
+      other_editions: [],
       other_formats: [
         {
           source: 'audiobookshelf',
@@ -376,6 +380,7 @@ describe('acquire-button wiring: isHeldInFormat feeding applyInLibraryLock', () 
           isbn13: '9780593135204',
         },
       ],
+      other_editions: [],
       other_formats: [],
     };
 
@@ -389,6 +394,7 @@ describe('acquire-button wiring: isHeldInFormat feeding applyInLibraryLock', () 
     const audiobookOnly: LibraryMatch = {
       libraries: ['Audiobooks'],
       items: [],
+      other_editions: [],
       other_formats: [
         {
           source: 'audiobookshelf',
@@ -467,6 +473,7 @@ describe('single-book surfaces thread format and ISBN through the lookup', () =>
           isbn13: '9780593135204',
         },
       ],
+      other_editions: [],
       other_formats: [],
     };
     const GET: ButtonStateInfo = { state: 'download', text: 'Get' };
@@ -504,6 +511,7 @@ describe('single-book surfaces thread format and ISBN through the lookup', () =>
     const audiobookFiledAsOtherFormat: LibraryMatch = {
       libraries: ['Audiobooks'],
       items: [],
+      other_editions: [],
       other_formats: [
         {
           source: 'audiobookshelf',
@@ -542,6 +550,7 @@ describe('single-book surfaces thread format and ISBN through the lookup', () =>
           isbn13: '9780593135204',
         },
       ],
+      other_editions: [],
       other_formats: [],
     };
 
@@ -555,6 +564,7 @@ describe('single-book surfaces thread format and ISBN through the lookup', () =>
     const defaultedToEbook: LibraryMatch = {
       libraries: ['Audiobooks'],
       items: [],
+      other_editions: [],
       other_formats: [
         {
           source: 'audiobookshelf',
@@ -590,12 +600,14 @@ describe('libraryMatchOwnershipMessage', () => {
         isbn13: '',
       },
     ],
+    other_editions: [],
     other_formats: [],
   };
 
   const audiobookOnly: LibraryMatch = {
     libraries: ['Audiobooks'],
     items: [],
+    other_editions: [],
     other_formats: [
       {
         source: 'audiobookshelf',
@@ -634,5 +646,83 @@ describe('libraryMatchOwnershipMessage', () => {
 
     expect(message.toLowerCase()).not.toContain("don't request");
     expect(message.toLowerCase()).not.toContain('cannot request');
+  });
+});
+
+// A full-cast release keys to the same title+author as the single-narrator
+// original, so the backend hands it back as a match. It arrives in
+// `other_editions`, and every surface has to read that as "you own a different
+// recording" rather than "you own this".
+describe('other editions: a different recording of the same book', () => {
+  const GET: ButtonStateInfo = { state: 'download', text: 'Get' };
+
+  const graphicAudio: LibraryMatch = {
+    libraries: [],
+    items: [],
+    other_editions: [
+      {
+        source: 'audiobookshelf',
+        media_type: 'audiobook',
+        item_id: 'li_1',
+        library_id: 'lib_books',
+        library_name: 'Audiobooks',
+        title: 'Dungeon Crawler Carl (Audio Immersion Tunnel)',
+        author: 'Matt Dinniman',
+        asin: '',
+        isbn13: '',
+      },
+    ],
+    other_formats: [],
+  };
+
+  it('is not held in format, so the acquire button stays offerable', () => {
+    // The bug in one line: this used to come back in `items`, which locked the
+    // button on a release the user did not own.
+    expect(isHeldInFormat(graphicAudio)).toBe(false);
+    expect(applyInLibraryLock(GET, isHeldInFormat(graphicAudio))).toBe(GET);
+  });
+
+  it('names the edition held in the tooltip', () => {
+    const tooltip = libraryMatchTooltip(graphicAudio);
+
+    expect(tooltip).toContain('Dungeon Crawler Carl (Audio Immersion Tunnel)');
+    expect(tooltip).toMatch(/different edition/i);
+  });
+
+  it('does not claim you already have this', () => {
+    expect(libraryMatchTooltip(graphicAudio)).not.toContain('Already in your library');
+    expect(libraryMatchOwnershipMessage(graphicAudio)).not.toMatch(/already have this/i);
+  });
+
+  it('still encourages the request rather than discouraging it', () => {
+    const message = libraryMatchOwnershipMessage(graphicAudio).toLowerCase();
+
+    expect(message).toContain('request');
+    expect(message).not.toContain("don't request");
+    expect(message).not.toContain('cannot request');
+  });
+
+  it('reports a real holding normally when one sits alongside the other edition', () => {
+    const both: LibraryMatch = {
+      ...graphicAudio,
+      libraries: ['Audiobooks'],
+      items: [
+        {
+          source: 'audiobookshelf',
+          media_type: 'audiobook',
+          item_id: 'li_2',
+          library_id: 'lib_books',
+          library_name: 'Audiobooks',
+          title: 'Dungeon Crawler Carl',
+          author: 'Matt Dinniman',
+          asin: 'B08V8B2CGV',
+          isbn13: '',
+        },
+      ],
+    };
+
+    expect(isHeldInFormat(both)).toBe(true);
+    expect(libraryMatchTooltip(both)).toContain('Already in your library');
+    expect(libraryMatchOwnershipMessage(both)).toContain('You already have this');
   });
 });

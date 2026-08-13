@@ -10,6 +10,7 @@ from shelfmark.library.matching import (
     asin_match_key,
     author_match_keys,
     build_match_keys,
+    edition_qualifiers,
     normalize_asin,
     normalize_author,
     normalize_title,
@@ -257,3 +258,53 @@ class TestBuildMatchKeysWithIsbn:
 
     def test_a_bad_isbn_contributes_no_key(self):
         assert build_match_keys(None, None, isbn="9780593135205") == set()
+
+
+class TestEditionQualifiers:
+    """Bracketed markers the title keys deliberately throw away.
+
+    `normalize_title` deletes brackets so an edition marker cannot break a
+    match. That is right for keying and wrong for ranking: once two items key
+    together, the marker is the only thing left saying they are different
+    recordings.
+    """
+
+    def test_a_title_with_no_brackets_has_no_qualifiers(self):
+        assert edition_qualifiers("Dungeon Crawler Carl") == frozenset()
+
+    def test_extracts_a_bracketed_marker(self):
+        assert edition_qualifiers("Dungeon Crawler Carl (Audio Immersion Tunnel)") == frozenset(
+            {"audio immersion tunnel"}
+        )
+
+    def test_extracts_every_marker_in_a_title(self):
+        assert edition_qualifiers("The Final Empire (Part 1 of 3) (Dramatized Adaptation)") == (
+            frozenset({"part 1 of 3", "dramatized adaptation"})
+        )
+
+    def test_square_brackets_count_too(self):
+        assert edition_qualifiers("Preservation [Dramatized Adaptation]") == frozenset(
+            {"dramatized adaptation"}
+        )
+
+    def test_normalizes_the_marker(self):
+        """Same marker, different punctuation and case, must compare equal."""
+        assert edition_qualifiers("Harry Potter (Full-Cast Edition)") == edition_qualifiers(
+            "Harry Potter (full cast edition)"
+        )
+
+    def test_ignores_unabridged_and_abridged(self):
+        """These describe completeness, not edition, and are near-universal noise."""
+        assert edition_qualifiers("The Song Rising (Unabridged)") == frozenset()
+        assert edition_qualifiers("The Song Rising (Abridged)") == frozenset()
+
+    def test_keeps_a_real_marker_alongside_an_ignored_one(self):
+        assert edition_qualifiers("Riftborne (Unabridged) (Dramatized Adaptation)") == frozenset(
+            {"dramatized adaptation"}
+        )
+
+    def test_an_empty_bracket_contributes_nothing(self):
+        assert edition_qualifiers("Something ()") == frozenset()
+
+    def test_a_non_string_has_no_qualifiers(self):
+        assert edition_qualifiers(None) == frozenset()

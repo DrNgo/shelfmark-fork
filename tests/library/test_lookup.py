@@ -279,7 +279,18 @@ class TestLookupBooks:
         assert result["matches"]["bk1"]["libraries"] == ["Audiobooks"]
 
     def test_a_different_asin_does_not_suppress_a_title_match(self, index):
-        """A UK edition ASIN must not stop title+author from matching."""
+        """A UK edition ASIN must not stop title+author from matching.
+
+        The match survives, but it is no longer counted as a holding: a
+        two-sided ASIN disagreement now files the item under `other_editions`
+        (see `TestOtherEditions`). This is the known cost of that rule —
+        regional ASINs differ for an identical recording, so a UK-tagged shelf
+        item loses its solid badge and stops locking the button.
+
+        The trade is deliberate and asymmetric. Demoting a book you own costs a
+        redundant download; the alternative left a full-cast release reading as
+        already-owned and blocked the request outright.
+        """
         with patch_config(ENABLED):
             result = lookup_books(
                 [
@@ -294,7 +305,9 @@ class TestLookupBooks:
                 index=index,
             )
 
-        assert result["matches"]["bk1"]["items"][0]["item_id"] == "li_1"
+        match = result["matches"]["bk1"]
+        assert match["items"] == []
+        assert match["other_editions"][0]["item_id"] == "li_1"
 
     def test_reports_index_freshness(self, index):
         with patch_config(ENABLED):
@@ -396,6 +409,254 @@ class TestFormatScoping:
         result = lookup_books([book], index=index)
 
         assert len(result["matches"]["b1"]["items"]) == 1
+
+
+def _edition(item_id: str, title: str, asin: str = "", subtitle: str = "") -> LibraryItem:
+    """One indexed audiobook edition of Dungeon Crawler Carl, Book 1."""
+    return LibraryItem(
+        source=SOURCE_AUDIOBOOKSHELF,
+        item_id=item_id,
+        library_id="lib_books",
+        library_name="Audiobooks",
+        media_type=MEDIA_TYPE_AUDIOBOOK,
+        title=title,
+        subtitle=subtitle,
+        author="Matt Dinniman",
+        asin=asin,
+        isbn13="",
+    )
+
+
+def _dcc_search_result(title: str = "Dungeon Crawler Carl", asin: str = "") -> dict[str, Any]:
+    return {
+        "id": "bk1",
+        "title": title,
+        "author": "Matt Dinniman",
+        "asin": asin,
+        "content_type": "audiobook",
+    }
+
+
+class TestOtherEditions:
+    """A same-format holding that is demonstrably a different recording.
+
+    Title+author cannot tell a full-cast adaptation from the single-narrator
+    original, so both key together and the newer release reads as owned. Two
+    signals separate them once they have met: a two-sided ASIN disagreement,
+    and an edition marker present on one title but not the other.
+
+    A demoted match still surfaces — you own *something* here — but it never
+    locks the acquire button, because you do not own *this*.
+    """
+
+    def test_a_differing_asin_on_both_sides_demotes_the_match(self, tmp_path):
+        index = LibraryIndexDB(str(tmp_path / "i.db"))
+        index.initialize()
+        index.replace_items(
+            SOURCE_AUDIOBOOKSHELF, [_edition("li_1", "Dungeon Crawler Carl", "B08V8B2CGV")]
+        )
+
+        with patch_config(ENABLED):
+            result = lookup_books([_dcc_search_result(asin="B0FZZZZZZZ")], index=index)
+
+        match = result["matches"]["bk1"]
+        assert match["items"] == []
+        assert len(match["other_editions"]) == 1
+        assert match["other_editions"][0]["asin"] == "B08V8B2CGV"
+
+    def test_a_matching_asin_stays_held(self, tmp_path):
+        index = LibraryIndexDB(str(tmp_path / "i.db"))
+        index.initialize()
+        index.replace_items(
+            SOURCE_AUDIOBOOKSHELF, [_edition("li_1", "Dungeon Crawler Carl", "B08V8B2CGV")]
+        )
+
+        with patch_config(ENABLED):
+            result = lookup_books([_dcc_search_result(asin="B08V8B2CGV")], index=index)
+
+        match = result["matches"]["bk1"]
+        assert len(match["items"]) == 1
+        assert match["other_editions"] == []
+
+    def test_an_asin_only_on_the_search_side_does_not_demote(self, tmp_path):
+        """A sideloaded item has no ASIN. Absence is not disagreement."""
+        index = LibraryIndexDB(str(tmp_path / "i.db"))
+        index.initialize()
+        index.replace_items(SOURCE_AUDIOBOOKSHELF, [_edition("li_1", "Dungeon Crawler Carl")])
+
+        with patch_config(ENABLED):
+            result = lookup_books([_dcc_search_result(asin="B0FZZZZZZZ")], index=index)
+
+        assert len(result["matches"]["bk1"]["items"]) == 1
+
+    def test_an_edition_qualifier_demotes_an_asin_less_holding(self, tmp_path):
+        """The case ASIN alone cannot reach, and the one that prompted this.
+
+        The Audio Immersion Tunnel rip carries no ASIN, so an ASIN comparison
+        sits out and the full-cast release reads as already owned.
+        """
+        index = LibraryIndexDB(str(tmp_path / "i.db"))
+        index.initialize()
+        index.replace_items(
+            SOURCE_AUDIOBOOKSHELF,
+            [_edition("li_1", "Dungeon Crawler Carl (Audio Immersion Tunnel)")],
+        )
+
+        with patch_config(ENABLED):
+            result = lookup_books([_dcc_search_result()], index=index)
+
+        match = result["matches"]["bk1"]
+        assert match["items"] == []
+        assert len(match["other_editions"]) == 1
+
+    def test_both_editions_demote_together(self, tmp_path):
+        """The real shape of the reported bug: two owned editions, neither one
+        the release being searched for. Either surviving in `items` would keep
+        the acquire button locked, so both signals have to fire at once.
+        """
+        index = LibraryIndexDB(str(tmp_path / "i.db"))
+        index.initialize()
+        index.replace_items(
+            SOURCE_AUDIOBOOKSHELF,
+            [
+                _edition("li_1", "Dungeon Crawler Carl", "B08V8B2CGV"),
+                _edition("li_2", "Dungeon Crawler Carl (Audio Immersion Tunnel)"),
+            ],
+        )
+
+        with patch_config(ENABLED):
+            result = lookup_books(
+                [_dcc_search_result("Dungeon Crawler Carl (GraphicAudio)", "B0FZZZZZZZ")],
+                index=index,
+            )
+
+        match = result["matches"]["bk1"]
+        assert match["items"] == []
+        assert match["libraries"] == []
+        assert len(match["other_editions"]) == 2
+
+    def test_a_multipart_dramatization_does_not_read_as_the_standard_edition(self, tmp_path):
+        """Mistborn: three ASIN-less parts of a dramatized adaptation, all
+        keying to the plain title. Owning the adaptation is not owning the
+        recording being searched for.
+        """
+        index = LibraryIndexDB(str(tmp_path / "i.db"))
+        index.initialize()
+        index.replace_items(
+            SOURCE_AUDIOBOOKSHELF,
+            [
+                LibraryItem(
+                    source=SOURCE_AUDIOBOOKSHELF,
+                    item_id=f"li_{part}",
+                    library_id="lib_books",
+                    library_name="Audiobooks",
+                    media_type=MEDIA_TYPE_AUDIOBOOK,
+                    title=f"The Final Empire (Part {part} of 3) (Dramatized Adaptation)",
+                    subtitle=f"Mistborn Era 1, Book 1 — Part {part} of 3",
+                    author="Brandon Sanderson",
+                    asin="",
+                    isbn13="",
+                )
+                for part in (1, 2, 3)
+            ],
+        )
+
+        with patch_config(ENABLED):
+            result = lookup_books(
+                [
+                    {
+                        "id": "bk1",
+                        "title": "The Final Empire",
+                        "author": "Brandon Sanderson",
+                        "content_type": "audiobook",
+                    }
+                ],
+                index=index,
+            )
+
+        match = result["matches"]["bk1"]
+        assert match["items"] == []
+        assert len(match["other_editions"]) == 3
+
+    def test_unabridged_is_not_an_edition_difference(self, tmp_path):
+        """The shelf noise case. Demoting here would strip a real holding's
+        badge from every item whose library spells out "(Unabridged)".
+        """
+        index = LibraryIndexDB(str(tmp_path / "i.db"))
+        index.initialize()
+        index.replace_items(
+            SOURCE_AUDIOBOOKSHELF, [_edition("li_1", "Dungeon Crawler Carl (Unabridged)")]
+        )
+
+        with patch_config(ENABLED):
+            result = lookup_books([_dcc_search_result()], index=index)
+
+        assert len(result["matches"]["bk1"]["items"]) == 1
+
+    def test_the_same_qualifier_on_both_sides_stays_held(self, tmp_path):
+        index = LibraryIndexDB(str(tmp_path / "i.db"))
+        index.initialize()
+        index.replace_items(
+            SOURCE_AUDIOBOOKSHELF,
+            [_edition("li_1", "Dungeon Crawler Carl (Audio Immersion Tunnel)")],
+        )
+
+        with patch_config(ENABLED):
+            result = lookup_books(
+                [_dcc_search_result("Dungeon Crawler Carl (Audio Immersion Tunnel)")], index=index
+            )
+
+        assert len(result["matches"]["bk1"]["items"]) == 1
+
+    def test_a_plain_holding_is_untouched(self, index):
+        """The overwhelmingly common case must not regress: no qualifiers
+        anywhere, no ASIN on the search side, still owned.
+        """
+        with patch_config(ENABLED):
+            result = lookup_books(
+                [
+                    {
+                        "id": "bk1",
+                        "title": "The Housemaid: A Novel",
+                        "author": "Freida McFadden",
+                        "content_type": "audiobook",
+                    }
+                ],
+                index=index,
+            )
+
+        match = result["matches"]["bk1"]
+        assert len(match["items"]) == 1
+        assert match["other_editions"] == []
+        assert match["libraries"] == ["Audiobooks"]
+
+    def test_a_cross_format_holding_is_not_demoted(self, index, enabled_providers):
+        """`other_formats` already declines to lock the button, so splitting it
+        further would only add a bucket nothing reads.
+        """
+        index.replace_items(
+            SOURCE_GRIMMORY,
+            [
+                LibraryItem(
+                    source=SOURCE_GRIMMORY,
+                    item_id="g1",
+                    library_id="1",
+                    library_name="Ebooks",
+                    media_type=MEDIA_TYPE_EBOOK,
+                    title="Dungeon Crawler Carl (Illustrated Edition)",
+                    subtitle="",
+                    author="Matt Dinniman",
+                    asin="",
+                    isbn13="",
+                )
+            ],
+        )
+
+        result = lookup_books([_dcc_search_result(asin="B0FZZZZZZZ")], index=index)
+
+        match = result["matches"]["bk1"]
+        assert len(match["other_formats"]) == 1
+        assert match["other_editions"] == []
 
 
 class TestSourceReporting:
