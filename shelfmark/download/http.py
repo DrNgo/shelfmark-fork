@@ -341,8 +341,11 @@ def html_get_page(
         is internal-bypasser only; with an external one get_cf_cookies_for_domain()
         already returns {}.
         """
-        if not _is_using_external_bypasser():
-            _get_internal_bypasser().clear_cf_cookies(urlparse(bypass_url).hostname or "")
+        hostname = urlparse(bypass_url).hostname or ""
+        # An empty domain means "clear every host" to the bypasser, so skip the purge
+        # rather than wipe clearance for sites that are working fine.
+        if hostname and not _is_using_external_bypasser():
+            _get_internal_bypasser().clear_cf_cookies(hostname)
         return _run_bypasser(bypass_url)
 
     configured_retry = normalize_positive_int(app_config.MAX_RETRY)
@@ -456,6 +459,12 @@ def html_get_page(
                         return _result("", current_url)
 
                     # Same-host redirect (relative or absolute) - follow manually.
+                    # DDoS-Guard gates AA /search behind a cookie probe: the 302 to
+                    # ?check=1 carries Set-Cookie (__ddg*) which must be echoed back on
+                    # the next hop, or the server just re-issues the redirect forever.
+                    issued = _new_cookies(response, handshake_cookies)
+                    if issued:
+                        handshake_cookies.update(issued)
                     redirects_followed += 1
                     if redirects_followed > _MAX_REDIRECTS:
                         # A same-host redirect loop on AA is not a network fault — it is
@@ -490,12 +499,18 @@ def html_get_page(
         except Exception as e:
             status = _get_status_code(e)
 
-            # The same DDoS-Guard rescue for loops the manual AA follower above does not
-            # see: non-AA hosts keep allow_redirects=True, so `requests` follows the loop
-            # itself and raises, and an AA redirect missing its Location header raises
-            # too. TooManyRedirects carries no status, so the 403 rescue below never fires
-            # and every retry would re-send the dead cookies.
-            if isinstance(e, requests.exceptions.TooManyRedirects) and _bypass_handoff_allowed():
+            # The same DDoS-Guard rescue, for the loops the manual AA follower above hands
+            # back rather than resolving inline — an AA redirect missing its Location
+            # header. TooManyRedirects carries no status, so the 403 rescue below never
+            # fires and every retry would re-send the dead cookies. Scoped to the hosts
+            # whose redirects we follow manually: elsewhere `requests` follows them itself,
+            # and a loop there is an ordinary misconfiguration that a cookie purge and a
+            # minutes-long browser solve would be the wrong answer to.
+            if (
+                isinstance(e, requests.exceptions.TooManyRedirects)
+                and network.should_rotate_dns_for_url(current_url)
+                and _bypass_handoff_allowed()
+            ):
                 logger.info("Redirect loop detected; switching to bypasser: %s", current_url)
                 return _redirect_loop_handoff(current_url)
 
