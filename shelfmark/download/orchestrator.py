@@ -372,6 +372,36 @@ def get_book_data(task_id: str) -> tuple[bytes | None, DownloadTask | None]:
         return None, task
 
 
+def get_book_path(task_id: str) -> tuple[str | None, DownloadTask | None]:
+    """Get the on-disk path of a task's downloaded file without reading it.
+
+    Streaming-friendly counterpart to :func:`get_book_data`: the caller can hand the
+    path straight to ``send_file`` so the file is served in chunks instead of being
+    buffered in memory. Mirrors ``get_book_data``'s side effect of clearing
+    ``task.download_path`` when the file is no longer readable.
+    """
+    task = None
+    try:
+        task = book_queue.get_task(task_id)
+        if not task:
+            return None, None
+
+        path = task.download_path
+        if not path:
+            return None, task
+
+        if not Path(path).is_file():
+            task.download_path = None
+            return None, task
+    except OSError as e:
+        logger.error_trace(f"Error getting book path: {e}")
+        if task:
+            task.download_path = None
+        return None, task
+    else:
+        return path, task
+
+
 def _has_staged_retry_source(task: DownloadTask) -> bool:
     """Whether a failed task still has a staged file available for retry."""
     staged_path = task.staged_path.strip() if isinstance(task.staged_path, str) else ""

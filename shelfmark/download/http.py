@@ -1,17 +1,19 @@
 """HTTP download with retry, resume, and Cloudflare bypass support."""
 
 import random
+import tempfile
 import time
+from contextlib import suppress
 from http import HTTPStatus
-from io import BytesIO
 from threading import Event, Thread
-from typing import TYPE_CHECKING, NoReturn
+from typing import IO, TYPE_CHECKING, NoReturn
 from urllib.parse import urljoin, urlparse
 
 import requests
 from tqdm import tqdm
 
 from shelfmark.bypass import BypassCancelledError
+from shelfmark.config.env import TMP_DIR
 from shelfmark.core.config import config as app_config
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.request_helpers import coerce_bool, normalize_positive_int
@@ -45,9 +47,24 @@ _BYPASSER_ERRORS = (
     requests.exceptions.RequestException,
 )
 
+# Downloads are spooled in memory up to this size and spill to disk beyond it. Keeping
+# small payloads (HTML error pages, small ebooks) in RAM preserves the previous BytesIO
+# behaviour, while large files no longer pin their full size in memory for the whole
+# download -- MAX_CONCURRENT_DOWNLOADS in-flight downloads used to cost that much RAM each.
+_DOWNLOAD_SPOOL_MAX_SIZE = 8 * 1024 * 1024
+
 # Bypasser modules are imported lazily to support dynamic selection based on config
 _internal_bypasser = None
 _external_bypasser = None
+
+
+def _new_download_buffer() -> IO[bytes]:
+    """Create a seekable read/write buffer for an in-flight download."""
+    spool_dir: str | None = None
+    with suppress(OSError):
+        if TMP_DIR.is_dir():
+            spool_dir = str(TMP_DIR)
+    return tempfile.SpooledTemporaryFile(max_size=_DOWNLOAD_SPOOL_MAX_SIZE, dir=spool_dir)
 
 
 def _raise_too_many_redirects(message: str) -> NoReturn:
@@ -452,8 +469,12 @@ def download_url(
     _selector: network.AAMirrorSelector | None = None,
     status_callback: Callable[[str, str | None], None] | None = None,
     referer: str | None = None,
-) -> BytesIO | None:
-    """Download content from URL with automatic retry and resume support."""
+) -> IO[bytes] | None:
+    """Download content from URL with automatic retry and resume support.
+
+    Returns a seekable binary file object positioned at the end of the written data.
+    Small downloads stay entirely in memory; larger ones spill to a temporary file.
+    """
     selector = _selector or network.AAMirrorSelector()
     current_url = selector.rewrite(link)
 
@@ -470,7 +491,7 @@ def download_url(
         if cancel_flag and cancel_flag.is_set():
             return None
 
-        buffer = BytesIO()
+        buffer = _new_download_buffer()
         bytes_downloaded = 0
 
         try:
@@ -623,13 +644,13 @@ def _is_configured_zlib_host(hostname: str | None) -> bool:
 
 def _try_resume(
     url: str,
-    buffer: BytesIO,
+    buffer: IO[bytes],
     start_byte: int,
     total_size: float,
     progress_callback: Callable[[float], None] | None,
     cancel_flag: Event | None,
     base_headers: dict | None = None,
-) -> BytesIO | None:
+) -> IO[bytes] | None:
     """Try to resume an interrupted download."""
     for attempt in range(MAX_RESUME_ATTEMPTS):
         logger.info(

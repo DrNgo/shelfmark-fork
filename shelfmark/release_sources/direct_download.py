@@ -3,6 +3,7 @@
 import itertools
 import json
 import re
+import shutil
 import threading
 import time
 import unicodedata
@@ -1156,7 +1157,7 @@ def _try_download_url(
         logger.debug("Download finished (%s bytes). Writing to %s", file_size, book_path)
         data.seek(0)
         with book_path.open("wb") as f:
-            f.write(data.getbuffer())
+            shutil.copyfileobj(data, f)
 
     except (
         RuntimeError,

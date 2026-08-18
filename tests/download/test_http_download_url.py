@@ -152,7 +152,61 @@ def test_download_url_resumes_partial_download_after_connection_error(monkeypatc
     result = http.download_url("https://example.com/file.epub")
 
     assert result is not None
-    assert result.getvalue() == b"abcdefgh"
+    # `tell()` must still report the full byte count before any rewind -- callers such as
+    # direct_download._try_download_url use it as the downloaded-size check.
+    assert result.tell() == 8
+    result.seek(0)
+    assert result.read() == b"abcdefgh"
     assert len(calls) == 2
     assert "Range" not in calls[0]["headers"]
     assert calls[1]["headers"]["Range"] == "bytes=4-"
+
+
+def _run_sized_download(monkeypatch, payload: bytes):
+    http = _prepare_download_test(monkeypatch)
+
+    response = _FakeResponse(
+        200,
+        headers={
+            "content-length": str(len(payload)),
+            "content-type": "application/octet-stream",
+        },
+        chunks=[payload[i : i + 8192] for i in range(0, len(payload), 8192)],
+        url="https://example.com/file.epub",
+    )
+    monkeypatch.setattr(http.requests, "get", lambda _url, **_kwargs: response)
+
+    return http.download_url("https://example.com/file.epub")
+
+
+def test_download_url_keeps_small_payload_in_memory(monkeypatch):
+    """Below the spool threshold nothing touches disk -- same as the old BytesIO."""
+    payload = b"small epub payload" * 16
+
+    result = _run_sized_download(monkeypatch, payload)
+
+    assert result is not None
+    # `_rolled` is SpooledTemporaryFile's own flag for "has spilled to a real file".
+    assert result._rolled is False
+    assert result.tell() == len(payload)
+    result.seek(0)
+    assert result.read() == payload
+
+
+def test_download_url_spills_large_payload_to_disk(monkeypatch):
+    """Above the spool threshold the buffer rolls to a temp file, bounding peak RAM."""
+    import shelfmark.download.http as http_module
+
+    monkeypatch.setattr(http_module, "_DOWNLOAD_SPOOL_MAX_SIZE", 64 * 1024)
+    payload = bytes(range(256)) * 1024  # 256 KiB, comfortably over the patched threshold
+
+    result = _run_sized_download(monkeypatch, payload)
+
+    assert result is not None
+    # `_rolled` is SpooledTemporaryFile's own flag for "has spilled to a real file".
+    assert result._rolled is True
+    # tell()/seek()/read() must behave identically once rolled over -- direct_download
+    # relies on tell() for its minimum-file-size check before writing the book out.
+    assert result.tell() == len(payload)
+    result.seek(0)
+    assert result.read() == payload

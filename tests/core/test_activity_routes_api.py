@@ -295,6 +295,71 @@ class TestActivityRoutes:
             "item_key": "download:admin-visible-task",
         } in snapshot_response.json["dismissed"]
 
+    def test_localdownload_streams_active_queue_task_file(self, main_module, client, tmp_path):
+        """Primary branch: the queue task's file is streamed from disk byte-for-byte.
+
+        Twin of the fallback test below. `send_file(path, ...)` hands off to Werkzeug's
+        FileWrapper instead of materialising the file in a BytesIO, so this asserts the
+        response bytes are unchanged and that ranged requests now work.
+        """
+        from shelfmark.core.models import DownloadTask
+
+        user = _create_user(main_module, prefix="reader")
+        _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
+
+        task_id = "queue-localdownload-task"
+        file_path = tmp_path / "queued-download.epub"
+        # Larger than one FileWrapper chunk so a chunked read is genuinely exercised.
+        file_bytes = bytes(range(256)) * 400
+        file_path.write_bytes(file_bytes)
+
+        task = DownloadTask(
+            task_id=task_id,
+            source="direct_download",
+            title="Queued Local Download",
+            download_path=str(file_path),
+        )
+
+        with (
+            patch.object(main_module, "get_auth_mode", return_value="builtin"),
+            patch.object(main_module.backend.book_queue, "get_task", return_value=task),
+        ):
+            response = client.get(f"/api/localdownload?id={task_id}")
+            ranged = client.get(f"/api/localdownload?id={task_id}", headers={"Range": "bytes=0-9"})
+
+        assert response.status_code == 200
+        assert response.data == file_bytes
+        assert "attachment" in response.headers.get("Content-Disposition", "").lower()
+        assert "queued-download.epub" in response.headers.get("Content-Disposition", "")
+        # Streaming from a real path gains Range support that a BytesIO copy did not have.
+        assert ranged.status_code == 206
+        assert ranged.data == file_bytes[:10]
+
+    def test_localdownload_missing_queue_file_clears_download_path(
+        self, main_module, client, tmp_path
+    ):
+        """A vanished file still clears `task.download_path` without reading the file."""
+        from shelfmark.core.models import DownloadTask
+
+        user = _create_user(main_module, prefix="reader")
+        _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
+
+        task = DownloadTask(
+            task_id="queue-localdownload-missing",
+            source="direct_download",
+            title="Vanished Download",
+            download_path=str(tmp_path / "gone.epub"),
+        )
+
+        with (
+            patch.object(main_module, "get_auth_mode", return_value="builtin"),
+            patch.object(main_module.backend.book_queue, "get_task", return_value=task),
+        ):
+            response = client.get("/api/localdownload?id=queue-localdownload-missing")
+
+        assert response.status_code == 404
+        assert task.download_path is None
+
     def test_localdownload_falls_back_to_download_history_file(self, main_module, client, tmp_path):
         user = _create_user(main_module, prefix="reader")
         _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)

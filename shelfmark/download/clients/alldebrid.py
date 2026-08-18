@@ -623,8 +623,9 @@ class AllDebridClient(DownloadClient):
                     msg = f"Failed to download from {direct_link}"
                     _raise_runtime_error(msg)
 
+                buf.seek(0)
                 with dest.open("wb") as fh:
-                    fh.write(buf.getvalue())
+                    shutil.copyfileobj(buf, fh)
 
                 with state.lock:
                     state.progress = 50.0 + (idx + 1) / total * 50.0
