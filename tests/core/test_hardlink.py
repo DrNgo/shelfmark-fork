@@ -1003,8 +1003,13 @@ class TestTorrentSourceCleanupProtection:
     Each test simulates a specific real-world content type and file structure.
     """
 
-    def _make_config_mock(self, library_path: str, hardlink: bool = True):
-        """Create config mock for library/organize mode with hardlinking."""
+    def _make_config_mock(
+        self,
+        library_path: str,
+        hardlink: bool = True,
+        organization_mode: str = "organize",
+    ):
+        """Create a folder-output config mock for torrent transfers."""
         return MagicMock(
             side_effect=lambda key, default=None, **_kwargs: {
                 # Destination paths (what _get_final_destination uses)
@@ -1013,9 +1018,10 @@ class TestTorrentSourceCleanupProtection:
                 # Templates (what _get_template uses)
                 "TEMPLATE_ORGANIZE": "{Author}/{Title}",
                 "TEMPLATE_AUDIOBOOK_ORGANIZE": "{Author}/{Title}{ - PartNumber}",
+                "TEMPLATE_AUDIOBOOK_RENAME": "{Author} - {Title}",
                 # File organization mode
                 "FILE_ORGANIZATION": "organize",
-                "FILE_ORGANIZATION_AUDIOBOOK": "organize",
+                "FILE_ORGANIZATION_AUDIOBOOK": organization_mode,
                 # Hardlink toggle
                 "HARDLINK_TORRENTS": hardlink,
                 "HARDLINK_TORRENTS_AUDIOBOOK": hardlink,
@@ -1122,6 +1128,108 @@ class TestTorrentSourceCleanupProtection:
 
     # ==================== AUDIOBOOK TESTS ====================
 
+    @pytest.mark.parametrize(
+        ("organization_mode", "grouped"),
+        [("rename", False), ("rename_and_group", True)],
+    )
+    @pytest.mark.parametrize("hardlink", [True, False])
+    def test_torrent_audiobook_multifile_grouping_is_opt_in(
+        self, tmp_path, organization_mode, grouped, hardlink
+    ):
+        """Multi-file audiobooks retain their torrent folder only when opted in."""
+        from shelfmark.core.models import DownloadTask, SearchMode
+        from shelfmark.download.postprocess.router import (
+            post_process_download as _post_process_download,
+        )
+
+        torrent_dir = tmp_path / "downloads" / "Project: Hail Mary Audiobook"
+        torrent_dir.mkdir(parents=True)
+        source_files = [torrent_dir / "Part 01.mp3", torrent_dir / "Part 02.mp3"]
+        for index, source_file in enumerate(source_files, start=1):
+            source_file.write_bytes(f"audio {index}".encode())
+
+        library = tmp_path / "library"
+        library.mkdir()
+        task = DownloadTask(
+            task_id=f"audiobook_{organization_mode}_{hardlink}",
+            source="prowlarr",
+            title="Project Hail Mary",
+            author="Andy Weir",
+            format="mp3",
+            content_type="audiobook",
+            search_mode=SearchMode.UNIVERSAL,
+            original_download_path=str(torrent_dir),
+        )
+
+        with patch("shelfmark.core.config.config") as mock_orch:
+            mock_orch.get = self._make_config_mock(
+                str(library),
+                hardlink=hardlink,
+                organization_mode=organization_mode,
+            )
+            mock_orch.CUSTOM_SCRIPT = None
+            result = _post_process_download(torrent_dir, task, Event(), MagicMock())
+
+        transfer_dir = library / "Project_ Hail Mary Audiobook" if grouped else library
+        assert result is not None
+        assert Path(result).parent == transfer_dir
+        assert sorted(path.name for path in transfer_dir.glob("*.mp3")) == [
+            "Part 01.mp3",
+            "Part 02.mp3",
+        ]
+        assert bool(list(library.glob("*.mp3"))) is not grouped
+
+        for source_file in source_files:
+            destination_file = transfer_dir / source_file.name
+            assert source_file.exists()
+            assert destination_file.exists()
+            if hardlink:
+                assert source_file.stat().st_ino == destination_file.stat().st_ino
+            else:
+                assert source_file.stat().st_ino != destination_file.stat().st_ino
+
+    @pytest.mark.parametrize("organization_mode", ["rename", "none", "rename_and_group"])
+    def test_torrent_audiobook_single_file_stays_in_destination_root(
+        self, tmp_path, organization_mode
+    ):
+        """Single-file audiobooks do not gain a source-folder wrapper."""
+        from shelfmark.core.models import DownloadTask, SearchMode
+        from shelfmark.download.postprocess.router import (
+            post_process_download as _post_process_download,
+        )
+
+        torrent_file = tmp_path / "downloads" / "Project Hail Mary.mp3"
+        torrent_file.parent.mkdir()
+        torrent_file.write_bytes(b"audio")
+        library = tmp_path / "library"
+        library.mkdir()
+        task = DownloadTask(
+            task_id=f"single_audiobook_{organization_mode}",
+            source="prowlarr",
+            title="Project Hail Mary",
+            author="Andy Weir",
+            format="mp3",
+            content_type="audiobook",
+            search_mode=SearchMode.UNIVERSAL,
+            original_download_path=str(torrent_file),
+        )
+
+        with patch("shelfmark.core.config.config") as mock_orch:
+            mock_orch.get = self._make_config_mock(
+                str(library), organization_mode=organization_mode
+            )
+            mock_orch.CUSTOM_SCRIPT = None
+            result = _post_process_download(torrent_file, task, Event(), MagicMock())
+
+        expected_name = (
+            "Andy Weir - Project Hail Mary.mp3"
+            if organization_mode in {"rename", "rename_and_group"}
+            else torrent_file.name
+        )
+        assert result is not None
+        assert Path(result) == library / expected_name
+        assert torrent_file.exists()
+
     def test_torrent_audiobook_multifile_hardlink(self, tmp_path):
         """Torrent: Multi-file audiobook - all source files preserved for seeding.
 
@@ -1184,6 +1292,7 @@ class TestTorrentSourceCleanupProtection:
         # Verify library has all 12 files
         library_files = list((library / "Andy Weir").glob("*.mp3"))
         assert len(library_files) == 12
+        assert not (library / torrent_dir.name).exists()
 
     # ==================== COMIC/CBZ TESTS ====================
 
