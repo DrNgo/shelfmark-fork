@@ -298,15 +298,6 @@ Audiobook formats to include in search results. ZIP/RAR archives are extracted a
 - **Type:** string (comma-separated)
 - **Default:** `m4b,mp3,m4a,mp4,flac,ogg,wma,aac,wav,opus,zip,rar`
 
-#### `BOOK_LANGUAGE`
-
-**Default Book Languages**
-
-Default language filter for searches.
-
-- **Type:** string (comma-separated)
-- **Default:** `en`
-
 </details>
 
 ## Search Mode
@@ -314,6 +305,7 @@ Default language filter for searches.
 | Variable | Description | Type | Default |
 |----------|-------------|------|---------|
 | `SEARCH_MODE` | How you want to search for and download books. | string (choice) | `universal` |
+| `BOOK_LANGUAGE` | Default language filter for searches. Users can override this for their own account. | string (comma-separated) | `en` |
 | `AA_DEFAULT_SORT` | Default sort order for search results. | string (choice) | `relevance` |
 | `SHOW_RELEASE_SOURCE_LINKS` | Show clickable release-source links in release and details modals. Metadata provider links stay enabled. | boolean | `true` |
 | `SHOW_COMBINED_SELECTOR` | Show the option to search for and download both a book and audiobook together. | boolean | `true` |
@@ -336,6 +328,15 @@ How you want to search for and download books.
 - **Type:** string (choice)
 - **Default:** `universal`
 - **Options:** `direct` (Direct), `universal` (Universal)
+
+#### `BOOK_LANGUAGE`
+
+**Default Book Languages**
+
+Default language filter for searches. Users can override this for their own account.
+
+- **Type:** string (comma-separated)
+- **Default:** `en`
 
 #### `AA_DEFAULT_SORT`
 
@@ -749,6 +750,7 @@ Automatically open the downloads sidebar when a new download is queued.
 Automatically download completed files to your browser for the selected content types.
 
 - **Type:** string (comma-separated)
+  
 - **Default:** _empty list_
 
 #### `MAX_CONCURRENT_DOWNLOADS`
