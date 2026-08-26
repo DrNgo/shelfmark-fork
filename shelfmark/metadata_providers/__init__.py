@@ -717,3 +717,6 @@ with suppress(ImportError):
 
 with suppress(ImportError):
     from shelfmark.metadata_providers import audible as audible
+
+with suppress(ImportError):
+    from shelfmark.metadata_providers import moly as moly

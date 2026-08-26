@@ -3,14 +3,16 @@
 import fnmatch
 import ipaddress
 import socket
+import time
 import urllib.parse
 import urllib.request
 from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from socket import AddressFamily, SocketKind
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 import dns.resolver
+import httpx
 import requests
 from dns.exception import DNSException
 
@@ -277,6 +279,116 @@ _current_aa_url_index = 0
 _aa_urls: list[str] = []  # Initialized lazily in _initialize_aa_state()
 _aa_base_url: str = ""  # Current active AA URL
 
+# Mirrors quarantined for this process: domains that are not a working AA mirror at
+# all (NXDOMAIN, refused, or a 200 that isn't AA - seized/parked/for-sale domains all
+# land here). Kept separate from ordinary failures: a 403 challenge or a 5xx means the
+# mirror is alive and rotating away from it only discards the DDoS-Guard clearance we
+# hold for it. Deliberately in-memory only, so a restart re-probes everything.
+_dead_aa_urls: set[str] = set()
+_dead_aa_urls_lock = _RLock()
+
+
+# Per-host rate-limit backoff. A 429 is the origin throttling *this IP*, not a challenge:
+# a DDoS-Guard/Cloudflare solve still renders, so the bypass "succeeds" yet the cleared
+# request is rejected again and the throttle is only renewed. The single answer is to
+# wait, so a 429 sidelines the host for a growing window - mirror selection and the
+# bypasser both skip a cooling-down host until its deadline passes. The wait escalates
+# 2 -> 5 -> 10 -> 15 -> 30 minutes each time the host throttles us again *after* we
+# already waited a full window out; a host left clear for longer than the top step
+# starts the ladder over. Keyed by host so every mirror and source shares one view;
+# in-memory only, so a restart starts clean.
+_RATE_LIMIT_COOLDOWN_LADDER_SECONDS: tuple[float, ...] = (120.0, 300.0, 600.0, 900.0, 1800.0)
+# A host that has been clear this long is treated as a fresh episode: the next 429
+# restarts the ladder at 2 minutes rather than resuming the escalation.
+_RATE_LIMIT_RESET_AFTER_SECONDS = 1800.0
+
+
+class _Cooldown(NamedTuple):
+    """One host's active rate-limit window and how far up the ladder it has climbed."""
+
+    deadline: float  # time.monotonic() value at which the wait expires
+    level: int  # index into _RATE_LIMIT_COOLDOWN_LADDER_SECONDS
+
+
+_host_cooldowns: dict[str, _Cooldown] = {}
+_host_cooldowns_lock = _RLock()
+
+
+class RateLimitedError(Exception):
+    """Raised to abandon a request whose host is in a 429 cooldown.
+
+    Not a transport failure - nothing is wrong with the network, the origin is
+    throttling this IP and only time clears it. Callers surface it as a plain failure
+    rather than retrying or handing the URL to the bypasser.
+    """
+
+
+def _cooldown_key(url: str) -> str:
+    """Host a cooldown is keyed by; '' when the URL carries none."""
+    return (urllib.parse.urlparse(url).hostname or "").lower()
+
+
+def note_rate_limited(url: str) -> float:
+    """Escalate a host's 429 backoff and (re)arm its cooldown; return the wait applied.
+
+    The step advances only when a fresh 429 arrives *after* the previous window already
+    elapsed - i.e. we waited it out and the host throttled us again. A 429 that lands
+    while the host is still cooling is the same episode: it neither escalates the level
+    nor shortens the wait. See the ladder note above.
+    """
+    host = _cooldown_key(url)
+    if not host:
+        return 0.0
+    now = time.monotonic()
+    ladder = _RATE_LIMIT_COOLDOWN_LADDER_SECONDS
+    with _host_cooldowns_lock:
+        prev = _host_cooldowns.get(host)
+        if prev is not None and now < prev.deadline:
+            # Still inside the current window - same throttling episode, leave it be.
+            return prev.deadline - now
+        if prev is None or now - prev.deadline > _RATE_LIMIT_RESET_AFTER_SECONDS:
+            level = 0
+        else:
+            level = min(prev.level + 1, len(ladder) - 1)
+        wait = ladder[level]
+        _host_cooldowns[host] = _Cooldown(deadline=now + wait, level=level)
+    logger.info(
+        "Rate limited (429): backing off %s for %.0fs (step %d/%d)",
+        host,
+        wait,
+        level + 1,
+        len(ladder),
+    )
+    return wait
+
+
+def host_cooldown_remaining(url: str) -> float:
+    """Seconds left on a host's 429 cooldown; 0.0 when clear or expired.
+
+    Leaves an expired record in place: the ladder level it carries is what a later 429
+    escalates from (or resets, once the clear gap is long enough).
+    """
+    host = _cooldown_key(url)
+    if not host:
+        return 0.0
+    now = time.monotonic()
+    with _host_cooldowns_lock:
+        rec = _host_cooldowns.get(host)
+        if rec is None or rec.deadline <= now:
+            return 0.0
+        return rec.deadline - now
+
+
+def is_host_cooling_down(url: str) -> bool:
+    """True while ``url``'s host is inside its 429 cooldown window."""
+    return host_cooldown_remaining(url) > 0.0
+
+
+def clear_host_cooldowns() -> None:
+    """Forget all rate-limit cooldowns (manual reset / tests)."""
+    with _host_cooldowns_lock:
+        _host_cooldowns.clear()
+
 
 def _ensure_initialized() -> None:
     """Lazy guard so runtime setup happens once and late calls still work."""
@@ -297,6 +409,24 @@ DNS_PROVIDERS = [
     ("quad9", ["9.9.9.9", "149.112.112.112"], "https://dns.quad9.net/dns-query"),
     ("opendns", ["208.67.222.222", "208.67.220.220"], "https://doh.opendns.com/dns-query"),
 ]
+
+# httpx raises its own hierarchy, which shares no base class with requests', so a
+# wireformat failure would escape a requests-only except clause.
+_DOH_REQUEST_ERRORS = (OSError, ValueError, requests.RequestException, httpx.HTTPError)
+
+
+def _first_proxy(proxies: dict[str, str] | None) -> str | None:
+    """Pick a single proxy URL from a requests-style mapping, for httpx."""
+    if not proxies:
+        return None
+    return proxies.get("https") or proxies.get("http") or None
+
+
+# DoH providers that speak RFC 8484 wireformat rather than the (non-standard) JSON API
+# Cloudflare and Google popularised. Verified against the live services: both reject a
+# ?name=&type= query outright - Quad9 with 505 (it also mandates HTTP/2 per RFC 8484
+# section 5.2, which requests cannot speak), OpenDNS with 400 "No valid query received".
+_DOH_WIREFORMAT_HOSTS = frozenset({"dns.quad9.net", "doh.opendns.com"})
 
 # Domain patterns that should trigger DNS rotation on failure
 DNS_ROTATION_DOMAINS = [
@@ -462,8 +592,16 @@ class DoHResolver:
         # DNS cache: {(hostname, record_type): (ip_list, timestamp)}
         self._cache: dict[tuple[str, str], tuple[list[str], datetime]] = {}
 
-        # Different headers based on provider
-        if "google" in self.base_url:
+        # RFC 8484 providers get a separate transport: they need wireformat, and Quad9
+        # additionally refuses HTTP/1.1, which requests has no way to upgrade from.
+        self.use_wireformat = urllib.parse.urlparse(self.base_url).hostname in (
+            _DOH_WIREFORMAT_HOSTS
+        )
+        self._http2_client: Any | None = None
+
+        if self.use_wireformat:
+            self.session.headers.update({"Accept": "application/dns-message"})
+        elif "google" in self.base_url:
             self.session.headers.update(
                 {
                     "Accept": "application/json",
@@ -475,6 +613,35 @@ class DoHResolver:
                     "Accept": "application/dns-json",
                 }
             )
+
+    def _get_http2_client(self) -> Any:
+        """Lazily build the HTTP/2 client used for RFC 8484 providers.
+
+        Built on first use so a resolver pointed at a JSON provider never opens an
+        HTTP/2 connection pool it will not use.
+        """
+        if self._http2_client is None:
+            self._http2_client = httpx.Client(
+                http2=True,
+                timeout=10,
+                verify=get_ssl_verify(self.base_url),
+                proxy=_first_proxy(get_proxies(self.base_url)),
+            )
+        return self._http2_client
+
+    def _resolve_wireformat(self, hostname: str, record_type: str) -> list[str]:
+        """Resolve via RFC 8484: base64url query in, DNS message out."""
+        from shelfmark.download import doh_wireformat
+
+        qtype = doh_wireformat.TYPE_AAAA if record_type == "AAAA" else doh_wireformat.TYPE_A
+        param = doh_wireformat.encode_query_param(hostname, qtype)
+        response = self._get_http2_client().get(
+            self.base_url,
+            params={"dns": param},
+            headers={"Accept": "application/dns-message"},
+        )
+        response.raise_for_status()
+        return doh_wireformat.decode_answer(response.content, qtype)
 
     def _get_cached(self, hostname: str, record_type: str) -> list[str] | None:
         """Get cached DNS result if still valid."""
@@ -525,34 +692,37 @@ class DoHResolver:
             return cached
 
         try:
-            params = {"name": hostname, "type": "AAAA" if record_type == "AAAA" else "A"}
+            if self.use_wireformat:
+                answers = self._resolve_wireformat(hostname, record_type)
+            else:
+                params = {"name": hostname, "type": "AAAA" if record_type == "AAAA" else "A"}
 
-            response = self.session.get(
-                self.base_url,
-                params=params,
-                proxies=get_proxies(self.base_url),
-                timeout=10,  # Increased from 5s to handle slow network conditions
-                verify=get_ssl_verify(self.base_url),
-            )
-            response.raise_for_status()
+                response = self.session.get(
+                    self.base_url,
+                    params=params,
+                    proxies=get_proxies(self.base_url),
+                    timeout=10,  # Increased from 5s to handle slow network conditions
+                    verify=get_ssl_verify(self.base_url),
+                )
+                response.raise_for_status()
 
-            data = response.json()
-            if "Answer" not in data:
-                logger.warning("DoH resolution failed for %s: %s", hostname, data)
-                return []
+                data = response.json()
+                if "Answer" not in data:
+                    logger.warning("DoH resolution failed for %s: %s", hostname, data)
+                    return []
 
-            # Extract IP addresses from the response
-            answers = [
-                answer["data"]
-                for answer in data["Answer"]
-                if answer.get("type") == (28 if record_type == "AAAA" else 1)
-            ]
+                # Extract IP addresses from the response
+                answers = [
+                    answer["data"]
+                    for answer in data["Answer"]
+                    if answer.get("type") == (28 if record_type == "AAAA" else 1)
+                ]
 
             # Cache the result
             self._set_cached(hostname, record_type, answers)
 
             # Don't log here - the caller (custom_getaddrinfo) will log the final result
-        except (OSError, ValueError, requests.RequestException) as e:
+        except _DOH_REQUEST_ERRORS as e:
             logger.warning("DoH resolution failed for %s: %s", hostname, e)
             return []
         else:
@@ -616,8 +786,6 @@ def create_custom_getaddrinfo(
             source: str,
             provider_label: str,
             res: Sequence[tuple[AddressFamily, SocketKind, int, str, tuple[Any, ...]]],
-            *,
-            is_bypass: bool = False,
         ) -> None:
             """Emit a unified resolver log with the IPs returned.
 
@@ -625,7 +793,6 @@ def create_custom_getaddrinfo(
                 source: Description of resolver source
                 provider_label: Label for the DNS provider
                 res: Resolution results
-                is_bypass: If True, log at DEBUG level (for local/IP addresses)
 
             """
             # Skip logging entirely for localhost to reduce noise
@@ -641,11 +808,7 @@ def create_custom_getaddrinfo(
                 ip = sockaddr[0]
                 if isinstance(ip, str):
                     ips.append(ip)
-            msg = f"Resolved {host_str} via {source} [{provider_label}]: {ips}"
-            if is_bypass:
-                logger.debug(msg)
-            else:
-                logger.info(msg)
+            logger.debug("Resolved %s via %s [%s]: %s", host_str, source, provider_label, ips)
 
         # Skip custom resolution for IP addresses, local addresses, or if skip check passes
         if (
@@ -655,7 +818,7 @@ def create_custom_getaddrinfo(
         ):
             # Quietly bypass custom resolution for IP/local targets
             res = original_getaddrinfo(host, port, family, socket_type, proto, flags)
-            _log_results("system resolver (bypass)", "system", res, is_bypass=True)
+            _log_results("system resolver (bypass)", "system", res)
             return res
 
         results: list[tuple[AddressFamily, SocketKind, int, str, tuple[Any, ...]]] = []
@@ -1015,14 +1178,18 @@ def rotate_dns_and_reset_aa() -> bool:
     configured_url = _get_configured_aa_url()
 
     if configured_url == "auto":
-        # Auto mode always resets to the first mirror to restart the cascade
-        _current_aa_url_index = 0
-        if _aa_urls:
-            _aa_base_url = _aa_urls[0]
+        # Auto mode always resets to the first mirror to restart the cascade. Skip any
+        # quarantined ones: a new DNS provider cannot revive a parked or seized domain.
+        with _dead_aa_urls_lock:
+            restart_urls = [url for url in _aa_urls if url not in _dead_aa_urls] or _aa_urls
+        if restart_urls:
+            _aa_base_url = restart_urls[0]
+            _current_aa_url_index = _aa_urls.index(_aa_base_url)
             logger.info("After DNS switch, resetting AA URL to: %s", _aa_base_url)
             _save_state(aa_url=_aa_base_url)
         else:
             _aa_base_url = ""
+            _current_aa_url_index = 0
             logger.info("After DNS switch, AA URL remains unconfigured")
     else:
         # Keep the user's configured primary mirror (if it exists in the list),
@@ -1192,7 +1359,16 @@ def _initialize_aa_state() -> None:
     global _aa_base_url, _current_aa_url_index, _aa_urls
 
     # Build URL list from config
+    previous_urls = _aa_urls
     _aa_urls = _build_aa_urls()
+
+    # Drop quarantine decisions only when the mirror list itself changed - they were
+    # made about a list that no longer applies. This runs on every re-init (settings
+    # sync, DNS rotation, helper subprocess startup), and clearing unconditionally
+    # would resurrect a parked mirror mid-session.
+    if previous_urls != _aa_urls:
+        with _dead_aa_urls_lock:
+            _dead_aa_urls.clear()
 
     # Get configured base URL from config
     configured_url = _get_configured_aa_url()
@@ -1209,26 +1385,34 @@ def _initialize_aa_state() -> None:
         return
 
     if configured_url == "auto":
-        if state.get("aa_base_url") and state["aa_base_url"] in _aa_urls:
-            _current_aa_url_index = _aa_urls.index(state["aa_base_url"])
-            _aa_base_url = state["aa_base_url"]
+        # Never restore or probe a mirror quarantined this session: re-init happens
+        # often, and re-electing a parked domain costs a wasted request every time
+        # (its parking page answers 200, so the probe would happily pick it).
+        with _dead_aa_urls_lock:
+            candidates = [url for url in _aa_urls if url not in _dead_aa_urls]
+        restored = state.get("aa_base_url")
+        if restored and restored in candidates:
+            _current_aa_url_index = _aa_urls.index(restored)
+            _aa_base_url = restored
         else:
-            logger.debug("AA_BASE_URL: auto, checking available urls %s", _aa_urls)
-            for i, url in enumerate(_aa_urls):
+            logger.debug("AA_BASE_URL: auto, checking available urls %s", candidates)
+            for url in candidates:
                 try:
                     response = requests.get(
                         url, proxies=get_proxies(url), timeout=3, verify=get_ssl_verify(url)
                     )
                     if response.status_code == HTTPStatus.OK:
-                        _current_aa_url_index = i
+                        _current_aa_url_index = _aa_urls.index(url)
                         _aa_base_url = url
                         _save_state(aa_url=_aa_base_url)
                         break
                 except (OSError, requests.RequestException) as exc:
                     logger.debug("Could not reach AA mirror candidate %s: %s", url, exc)
-            if not _aa_base_url or _aa_base_url == "auto":
-                _aa_base_url = _aa_urls[0]
-                _current_aa_url_index = 0
+            # Also covers the case where every probe failed and the previous base is
+            # itself quarantined - keeping it would aim the next search at a dead host.
+            if not _aa_base_url or _aa_base_url == "auto" or _aa_base_url not in candidates:
+                _aa_base_url = (candidates or _aa_urls)[0]
+                _current_aa_url_index = _aa_urls.index(_aa_base_url)
     elif configured_url not in _aa_urls:
         logger.info("AA_BASE_URL set to custom value %s; skipping auto-switch", configured_url)
         _aa_base_url = configured_url
@@ -1326,22 +1510,80 @@ def is_aa_auto_mode() -> bool:
 
 
 def get_available_aa_urls() -> list[str]:
-    """Get list of configured AA URLs (copy)."""
+    """Get configured AA URLs (copy), minus any quarantined this process.
+
+    Falls back to the full list when every mirror has been quarantined: a wrong
+    classification must not leave the app with nowhere to search.
+    """
     _ensure_initialized()
-    return _aa_urls.copy()
+    with _dead_aa_urls_lock:
+        alive = [url for url in _aa_urls if url not in _dead_aa_urls]
+        if not alive and _aa_urls:
+            logger.warning("All AA mirrors quarantined; retrying the full list")
+            _dead_aa_urls.clear()
+            alive = _aa_urls.copy()
+    # Prefer mirrors that are not serving a 429 cooldown so rotation stops hammering a
+    # throttled host. When every live mirror is cooling, keep the full live list rather
+    # than returning nothing: selection must never be left with nowhere to point, and
+    # the bypasser's fail-fast reports the "all rate-limited" case with a clear error.
+    breathing = [url for url in alive if not is_host_cooling_down(url)]
+    return breathing or alive
 
 
-def set_aa_url_index(new_index: int) -> bool:
-    """Set AA base URL by index in available list; returns True if applied."""
+def _aa_base_for_url(url: str) -> str:
+    """Return the configured mirror base that ``url`` belongs to, if any."""
+    for base in _aa_urls:
+        if base and url.startswith(base):
+            return base
+    return ""
+
+
+def mark_aa_url_dead(url: str, reason: str) -> bool:
+    """Quarantine an AA mirror for the rest of this process.
+
+    Only for hard evidence that the host is not a working AA mirror. Transient
+    failures (403 challenge, 429, 5xx, timeouts) must never come through here -
+    quarantining a live mirror throws away its bypass clearance.
+    """
+    _ensure_initialized()
+    base = _aa_base_for_url(url) or url
+    with _dead_aa_urls_lock:
+        if base not in _aa_urls or base in _dead_aa_urls:
+            return False
+        # Keep at least one mirror in play, even if it is the failing one.
+        if len([u for u in _aa_urls if u not in _dead_aa_urls]) <= 1:
+            logger.warning("Not quarantining last remaining AA mirror %s (%s)", base, reason)
+            return False
+        _dead_aa_urls.add(base)
+    logger.warning("Quarantined AA mirror %s for this session: %s", base, reason)
+    return True
+
+
+def get_dead_aa_urls() -> set[str]:
+    """Return the mirrors quarantined this process (copy)."""
+    with _dead_aa_urls_lock:
+        return set(_dead_aa_urls)
+
+
+def set_aa_url(url: str) -> bool:
+    """Set the active AA base URL; returns True if applied."""
     _ensure_initialized()
     global _aa_base_url, _current_aa_url_index
-    if new_index < 0 or new_index >= len(_aa_urls):
+    if url not in _aa_urls:
         return False
-    _current_aa_url_index = new_index
-    _aa_base_url = _aa_urls[_current_aa_url_index]
+    _current_aa_url_index = _aa_urls.index(url)
+    _aa_base_url = url
     logger.info("Set AA URL to: %s", _aa_base_url)
     _save_state(aa_url=_aa_base_url)
     return True
+
+
+def set_aa_url_index(new_index: int) -> bool:
+    """Set AA base URL by index in the full configured list; True if applied."""
+    _ensure_initialized()
+    if new_index < 0 or new_index >= len(_aa_urls):
+        return False
+    return set_aa_url(_aa_urls[new_index])
 
 
 class AAMirrorSelector:
@@ -1352,11 +1594,20 @@ class AAMirrorSelector:
 
     def __init__(self) -> None:
         """Initialize mirror state from the current AA configuration."""
+        # Set by html_get_page at each give-up path so a caller that only sees the
+        # returned empty page can still report *why* the fetch produced nothing
+        # (403, 404, redirect loop, bypasser error, mirrors exhausted, ...) instead
+        # of a blanket "network restricted" guess. None means "no failure recorded".
+        self.last_failure: str | None = None
         self._ensure_fresh_state(reset_attempts=True)
 
     def _ensure_fresh_state(self, *, reset_attempts: bool = False) -> None:
         _ensure_initialized()
         self.aa_urls = get_available_aa_urls()
+        # Rotation walks the live mirrors, but rewriting has to recognise every
+        # configured base: a URL built before a mirror was quarantined still points at
+        # it, and failing to rewrite would send the retry back to the dead host.
+        self.all_aa_urls = _aa_urls.copy()
         self._index = self._safe_index(get_aa_base_url())
         self.current_base = self.aa_urls[self._index] if self.aa_urls else ""
         if reset_attempts:
@@ -1369,16 +1620,41 @@ class AAMirrorSelector:
 
     def rewrite(self, url: str) -> str:
         """Replace any known AA base in url with current_base."""
-        for base in self.aa_urls:
+        for base in self.all_aa_urls:
             if url.startswith(base):
                 return url.replace(base, self.current_base, 1)
         return url
 
-    def next_mirror_or_rotate_dns(self, *, allow_dns: bool = True) -> tuple[str | None, str]:
+    def quarantine_current(self, reason: str) -> bool:
+        """Quarantine the mirror this selector is on (hard failures only)."""
+        if not self.current_base:
+            return False
+        dropped = mark_aa_url_dead(self.current_base, reason)
+        if dropped:
+            # Rebuild from the surviving mirrors so the dead one is out of the cycle.
+            self._ensure_fresh_state(reset_attempts=False)
+        return dropped
+
+    def next_mirror_or_rotate_dns(
+        self, *, allow_dns: bool = True, fatal: bool = False, reason: str = ""
+    ) -> tuple[str | None, str]:
         """Advance to the next mirror or rotate DNS if needed.
+
+        ``fatal`` marks the current mirror as not-an-AA-mirror (NXDOMAIN, refused, a
+        200 that isn't AA) and drops it from this process's rotation. Leave it False
+        for anything the mirror can recover from - a challenge or a 5xx means the host
+        is alive, and quarantining it would discard its bypass clearance.
 
         Returns (new_base, action) where action is 'mirror', 'dns', or 'exhausted'.
         """
+        if fatal and self.quarantine_current(reason or "unusable mirror"):
+            # Quarantining rebuilt the state onto a surviving mirror, so that mirror is
+            # the next one to try - advancing again here would skip straight past it.
+            self.attempts_this_dns += 1
+            if self.current_base and is_aa_auto_mode():
+                set_aa_url(self.current_base)
+                return self.current_base, "mirror"
+
         self.attempts_this_dns += 1
         max_attempts = len(self.aa_urls) if is_aa_auto_mode() else 1
         if self.attempts_this_dns >= max_attempts:
@@ -1391,8 +1667,11 @@ class AAMirrorSelector:
             # Mirror is explicitly configured; do not fail over to other mirrors.
             return None, "exhausted"
 
+        if not self.aa_urls:
+            return None, "exhausted"
+
         next_index = (self._index + 1) % len(self.aa_urls)
-        set_aa_url_index(next_index)
+        set_aa_url(self.aa_urls[next_index])
         self._ensure_fresh_state(reset_attempts=False)
         return self.current_base, "mirror"
 

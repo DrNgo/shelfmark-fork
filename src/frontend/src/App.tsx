@@ -90,6 +90,7 @@ import { buildSearchQuery } from './utils/buildSearchQuery';
 import { contentTypeForDiscoverDetails } from './utils/discoverRows';
 import { wasDownloadQueuedAfterResponseError } from './utils/downloadRecovery';
 import { getDynamicOptionGroup } from './utils/dynamicFieldOptions';
+import { resolveDefaultLanguageCodes } from './utils/languageFilters';
 import { getConfiguredMetadataProviderForContentType } from './utils/metadataProviders';
 import { getEffectiveMetadataSort } from './utils/metadataSort';
 import { isRecord } from './utils/objectHelpers';
@@ -2011,10 +2012,7 @@ function App() {
   );
   const supportedFormats = config?.supported_formats || DEFAULT_SUPPORTED_FORMATS;
   const defaultLanguageCodes = useMemo(
-    () =>
-      config?.default_language && config.default_language.length > 0
-        ? config.default_language
-        : [bookLanguages[0]?.code || 'en'],
+    () => resolveDefaultLanguageCodes(config?.default_language, bookLanguages),
     [config?.default_language, bookLanguages],
   );
 

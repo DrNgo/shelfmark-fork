@@ -26,6 +26,7 @@ This document lists all configuration options that can be set via environment va
   - [Hardcover](#metadata-providers-hardcover)
   - [Open Library](#metadata-providers-open-library)
   - [Google Books](#metadata-providers-google-books)
+  - [Moly.hu](#metadata-providers-moly.hu)
 - [Direct Download](#direct-download)
   - [Download Sources](#direct-download-download-sources)
   - [Cloudflare Bypass](#direct-download-cloudflare-bypass)
@@ -249,7 +250,7 @@ Seconds since the last WireGuard handshake before the healthcheck bounces the tu
 | `CALIBRE_WEB_URL` | Adds a navigation button to your book library (Calibre-Web Automated, Grimmory, etc). | string | _none_ |
 | `AUDIOBOOK_LIBRARY_URL` | Adds a separate navigation button for your audiobook library (Audiobookshelf, Plex, etc). When both URLs are set, icons are shown instead of text. | string | _none_ |
 | `SUPPORTED_FORMATS` | Book formats to include in search results. ZIP/RAR archives are extracted automatically and book files are used if found. | string (comma-separated) | `epub,mobi,azw3,fb2,djvu,cbz,cbr` |
-| `SUPPORTED_AUDIOBOOK_FORMATS` | Audiobook formats to include in search results. ZIP/RAR archives are extracted automatically and audiobook files are used if found. | string (comma-separated) | `m4b,mp3` |
+| `SUPPORTED_AUDIOBOOK_FORMATS` | Audiobook formats to include in search results. ZIP/RAR archives are extracted automatically and audiobook files are used if found. | string (comma-separated) | `m4b,mp3,m4a,mp4,flac,ogg,wma,aac,wav,opus,zip,rar` |
 | `BOOK_LANGUAGE` | Default language filter for searches. | string (comma-separated) | `en` |
 
 <details>
@@ -298,16 +299,7 @@ Book formats to include in search results. ZIP/RAR archives are extracted automa
 Audiobook formats to include in search results. ZIP/RAR archives are extracted automatically and audiobook files are used if found.
 
 - **Type:** string (comma-separated)
-- **Default:** `m4b,mp3`
-
-#### `BOOK_LANGUAGE`
-
-**Default Book Languages**
-
-Default language filter for searches.
-
-- **Type:** string (comma-separated)
-- **Default:** `en`
+- **Default:** `m4b,mp3,m4a,mp4,flac,ogg,wma,aac,wav,opus,zip,rar`
 
 </details>
 
@@ -316,6 +308,7 @@ Default language filter for searches.
 | Variable | Description | Type | Default |
 |----------|-------------|------|---------|
 | `SEARCH_MODE` | How you want to search for and download books. | string (choice) | `universal` |
+| `BOOK_LANGUAGE` | Default language filter for searches. Users can override this for their own account. | string (comma-separated) | `en` |
 | `AA_DEFAULT_SORT` | Default sort order for search results. | string (choice) | `relevance` |
 | `SHOW_RELEASE_SOURCE_LINKS` | Show clickable release-source links in release and details modals. Metadata provider links stay enabled. | boolean | `true` |
 | `SHOW_COMBINED_SELECTOR` | Show the option to search for and download both a book and audiobook together. | boolean | `true` |
@@ -339,6 +332,15 @@ How you want to search for and download books.
 - **Type:** string (choice)
 - **Default:** `universal`
 - **Options:** `direct` (Direct), `universal` (Universal)
+
+#### `BOOK_LANGUAGE`
+
+**Default Book Languages**
+
+Default language filter for searches. Users can override this for their own account.
+
+- **Type:** string (comma-separated)
+- **Default:** `en`
 
 #### `AA_DEFAULT_SORT`
 
@@ -683,7 +685,7 @@ Choose how downloaded audiobook files are named and organized.
 
 - **Type:** string (choice)
 - **Default:** `rename`
-- **Options:** `none` (None), `rename` (Rename Only), `organize` (Rename and Organize)
+- **Options:** `none` (None), `rename` (Rename Only), `organize` (Rename and Organize), `rename_and_group` (Rename and Group)
 
 #### `TEMPLATE_AUDIOBOOK_RENAME`
 
@@ -728,6 +730,7 @@ Automatically open the downloads sidebar when a new download is queued.
 Automatically download completed files to your browser for the selected content types.
 
 - **Type:** string (comma-separated)
+  
 - **Default:** _empty list_
 
 #### `MAX_CONCURRENT_DOWNLOADS`
@@ -1026,6 +1029,7 @@ Comma-separated hosts to bypass proxy (e.g., localhost,127.0.0.1,10.*,*.local)
 |----------|-------------|------|---------|
 | `URL_BASE` | Optional URL path prefix. Use a path like /shelfmark (no hostname). Leave blank for root. | string | _none_ |
 | `DEBUG` | Enable verbose logging to console and file. Not recommended for normal use. | boolean | `false` |
+| `LOG_LEVEL` | Lowest severity written to the console and log file. Ignored while Debug Mode is on, which forces Debug. | string (choice) | `INFO` |
 | `MAIN_LOOP_SLEEP_TIME` | How often the download queue is checked for new items. | number | `5` |
 | `DOWNLOAD_PROGRESS_UPDATE_INTERVAL` | How often download progress is broadcast to the UI. | number | `1` |
 | `CUSTOM_SCRIPT` | Path to a script to run after each successful download. Must be executable. | string | _none_ |
@@ -1061,6 +1065,17 @@ Enable verbose logging to console and file. Not recommended for normal use.
 - **Type:** boolean
 - **Default:** `false`
 - **Requires restart:** Yes
+
+#### `LOG_LEVEL`
+
+**Log Level**
+
+Lowest severity written to the console and log file. Ignored while Debug Mode is on, which forces Debug.
+
+- **Type:** string (choice)
+- **Default:** `INFO`
+- **Requires restart:** Yes
+- **Options:** `DEBUG` (Debug), `INFO` (Info), `WARNING` (Warning), `ERROR` (Error), `CRITICAL` (Critical)
 
 #### `MAIN_LOOP_SLEEP_TIME`
 
@@ -1190,6 +1205,7 @@ How long to cache individual book details. Default: 600 (10 minutes). Max: 60480
 | `PROWLARR_URL` | Base URL of your Prowlarr instance | string | _none_ |
 | `PROWLARR_API_KEY` | Found in Prowlarr: Settings > General > API Key | string (secret) | _none_ |
 | `PROWLARR_INDEXERS` | Select which indexers to search. 📚 = has book categories. Leave empty to search all. | string (comma-separated) | _empty list_ |
+| `PROWLARR_INDEXER_TIMEOUT` | How long to wait for a single indexer to answer a search. Indexers behind FlareSolverr can need 90 seconds or more while a cold Cloudflare challenge is solved; raise this if searches come back empty and the Prowlarr log shows the search still running. | number | `90` |
 | `PROWLARR_AUTO_EXPAND` | Automatically retry search without category filtering if no results are found | boolean | `false` |
 | `PROWLARR_COLLAPSE_DUPLICATES` | Collapse a release that several indexer entries returned down to a single row, keeping the entry with the best Prowlarr priority. Turn this off to see every entry that carried it, which is what makes results from filter-specific entries (freeleech and the like) visible. | boolean | `true` |
 | `PROWLARR_USE_SEED_PREFERENCES` | Apply per-indexer seed time and ratio preferences from Prowlarr when sending torrents to the download client | boolean | `false` |
@@ -1235,6 +1251,16 @@ Select which indexers to search. 📚 = has book categories. Leave empty to sear
 - **Type:** string (comma-separated)
 - **Default:** _empty list_
 
+#### `PROWLARR_INDEXER_TIMEOUT`
+
+**Indexer Search Timeout (seconds)**
+
+How long to wait for a single indexer to answer a search. Indexers behind FlareSolverr can need 90 seconds or more while a cold Cloudflare challenge is solved; raise this if searches come back empty and the Prowlarr log shows the search still running.
+
+- **Type:** number
+- **Default:** `90`
+- **Constraints:** min: 5, max: 300
+
 #### `PROWLARR_AUTO_EXPAND`
 
 **Auto-expand search on no results**
@@ -1271,6 +1297,8 @@ Apply per-indexer seed time and ratio preferences from Prowlarr when sending tor
 | `NEWZNAB_ENABLED` | Enable searching for books via a Newznab-compatible indexer | boolean | `false` |
 | `NEWZNAB_URL` | Base URL of your Newznab indexer or aggregator | string | _none_ |
 | `NEWZNAB_API_KEY` | Your Newznab API key (leave blank if not required) | string (secret) | _none_ |
+| `NEWZNAB_EBOOK_CATEGORIES` | Newznab category IDs searched for ebooks. Most indexers use the standard 7000, but some use custom IDs. Leave empty to use 7000. | string (comma-separated) | `7000` |
+| `NEWZNAB_AUDIOBOOK_CATEGORIES` | Newznab category IDs searched for audiobooks. Most indexers use the standard 3030, but some use custom IDs. Leave empty to use 3030. | string (comma-separated) | `3030` |
 | `NEWZNAB_AUTO_EXPAND` | Automatically retry search without category filtering if no results are found | boolean | `false` |
 
 <details>
@@ -1303,6 +1331,24 @@ Your Newznab API key (leave blank if not required)
 
 - **Type:** string (secret)
 - **Default:** _none_
+
+#### `NEWZNAB_EBOOK_CATEGORIES`
+
+**Ebook Categories**
+
+Newznab category IDs searched for ebooks. Most indexers use the standard 7000, but some use custom IDs. Leave empty to use 7000.
+
+- **Type:** string (comma-separated)
+- **Default:** `7000`
+
+#### `NEWZNAB_AUDIOBOOK_CATEGORIES`
+
+**Audiobook Categories**
+
+Newznab category IDs searched for audiobooks. Most indexers use the standard 3030, but some use custom IDs. Leave empty to use 3030.
+
+- **Type:** string (comma-separated)
+- **Default:** `3030`
 
 #### `NEWZNAB_AUTO_EXPAND`
 
@@ -1388,7 +1434,7 @@ Delay between requests in seconds to avoid rate limiting (0-10).
 | `IRC_CHANNEL` | Channel name without the # prefix. Used for all searches unless a separate audiobook channel is configured below. | string | _none_ |
 | `IRC_NICK` | Your IRC nickname (required). Must be unique on the IRC network. | string | _none_ |
 | `IRC_SEARCH_BOT` | The search bot to address queries to (required). Searches are sent as "@<bot> <query>". | string | _none_ |
-| `IRC_AUDIOBOOK_CHANNEL` | Optional. Channel name (without the # prefix) to use for audiobook searches. Leave blank to use the main channel above for audiobooks too. | string | _none_ |
+| `IRC_AUDIOBOOK_CHANNEL` | Optional. Channel name (without the # prefix) for networks that index audiobooks separately, such as Undernet's bookz. Leave blank (the usual setting) to search the main channel above for audiobooks too. | string | _none_ |
 | `IRC_AUDIOBOOK_SEARCH_BOT` | Optional. Search bot for the audiobook channel. Leave blank to reuse the main search bot above. Only used when an audiobook channel is set. | string | _none_ |
 | `IRC_CACHE_TTL` | How long to keep cached search results before they expire. | string (choice) | `2592000` |
 
@@ -1457,7 +1503,7 @@ The search bot to address queries to (required). Searches are sent as "@<bot> <q
 
 **Audiobook channel**
 
-Optional. Channel name (without the # prefix) to use for audiobook searches. Leave blank to use the main channel above for audiobooks too.
+Optional. Channel name (without the # prefix) for networks that index audiobooks separately, such as Undernet's bookz. Leave blank (the usual setting) to search the main channel above for audiobooks too.
 
 - **Type:** string
 - **Default:** _none_
@@ -2123,7 +2169,7 @@ Fetch genres and ISBNs from api.audnex.us when opening a book's details. Audnexu
 | Variable | Description | Type | Default |
 |----------|-------------|------|---------|
 | `HARDCOVER_ENABLED` | Enable Hardcover as a metadata provider for book searches | boolean | `false` |
-| `HARDCOVER_API_KEY` | Get your API key from hardcover.app/account/api | string (secret) | _none_ |
+| `HARDCOVER_API_KEY` | Get your API key from hardcover.app/account/api (starts with hc_pat_) | string (secret) | _none_ |
 | `HARDCOVER_DEFAULT_SORT` | Default sort order for Hardcover search results. | string (choice) | `relevance` |
 | `HARDCOVER_EXCLUDE_COMPILATIONS` | Filter out compilations, anthologies, and omnibus editions from search results | boolean | `false` |
 | `HARDCOVER_EXCLUDE_UNRELEASED` | Filter out books with a release year in the future | boolean | `false` |
@@ -2145,7 +2191,7 @@ Enable Hardcover as a metadata provider for book searches
 
 **API Key**
 
-Get your API key from hardcover.app/account/api
+Get your API key from hardcover.app/account/api (starts with hc_pat_)
 
 - **Type:** string (secret)
 - **Default:** _none_
@@ -2260,6 +2306,26 @@ Default sort order for Google Books search results.
 - **Type:** string (choice)
 - **Default:** `relevance`
 - **Options:** `relevance` (Most relevant), `newest` (Newest)
+
+</details>
+
+### Metadata Providers: Moly.hu
+
+| Variable | Description | Type | Default |
+|----------|-------------|------|---------|
+| `MOLY_ENABLED` | Enable Moly.hu as a metadata provider for book searches | boolean | `false` |
+
+<details>
+<summary>Detailed descriptions</summary>
+
+#### `MOLY_ENABLED`
+
+**Enable Moly.hu**
+
+Enable Moly.hu as a metadata provider for book searches
+
+- **Type:** boolean
+- **Default:** `false`
 
 </details>
 
@@ -2430,6 +2496,7 @@ Override destination based on content type metadata.
 | `EXT_BYPASSER_URL` | URL of the external bypasser service (e.g., FlareSolverr). | string | `http://flaresolverr:8191` |
 | `EXT_BYPASSER_PATH` | API path for the external bypasser. | string | `/v1` |
 | `EXT_BYPASSER_TIMEOUT` | Timeout for external bypasser requests in milliseconds. | number | `60000` |
+| `BYPASS_BROWSER_IDLE_TIMEOUT` | How long the bypass helper process may sit unused before it is shut down. Higher keeps more searches fast, lower frees memory sooner. | number | `180` |
 
 <details>
 <summary>Detailed descriptions</summary>
@@ -2484,6 +2551,17 @@ Timeout for external bypasser requests in milliseconds.
 - **Default:** `60000`
 - **Requires restart:** Yes
 - **Constraints:** min: 10000, max: 300000
+
+#### `BYPASS_BROWSER_IDLE_TIMEOUT`
+
+**Bypasser Idle Timeout (seconds)**
+
+How long the bypass helper process may sit unused before it is shut down. Higher keeps more searches fast, lower frees memory sooner.
+
+- **Type:** number
+- **Default:** `180`
+- **Requires restart:** Yes
+- **Constraints:** min: 30, max: 3600
 
 </details>
 

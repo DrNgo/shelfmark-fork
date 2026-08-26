@@ -86,6 +86,7 @@ def test_users_me_edit_context_includes_search_preferences_when_visible(app, use
             "SEARCH_MODE": "universal",
             "METADATA_PROVIDER": "openlibrary",
             "DEFAULT_DISCOVER_TOPIC": ["Science Fiction & Fantasy", "Fantasy"],
+            "BOOK_LANGUAGE": ["de", "en"],
         },
     )
     client = _authed_client_for_user(app, user)
@@ -103,6 +104,10 @@ def test_users_me_edit_context_includes_search_preferences_when_visible(app, use
     assert resp.json["searchPreferences"]["tab"] == "search_mode"
     assert resp.json["searchPreferences"]["effective"]["SEARCH_MODE"]["value"] == "universal"
     assert resp.json["searchPreferences"]["effective"]["SEARCH_MODE"]["source"] == "user_override"
+    assert resp.json["searchPreferences"]["effective"]["BOOK_LANGUAGE"]["value"] == ["de", "en"]
+    assert resp.json["searchPreferences"]["effective"]["BOOK_LANGUAGE"]["source"] == (
+        "user_override"
+    )
     assert "SEARCH_MODE" in resp.json["userOverridableKeys"]
     assert "METADATA_PROVIDER" in resp.json["userOverridableKeys"]
     assert "DEFAULT_DISCOVER_TOPIC" in resp.json["userOverridableKeys"]
@@ -110,6 +115,7 @@ def test_users_me_edit_context_includes_search_preferences_when_visible(app, use
         "source": "user_override",
         "value": ["Science Fiction & Fantasy", "Fantasy"],
     }
+    assert "BOOK_LANGUAGE" in resp.json["userOverridableKeys"]
     assert resp.json["notificationPreferences"] is None
     assert resp.json["userOverridableKeys"] == sorted(resp.json["userOverridableKeys"])
 
@@ -210,6 +216,41 @@ def test_users_me_update_normalizes_visible_topic_setting_and_preserves_existing
     settings = user_db.get_user_settings(user["id"])
     assert settings["DEFAULT_DISCOVER_TOPIC"] == ["Science Fiction & Fantasy", "Fantasy"]
     assert settings["DESTINATION"] == "/books/topic-reader"
+def test_users_me_update_accepts_book_language_when_search_section_visible(app, user_db):
+    user = user_db.create_user(username="alice")
+    client = _authed_client_for_user(app, user)
+
+    with patch("shelfmark.core.self_user_routes.load_active_auth_mode", return_value="builtin"):
+        with patch(
+            "shelfmark.core.self_user_routes.app_config.get",
+            side_effect=_visible_sections_config_get(["search"]),
+        ):
+            resp = client.put(
+                "/api/users/me",
+                json={"settings": {"BOOK_LANGUAGE": ["German", "en"]}},
+            )
+
+    assert resp.status_code == 200
+    assert user_db.get_user_settings(user["id"])["BOOK_LANGUAGE"] == ["de", "en"]
+
+
+def test_users_me_update_rejects_book_language_when_search_section_hidden(app, user_db):
+    user = user_db.create_user(username="alice")
+    client = _authed_client_for_user(app, user)
+
+    with patch("shelfmark.core.self_user_routes.load_active_auth_mode", return_value="builtin"):
+        with patch(
+            "shelfmark.core.self_user_routes.app_config.get",
+            side_effect=_visible_sections_config_get(["delivery"]),
+        ):
+            resp = client.put(
+                "/api/users/me",
+                json={"settings": {"BOOK_LANGUAGE": ["de"]}},
+            )
+
+    assert resp.status_code == 400
+    assert resp.json["error"] == "Some settings are admin-only"
+    assert user_db.get_user_settings(user["id"]) == {}
 
 
 def test_users_me_update_rejects_non_object_settings_payload(app, user_db):

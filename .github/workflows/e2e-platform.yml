@@ -30,7 +30,7 @@ jobs:
       relevant: ${{ steps.filter.outputs.relevant }}
     steps:
       - uses: actions/checkout@v7
-      - uses: dorny/paths-filter@v4.0.2
+      - uses: dorny/paths-filter@v4.0.3
         id: filter
         with:
           filters: |
@@ -60,6 +60,9 @@ jobs:
   e2e:
     needs: select-profiles
     runs-on: ubuntu-latest
+    # A wedged app under test must not burn GitHub's 6h max job limit. A healthy
+    # profile run finishes in ~3-5 min; anything past 25 is hung, not slow.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -69,7 +72,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
       - name: Install uv and Python
-        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.14"
           enable-cache: true
@@ -87,12 +90,14 @@ jobs:
     needs: changes
     if: needs.changes.outputs.relevant == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    # Real Chrome + qBittorrent is the slowest profile; still nowhere near 40 min.
+    timeout-minutes: 40
     name: e2e (full — real Chrome + qBittorrent)
     steps:
       - name: Checkout
         uses: actions/checkout@v7
       - name: Install uv and Python
-        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.14"
           enable-cache: true

@@ -38,7 +38,10 @@ from shelfmark.config.env import (
     string_to_bool,
 )
 from shelfmark.config.security import _migrate_security_settings
-from shelfmark.config.settings import _SUPPORTED_BOOK_LANGUAGE
+from shelfmark.config.settings import (
+    _SUPPORTED_BOOK_LANGUAGE,
+    migrate_audiobook_format_settings,
+)
 from shelfmark.core.activity_view_state_service import ActivityViewStateService
 from shelfmark.core.audible_topics import (
     get_audible_topic_tree as get_audible_topic_tree_service,
@@ -86,8 +89,9 @@ from shelfmark.core.requests_service import (
     sync_delivery_states_from_queue_status,
 )
 from shelfmark.core.user_db import UserDB
-from shelfmark.core.utils import normalize_base_path
+from shelfmark.core.utils import AUDIOBOOK_FORMATS, normalize_base_path
 from shelfmark.download import orchestrator as backend
+from shelfmark.download import warmup
 from shelfmark.library.scheduler import start_library_index_sync
 from shelfmark.metadata_providers.audible_taxonomy import (
     matching_core_topic_key,
@@ -129,7 +133,7 @@ BASE_PATH = normalize_base_path(normalize_optional_text(app_config.get("URL_BASE
 app = Flask(__name__)
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0  # Disable caching
 app.config["APPLICATION_ROOT"] = BASE_PATH or "/"
-wsgi_app = cast(Any, ProxyFix(app.wsgi_app))
+wsgi_app = cast(Any, ProxyFix(app.wsgi_app, x_host=1, x_port=1))
 if BASE_PATH:
     wsgi_app = cast(Any, PrefixMiddleware(wsgi_app, BASE_PATH, bypass_paths={"/api/health"}))
 app.wsgi_app = wsgi_app
@@ -180,6 +184,9 @@ except ImportError as e:
 # Migrate legacy security settings if needed
 _migrate_security_settings()
 
+# Widen audiobook formats for installs that still carry the old m4b/mp3-only default
+migrate_audiobook_format_settings()
+
 # Initialize user database and register multi-user routes
 # If CONFIG_DIR doesn't exist or is read-only, multi-user features will be disabled
 _user_db_path = str(Path(os.environ.get("CONFIG_DIR", "/config")) / "users.db")
@@ -215,6 +222,10 @@ backend.start()
 # Start the Audiobookshelf library index refresher. It idles until
 # Audiobookshelf is both enabled and configured, so this is safe unconditionally.
 start_library_index_sync()
+
+# Pre-solve the direct-download source's protection challenge in the background so the
+# first user search does not pay for a cold Chrome bypass. Never blocks startup.
+warmup.start()
 
 # Rate limiting for login attempts
 # Map usernames to their failed-attempt counters and lockout timestamps.
@@ -335,19 +346,7 @@ def get_auth_mode() -> str:
 
 
 _AUDIOBOOK_CATEGORY_RANGE = (3030, 3049)
-_AUDIOBOOK_FORMAT_HINTS = frozenset(
-    {
-        "m4b",
-        "mp3",
-        "m4a",
-        "flac",
-        "ogg",
-        "wma",
-        "aac",
-        "wav",
-        "opus",
-    }
-)
+_AUDIOBOOK_FORMAT_HINTS = frozenset(AUDIOBOOK_FORMATS)
 
 
 def _contains_audiobook_format_hint(value: Any) -> bool:
@@ -1195,7 +1194,7 @@ def api_config() -> Response | tuple[Response, int]:
             "build_version": BUILD_VERSION,
             "release_version": RELEASE_VERSION,
             "book_languages": _SUPPORTED_BOOK_LANGUAGE,
-            "default_language": app_config.BOOK_LANGUAGE,
+            "default_language": app_config.get("BOOK_LANGUAGE", ["en"], user_id=db_user_id),
             "supported_formats": app_config.SUPPORTED_FORMATS,
             "supported_audiobook_formats": app_config.SUPPORTED_AUDIOBOOK_FORMATS,
             "search_mode": search_mode,
@@ -3088,6 +3087,7 @@ def api_releases() -> Response | tuple[Response, int]:
                     manual_query=query_text if source_query_filters is not None else manual_query,
                     indexers=indexers,
                     source_filters=source_query_filters,
+                    user_id=db_user_id,
                 )
 
                 if plan.source_filters is not None:
@@ -3140,6 +3140,8 @@ def api_releases() -> Response | tuple[Response, int]:
             if languages_param
             else None
         )
+        # Without an explicit filter the plan falls back to this user's default languages.
+        db_user_id = get_session_db_user_id(session)
         # Content type for audiobook vs ebook search
         content_type = request.args.get("content_type", "ebook").strip()
 
