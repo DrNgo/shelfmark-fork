@@ -71,6 +71,27 @@ if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-fork\.[0-9]+$ ]]; then
   exit 1
 fi
 
+# The X.Y.Z half names the UPSTREAM release this fork is built on, and the
+# manifest's pinned tag is the only record of that. Auto-increment above only
+# bumps N, so the first release after merging a newer upstream would silently
+# keep the stale base -- claiming an image is built on 1.3.5 when it contains
+# 1.3.12. Derive the real base from the last non-fork tag reachable from HEAD
+# and refuse the mismatch; a new upstream base restarts the counter at fork.1.
+upstream_base="$(git describe --tags --abbrev=0 --match='v[0-9]*' --exclude='*-fork.*' HEAD 2>/dev/null || true)"
+upstream_base="${upstream_base#v}"
+requested_base="${VERSION%-fork.*}"
+if [[ -z "$upstream_base" ]]; then
+  echo "warning: no upstream release tag reachable from HEAD -- cannot verify the" >&2
+  echo "         '$requested_base' base. Run: git fetch upstream --tags" >&2
+elif [[ "$upstream_base" != "$requested_base" ]]; then
+  echo "error: version '$VERSION' claims upstream $requested_base, but HEAD contains" >&2
+  echo "       upstream $upstream_base. After merging a new upstream release the fork" >&2
+  echo "       counter restarts: $upstream_base-fork.1" >&2
+  echo "       Set ALLOW_UPSTREAM_MISMATCH=1 to override." >&2
+  [[ "${ALLOW_UPSTREAM_MISMATCH:-0}" == 1 ]] || exit 1
+  echo "note: ALLOW_UPSTREAM_MISMATCH=1 -- continuing with the mismatched base." >&2
+fi
+
 TAG="v$VERSION"
 if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
   # A tag whose IMAGE was published is never rebuilt (IfNotPresent-cached
