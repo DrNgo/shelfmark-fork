@@ -1,4 +1,5 @@
 import type { RequestRecord } from '../../types';
+import type { CoverAspect } from '../../utils/coverAspect';
 
 export type ActivityKind = 'download' | 'request';
 
@@ -23,7 +24,7 @@ export interface ActivityItem {
   author: string;
   preview?: string;
   /** Cover art shape hint ('square' for audiobook art); portrait when absent. */
-  coverAspect?: 'portrait' | 'square';
+  coverAspect?: CoverAspect;
 
   metaLine: string;
 

@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { useSearchMode } from '../../contexts/SearchModeContext';
 import type { Book, ButtonStateInfo } from '../../types';
 import { bookSupportsTargets } from '../../utils/bookTargetLoader';
+import { coverObjectPosition, isSquareCover } from '../../utils/coverAspect';
 import { summarizeNameList } from '../../utils/displayFields';
 import { isHeldInFormat } from '../../utils/libraryMatches';
 import type { LibraryMatch } from '../../utils/libraryMatches';
@@ -52,7 +53,7 @@ export const CompactView = ({
   const targetBookId = book.provider_id;
   // Square audiobook art gets a square cover column (width = card height);
   // portrait book covers keep the 2:3 column.
-  const isSquareCover = book.cover_aspect === 'square';
+  const isSquare = isSquareCover(book.cover_aspect);
   const microphoneField = book.display_fields?.find((field) => field.icon === 'microphone');
   let zIndex: number | undefined;
   if (dropdownOpen) {
@@ -99,14 +100,14 @@ export const CompactView = ({
           inset thumbnail; from sm up it stays the flush 180px column. */}
       <div
         className={`relative h-full shrink-0 ${
-          isSquareCover
+          isSquare
             ? 'max-sm:flex max-sm:w-[124px] max-sm:items-center max-sm:justify-center sm:w-[180px]'
             : 'w-[120px]'
         }`}
       >
         <div
           className={
-            isSquareCover
+            isSquare
               ? 'overflow-hidden max-sm:relative max-sm:h-[104px] max-sm:w-[104px] max-sm:rounded-lg max-sm:shadow-sm sm:absolute sm:inset-0 sm:rounded-l-[.75rem]'
               : 'absolute inset-0 overflow-hidden rounded-l-[.75rem]'
           }
@@ -139,7 +140,7 @@ export const CompactView = ({
                   opacity: imageLoaded ? 1 : 0,
                   transition: 'opacity 0.3s ease-in-out',
                   objectFit: 'cover',
-                  objectPosition: isSquareCover ? 'center' : 'top',
+                  objectPosition: coverObjectPosition(book.cover_aspect),
                 }}
                 onLoad={() => setImageLoaded(true)}
                 onError={() => setImageError(true)}

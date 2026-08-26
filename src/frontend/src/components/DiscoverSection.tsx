@@ -5,6 +5,7 @@ import { useDependencyEffect } from '../hooks/useMountEffect';
 import { getDiscoverRow } from '../services/api';
 import type { Book, ButtonStateInfo, ContentType } from '../types';
 import { transformMetadataToBook } from '../utils/bookTransformers';
+import { coverAspectRatio } from '../utils/coverAspect';
 import type { DiscoverRowState } from '../utils/discoverRows';
 import {
   applyRowError,
@@ -56,10 +57,7 @@ const DiscoverTile = ({
       title={book.title}
     >
       {/* Audiobook art is square; portrait would letterbox it (same rule as CardView). */}
-      <div
-        className="relative w-32"
-        style={{ aspectRatio: book.cover_aspect === 'square' ? '1/1' : '2/3' }}
-      >
+      <div className="relative w-32" style={{ aspectRatio: coverAspectRatio(book.cover_aspect) }}>
         {book.preview && !imageError ? (
           <img
             src={book.preview}
@@ -177,7 +175,7 @@ export const DiscoverSection = ({
                   key={i}
                   className="w-32 flex-none animate-pulse rounded-lg bg-(--bg-soft)"
                   // Audible covers are square; match the skeleton so rows don't jump.
-                  style={{ aspectRatio: row.coverAspect === 'square' ? '1/1' : '2/3' }}
+                  style={{ aspectRatio: coverAspectRatio(row.coverAspect) }}
                 />
               ))}
             </div>

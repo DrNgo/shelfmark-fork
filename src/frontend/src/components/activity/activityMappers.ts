@@ -1,4 +1,5 @@
 import type { Book, RequestRecord, StatusData } from '../../types';
+import { toCoverAspect } from '../../utils/coverAspect.js';
 import { STATUS_LABELS, isActiveDownloadStatus } from './activityStyles.js';
 import type { ActivityItem, ActivityVisualStatus } from './activityTypes';
 
@@ -12,10 +13,6 @@ const toText = (value: unknown, fallback: string): string => {
     return value.trim();
   }
   return fallback;
-};
-
-const toCoverAspect = (value: unknown): 'portrait' | 'square' | undefined => {
-  return value === 'square' || value === 'portrait' ? value : undefined;
 };
 
 const toOptionalText = (value: unknown): string | undefined => {

@@ -27,6 +27,8 @@ import {
 } from '../utils/audiobookDestinations';
 import { bookSupportsTargets } from '../utils/bookTargetLoader';
 import { getColorStyleFromHint } from '../utils/colorMaps';
+import type { CoverAspect } from '../utils/coverAspect';
+import { coverObjectPositionClass, isSquareCover } from '../utils/coverAspect';
 import {
   LANGUAGE_OPTION_DEFAULT,
   getLanguageFilterValues,
@@ -220,6 +222,41 @@ function StarRating({ rating, maxRating = 5 }: { rating: number; maxRating?: num
   );
 }
 
+// Modal-header thumbnail. Square art fills the full height; portrait art keeps
+// the narrower 2:3 footprint so the header title does not shift with the shape.
+const HEADER_THUMB_HEIGHT = 68;
+const HEADER_THUMB_PORTRAIT_WIDTH = 46;
+
+const headerThumbWidth = (coverAspect?: CoverAspect): number =>
+  isSquareCover(coverAspect) ? HEADER_THUMB_HEIGHT : HEADER_THUMB_PORTRAIT_WIDTH;
+
+const HeaderThumb = ({ preview, coverAspect }: { preview?: string; coverAspect?: CoverAspect }) => {
+  const width = headerThumbWidth(coverAspect);
+  const boxStyle = { width, height: HEADER_THUMB_HEIGHT, minWidth: width };
+
+  if (!preview) {
+    return (
+      <div
+        className="flex items-center justify-center rounded-sm border border-dashed border-(--border-muted) bg-(--bg)/60 text-[7px] text-zinc-500"
+        style={boxStyle}
+      >
+        No cover
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={preview}
+      alt=""
+      width={width}
+      height={HEADER_THUMB_HEIGHT}
+      className={`rounded-sm object-cover shadow-md ${coverObjectPositionClass(coverAspect)}`}
+      style={boxStyle}
+    />
+  );
+};
+
 // Thumbnail component for release rows
 const ReleaseThumbnail = ({
   preview,
@@ -228,13 +265,13 @@ const ReleaseThumbnail = ({
 }: {
   preview?: string;
   title?: string;
-  coverAspect?: string;
+  coverAspect?: CoverAspect;
 }) => {
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
   // Audiobook art is square; a 2:3 frame would crop its sides (same rule as
   // ListViewThumbnail). Row height stays put either way so rows stay aligned.
-  const isSquare = coverAspect === 'square';
+  const isSquare = isSquareCover(coverAspect);
   const sizeClass = isSquare ? 'h-10 w-10 sm:h-12 sm:w-12' : 'h-10 w-7 sm:h-12 sm:w-8';
 
   if (!preview || imageError) {
@@ -258,7 +295,7 @@ const ReleaseThumbnail = ({
       <img
         src={preview}
         alt={title || 'Book cover'}
-        className={`h-full w-full object-cover ${isSquare ? 'object-center' : 'object-top'}`}
+        className={`h-full w-full object-cover ${coverObjectPositionClass(coverAspect)}`}
         loading="lazy"
         onLoad={() => setImageLoaded(true)}
         onError={() => setImageError(true)}
@@ -276,7 +313,7 @@ const LeadingCell = ({
 }: {
   config?: LeadingCellConfig;
   release: Release;
-  coverAspect?: string;
+  coverAspect?: CoverAspect;
 }) => {
   // Default to thumbnail mode if no config
   const cellType = config?.type || 'thumbnail';
@@ -446,7 +483,7 @@ const ReleaseRow = ({
   columns: ColumnSchema[];
   gridTemplate: string;
   leadingCell?: LeadingCellConfig;
-  coverAspect?: string;
+  coverAspect?: CoverAspect;
   onlineServers?: string[];
   showReleaseSourceLinks: boolean;
   selectionMode?: boolean;
@@ -1293,10 +1330,10 @@ const ReleaseModalSession = ({
   const isInitialLoading =
     hasActiveTab &&
     (currentTabLoading || (releasesBySource[activeTab] === undefined && !currentTabError));
-  const coverAspectClassName = book.cover_aspect === 'square' ? 'object-center' : 'object-top';
+  const coverAspectClassName = coverObjectPositionClass(book.cover_aspect);
 
   let coverSizeClassName = 'h-[120px] w-20';
-  if (book.cover_aspect === 'square') {
+  if (isSquareCover(book.cover_aspect)) {
     coverSizeClassName = book.series_name ? 'h-[144px] w-[144px]' : 'h-[120px] w-[120px]';
   } else if (book.series_name) {
     coverSizeClassName = 'h-[144px] w-24';
@@ -1389,31 +1426,7 @@ const ReleaseModalSession = ({
             {/* Mobile: static thumbnail always visible */}
             {!isRequestMode && (
               <div className="shrink-0 sm:hidden">
-                {book.preview ? (
-                  <img
-                    src={book.preview}
-                    alt=""
-                    width={book.cover_aspect === 'square' ? 68 : 46}
-                    height={68}
-                    className={`rounded-sm object-cover shadow-md ${book.cover_aspect === 'square' ? 'object-center' : 'object-top'}`}
-                    style={{
-                      width: book.cover_aspect === 'square' ? 68 : 46,
-                      height: 68,
-                      minWidth: book.cover_aspect === 'square' ? 68 : 46,
-                    }}
-                  />
-                ) : (
-                  <div
-                    className="flex items-center justify-center rounded-sm border border-dashed border-(--border-muted) bg-(--bg)/60 text-[7px] text-zinc-500"
-                    style={{
-                      width: book.cover_aspect === 'square' ? 68 : 46,
-                      height: 68,
-                      minWidth: book.cover_aspect === 'square' ? 68 : 46,
-                    }}
-                  >
-                    No cover
-                  </div>
-                )}
+                <HeaderThumb preview={book.preview} coverAspect={book.cover_aspect} />
               </div>
             )}
             {/* Desktop: animated thumbnail that appears when scrolling */}
@@ -1421,7 +1434,7 @@ const ReleaseModalSession = ({
               <div
                 className="hidden shrink-0 overflow-hidden transition-[width,margin] duration-300 ease-out sm:block"
                 style={{
-                  width: showHeaderThumb ? (book.cover_aspect === 'square' ? 68 : 46) : 0,
+                  width: showHeaderThumb ? headerThumbWidth(book.cover_aspect) : 0,
                   marginRight: showHeaderThumb ? 0 : -12,
                 }}
               >
@@ -1429,31 +1442,7 @@ const ReleaseModalSession = ({
                   className="transition-opacity duration-300 ease-out"
                   style={{ opacity: showHeaderThumb ? 1 : 0 }}
                 >
-                  {book.preview ? (
-                    <img
-                      src={book.preview}
-                      alt=""
-                      width={book.cover_aspect === 'square' ? 68 : 46}
-                      height={68}
-                      className={`rounded-sm object-cover shadow-md ${book.cover_aspect === 'square' ? 'object-center' : 'object-top'}`}
-                      style={{
-                        width: book.cover_aspect === 'square' ? 68 : 46,
-                        height: 68,
-                        minWidth: book.cover_aspect === 'square' ? 68 : 46,
-                      }}
-                    />
-                  ) : (
-                    <div
-                      className="flex items-center justify-center rounded-sm border border-dashed border-(--border-muted) bg-(--bg)/60 text-[7px] text-zinc-500"
-                      style={{
-                        width: book.cover_aspect === 'square' ? 68 : 46,
-                        height: 68,
-                        minWidth: book.cover_aspect === 'square' ? 68 : 46,
-                      }}
-                    >
-                      No cover
-                    </div>
-                  )}
+                  <HeaderThumb preview={book.preview} coverAspect={book.cover_aspect} />
                 </div>
               </div>
             )}

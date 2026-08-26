@@ -6,6 +6,7 @@ import { useLibraryMatches } from '../hooks/useLibraryMatches';
 import { useMountEffect } from '../hooks/useMountEffect';
 import { getMetadataBookInfo } from '../services/api';
 import type { Book, CreateRequestPayload } from '../types';
+import { coverObjectPositionClass, isSquareCover } from '../utils/coverAspect';
 import {
   isHeldInFormat,
   libraryMatchOwnershipMessage,
@@ -269,16 +270,14 @@ function RequestConfirmationModalSession({
             <div className="flex gap-4">
               <div
                 className={`h-24 shrink-0 overflow-hidden rounded-lg border border-(--border-muted) bg-(--bg) ${
-                  preview.coverAspect === 'square' ? 'w-24' : 'w-16'
+                  isSquareCover(preview.coverAspect) ? 'w-24' : 'w-16'
                 }`}
               >
                 {preview.preview ? (
                   <img
                     src={preview.preview}
                     alt={`${preview.title} cover`}
-                    className={`h-full w-full object-cover ${
-                      preview.coverAspect === 'square' ? 'object-center' : 'object-top'
-                    }`}
+                    className={`h-full w-full object-cover ${coverObjectPositionClass(preview.coverAspect)}`}
                   />
                 ) : (
                   <div className="flex h-full w-full items-center justify-center text-[10px] opacity-60">

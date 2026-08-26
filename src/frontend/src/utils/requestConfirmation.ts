@@ -1,4 +1,6 @@
 import type { Book, CreateRequestPayload } from '../types';
+import type { CoverAspect } from './coverAspect';
+import { isSquareCover } from './coverAspect';
 import { toStringValue } from './objectHelpers';
 
 export const MAX_REQUEST_NOTE_LENGTH = 1000;
@@ -39,7 +41,7 @@ export interface RequestConfirmationPreview {
   year: string;
   seriesLine: string;
   preview: string;
-  coverAspect: 'portrait' | 'square';
+  coverAspect: CoverAspect;
   releaseLine: string;
 }
 
@@ -61,10 +63,10 @@ export const buildRequestConfirmationPreview = (
   } else if (typeof releaseData.preview === 'string') {
     preview = releaseData.preview;
   }
-  const coverAspect =
-    bookData.cover_aspect === 'square' || releaseData.cover_aspect === 'square'
-      ? ('square' as const)
-      : ('portrait' as const);
+  const coverAspect: CoverAspect =
+    isSquareCover(bookData.cover_aspect) || isSquareCover(releaseData.cover_aspect)
+      ? 'square'
+      : 'portrait';
 
   return {
     title: toText(bookData.title ?? releaseData.title, 'Untitled'),

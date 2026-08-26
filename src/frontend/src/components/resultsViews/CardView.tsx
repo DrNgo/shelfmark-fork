@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { useSearchMode } from '../../contexts/SearchModeContext';
 import type { Book, ButtonStateInfo } from '../../types';
 import { bookSupportsTargets } from '../../utils/bookTargetLoader';
+import { coverAspectRatio } from '../../utils/coverAspect';
 import { isHeldInFormat } from '../../utils/libraryMatches';
 import type { LibraryMatch } from '../../utils/libraryMatches';
 import { BookActionButton } from '../BookActionButton';
@@ -89,7 +90,7 @@ export const CardView = ({
     >
       <div
         className="relative w-full max-sm:h-full max-sm:w-[120px] max-sm:shrink-0 sm:w-full"
-        style={{ aspectRatio: book.cover_aspect === 'square' ? '1/1' : '2/3' }}
+        style={{ aspectRatio: coverAspectRatio(book.cover_aspect) }}
       >
         <div className="absolute inset-0 overflow-hidden max-sm:rounded-l-[.75rem] sm:rounded-t-[.75rem]">
           {/* Series position badge */}

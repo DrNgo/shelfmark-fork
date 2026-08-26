@@ -8,6 +8,7 @@ import { useMountEffect } from '../hooks/useMountEffect';
 import type { Book, ButtonStateInfo } from '../types';
 import { isMetadataBook } from '../types';
 import { bookSupportsTargets } from '../utils/bookTargetLoader';
+import { isSquareCover } from '../utils/coverAspect';
 import { isUserCancelledError } from '../utils/errors';
 import { applyInLibraryLock, isHeldInFormat, singleBookLookup } from '../utils/libraryMatches';
 import { BookTargetDropdown } from './BookTargetDropdown';
@@ -168,9 +169,9 @@ export const DetailsModal = ({
   const providerDisplay =
     book.provider_display_name ||
     (book.provider ? book.provider.charAt(0).toUpperCase() + book.provider.slice(1) : '');
-  const isSquareCover = book.cover_aspect === 'square';
+  const isSquare = isSquareCover(book.cover_aspect);
   const artworkMaxHeight = 'calc(90vh - 220px)';
-  const artworkMaxWidth = isSquareCover
+  const artworkMaxWidth = isSquare
     ? 'min(45vw, 400px, calc(90vh - 220px))'
     : 'min(45vw, 520px, calc((90vh - 220px) / 1.6))';
   const additionalInfo =

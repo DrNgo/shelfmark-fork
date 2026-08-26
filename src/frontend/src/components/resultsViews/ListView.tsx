@@ -4,9 +4,11 @@ import { useSearchMode } from '../../contexts/SearchModeContext';
 import type { Book, ButtonStateInfo, DisplayField } from '../../types';
 import { bookSupportsTargets } from '../../utils/bookTargetLoader';
 import { getFormatColor, getLanguageColor } from '../../utils/colorMaps';
+import type { CoverAspect } from '../../utils/coverAspect';
+import { coverObjectPositionClass, isSquareCover } from '../../utils/coverAspect';
+import { summarizeNameList } from '../../utils/displayFields';
 import { isHeldInFormat } from '../../utils/libraryMatches';
 import type { LibraryMatch } from '../../utils/libraryMatches';
-import { summarizeNameList } from '../../utils/displayFields';
 import { isBookRequested } from '../../utils/requestedBooks';
 import { BookActionButton } from '../BookActionButton';
 import { BookTargetDropdown } from '../BookTargetDropdown';
@@ -50,11 +52,11 @@ const ListViewThumbnail = ({
 }: {
   preview?: string;
   title?: string;
-  coverAspect?: string;
+  coverAspect?: CoverAspect;
 }) => {
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
-  const isSquare = coverAspect === 'square';
+  const isSquare = isSquareCover(coverAspect);
   // Square audiobook rows run tall (wrapped narrator lists), so their art gets
   // more room than the 2:3 book thumbs.
   const sizeClass = isSquare ? 'w-16 h-16 sm:w-20 sm:h-20' : 'w-7 h-10 sm:w-10 sm:h-14';
@@ -80,7 +82,7 @@ const ListViewThumbnail = ({
       <img
         src={preview}
         alt={title || 'Book cover'}
-        className={`h-full w-full object-cover ${isSquare ? 'object-center' : 'object-top'}`}
+        className={`h-full w-full object-cover ${coverObjectPositionClass(coverAspect)}`}
         loading="lazy"
         onLoad={() => setImageLoaded(true)}
         onError={() => setImageError(true)}

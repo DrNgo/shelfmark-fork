@@ -9,6 +9,7 @@ import {
   shouldShowDestinationPicker,
 } from '../../utils/audiobookDestinations';
 import { withBasePath } from '../../utils/basePath';
+import { coverObjectPositionClass, isSquareCover } from '../../utils/coverAspect';
 import { singleBookLookup } from '../../utils/libraryMatches';
 import { InLibraryBadge } from '../shared/InLibraryBadge';
 import { Tooltip } from '../shared/Tooltip';
@@ -787,16 +788,14 @@ export const ActivityCard = ({
         {/* Artwork — square audiobook art vs 2:3 book covers */}
         <div
           className={`h-18 shrink-0 overflow-hidden rounded-sm bg-gray-200 dark:bg-gray-700 ${
-            item.coverAspect === 'square' ? 'w-18' : 'w-12'
+            isSquareCover(item.coverAspect) ? 'w-18' : 'w-12'
           }`}
         >
           {item.preview ? (
             <img
               src={item.preview}
               alt={`${item.title} cover`}
-              className={`h-full w-full object-cover ${
-                item.coverAspect === 'square' ? 'object-center' : 'object-top'
-              }`}
+              className={`h-full w-full object-cover ${coverObjectPositionClass(item.coverAspect)}`}
             />
           ) : (
             <BookFallback />

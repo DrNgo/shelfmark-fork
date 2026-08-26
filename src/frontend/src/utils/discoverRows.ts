@@ -1,11 +1,12 @@
 import type { Book, ContentType } from '../types';
+import type { CoverAspect } from './coverAspect';
 import { MEDIA_TYPE_AUDIOBOOK, MEDIA_TYPE_EBOOK } from './mediaType';
 
 export interface DiscoverRowDef {
   key: string;
   label: string;
   provider: string;
-  coverAspect: 'square' | 'portrait';
+  coverAspect: CoverAspect;
 }
 
 export interface DiscoverRowState extends DiscoverRowDef {
