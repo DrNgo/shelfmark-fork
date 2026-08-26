@@ -615,6 +615,9 @@ def _task_to_dict(
         "format": task.format,
         "size": task.size,
         "preview": preview,
+        # Shape of `preview`, not of the release: the activity view frames square
+        # audiobook art differently from 2:3 book covers.
+        "cover_aspect": task.cover_aspect,
         "content_type": task.content_type,
         "source": task.source,
         "source_display_name": get_source_display_name(task.source),

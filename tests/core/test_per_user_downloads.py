@@ -372,3 +372,31 @@ class TestTaskToDictUsername:
 
         result = _task_to_dict(task, current_status=QueueStatus.COMPLETE)
         assert result["status"] == QueueStatus.COMPLETE.value
+
+    def test_task_to_dict_includes_cover_aspect(self):
+        """Square audiobook art must survive to the frontend activity view."""
+        from shelfmark.download.orchestrator import _task_to_dict
+
+        task = DownloadTask(
+            task_id="book1",
+            source="direct_download",
+            title="Test Audiobook",
+            cover_aspect="square",
+            content_type="audiobook",
+        )
+
+        result = _task_to_dict(task)
+        assert result["cover_aspect"] == "square"
+
+    def test_task_to_dict_cover_aspect_none_when_unset(self):
+        """Tasks with no aspect hint report None rather than omitting the key."""
+        from shelfmark.download.orchestrator import _task_to_dict
+
+        task = DownloadTask(
+            task_id="book1",
+            source="direct_download",
+            title="Test Book",
+        )
+
+        result = _task_to_dict(task)
+        assert result["cover_aspect"] is None

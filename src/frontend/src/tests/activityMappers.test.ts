@@ -42,6 +42,24 @@ const makeRequest = (overrides: Partial<RequestRecord> = {}): RequestRecord => (
 });
 
 describe('activityMappers.downloadToActivityItem', () => {
+  it('carries the square aspect hint of audiobook artwork', () => {
+    const item = downloadToActivityItem(
+      makeBook({ cover_aspect: 'square', content_type: 'audiobook' }),
+      'downloading',
+    );
+
+    expect(item.coverAspect).toBe('square');
+  });
+
+  it('does not infer a square aspect from an audiobook content type', () => {
+    // Combined mode downloads the audiobook release of a single book record, so
+    // an audiobook download can carry the ebook record's portrait artwork.
+    // `cover_aspect` describes the image; `content_type` describes the release.
+    const item = downloadToActivityItem(makeBook({ content_type: 'audiobook' }), 'downloading');
+
+    expect(item.coverAspect).toBeUndefined();
+  });
+
   it('maps every download status key to its visual status', () => {
     const statusExpectations: Array<{
       statusKey:
@@ -119,6 +137,20 @@ describe('activityMappers.downloadToActivityItem', () => {
 });
 
 describe('activityMappers.requestToActivityItem', () => {
+  it('takes the cover aspect from the request snapshot, not its content type', () => {
+    const squareArt = requestToActivityItem(
+      makeRequest({
+        content_type: 'audiobook',
+        book_data: { title: 'T', author: 'A', cover_aspect: 'square' },
+      }),
+      'admin',
+    );
+    expect(squareArt.coverAspect).toBe('square');
+
+    const portraitArt = requestToActivityItem(makeRequest({ content_type: 'audiobook' }), 'admin');
+    expect(portraitArt.coverAspect).toBeUndefined();
+  });
+
   it('maps request statuses to visual statuses', () => {
     const statuses: Array<{ input: RequestRecord['status']; expected: string }> = [
       { input: 'pending', expected: 'pending' },
