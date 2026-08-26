@@ -237,9 +237,7 @@ describe('buildLibraryLookupPayload with ISBNs', () => {
   });
 
   it('still drops a book with no title, author, ASIN or ISBN', () => {
-    expect(
-      buildLibraryLookupPayload([{ id: 'b1', title: 'Half a key', author: '' }]),
-    ).toEqual([]);
+    expect(buildLibraryLookupPayload([{ id: 'b1', title: 'Half a key', author: '' }])).toEqual([]);
   });
 
   it('falls back to the surface content type when a book carries none', () => {
@@ -325,8 +323,9 @@ describe('applyInLibraryLock', () => {
       ],
     };
 
-    expect(applyInLibraryLock({ state: 'download', text: 'Download' }, isHeldInFormat(otherOnly)))
-      .toEqual({ state: 'download', text: 'Download' });
+    expect(
+      applyInLibraryLock({ state: 'download', text: 'Download' }, isHeldInFormat(otherOnly)),
+    ).toEqual({ state: 'download', text: 'Download' });
   });
 });
 

@@ -1,6 +1,23 @@
 import type { LibraryMatch } from '../../utils/libraryMatches';
 import { libraryMatchTooltip } from '../../utils/libraryMatches';
 
+/**
+ * Neither a cross-format nor a different-edition holding is the same claim as
+ * owning this edition, and neither locks the button, so they must not wear the
+ * same badge. Muted and hollow reads as "related" where solid reads as "you
+ * have this".
+ */
+const PALETTES = {
+  held: {
+    overlay: 'border-emerald-700 bg-emerald-600 text-white shadow-md',
+    inline: 'border-emerald-600/40 bg-emerald-600/15 text-emerald-700 dark:text-emerald-300',
+  },
+  related: {
+    overlay: 'border-slate-400 bg-slate-700/80 text-slate-100 shadow-md',
+    inline: 'border-slate-400/40 bg-slate-400/15 text-slate-600 dark:text-slate-300',
+  },
+} as const;
+
 interface InLibraryBadgeProps {
   match?: LibraryMatch;
   className?: string;
@@ -32,17 +49,7 @@ export function InLibraryBadge({ match, className = '', variant = 'inline' }: In
   const held = match.items.length > 0;
   const label = libraryMatchTooltip(match);
 
-  // Neither a cross-format nor a different-edition holding is the same claim as
-  // owning this edition, and neither locks the button, so they must not wear the
-  // same badge. Muted and hollow reads as "related" where solid reads as "you
-  // have this".
-  const palette = held
-    ? (variant === 'overlay'
-        ? 'border-emerald-700 bg-emerald-600 text-white shadow-md'
-        : 'border-emerald-600/40 bg-emerald-600/15 text-emerald-700 dark:text-emerald-300')
-    : (variant === 'overlay'
-        ? 'border-slate-400 bg-slate-700/80 text-slate-100 shadow-md'
-        : 'border-slate-400/40 bg-slate-400/15 text-slate-600 dark:text-slate-300');
+  const palette = PALETTES[held ? 'held' : 'related'][variant];
 
   const icon = held ? (
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
