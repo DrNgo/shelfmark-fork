@@ -87,9 +87,7 @@ class TestExplicitNoneIsStillHonoured:
     def test_unrecognised_auth_method_resolves_to_open(self):
         # An unknown string is not a "configured mode whose precondition failed";
         # it is indistinguishable from unset, so it keeps the historical default.
-        assert (
-            determine_auth_mode({"AUTH_METHOD": "wat"}, None, has_local_admin=True) == OPEN_MODE
-        )
+        assert determine_auth_mode({"AUTH_METHOD": "wat"}, None, has_local_admin=True) == OPEN_MODE
 
 
 class TestRuntimeFailureDoesNotOpen:

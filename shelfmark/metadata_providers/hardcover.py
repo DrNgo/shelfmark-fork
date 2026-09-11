@@ -2671,7 +2671,7 @@ class HardcoverProvider(MetadataProvider):
                 continue
             try:
                 parsed.append(self._parse_book(book))
-            except (TypeError, ValueError, AttributeError, KeyError):
+            except TypeError, ValueError, AttributeError, KeyError:
                 logger.debug("Skipping malformed discover record: %s", book.get("id"))
         return parsed
 
@@ -2701,7 +2701,7 @@ class HardcoverProvider(MetadataProvider):
                 },
                 raise_on_error=True,
             )
-        except (RuntimeError, HardcoverGraphQLError):
+        except RuntimeError, HardcoverGraphQLError:
             return None
         if ids_data is None:
             return None
@@ -2717,10 +2717,8 @@ class HardcoverProvider(MetadataProvider):
             DISCOVER_BOOKS_BY_IDS_AUDIO_QUERY if audio_only else DISCOVER_BOOKS_BY_IDS_QUERY
         )
         try:
-            books_data = self._execute_query(
-                hydration_query, {"ids": ids}, raise_on_error=True
-            )
-        except (RuntimeError, HardcoverGraphQLError):
+            books_data = self._execute_query(hydration_query, {"ids": ids}, raise_on_error=True)
+        except RuntimeError, HardcoverGraphQLError:
             return None
         if books_data is None:
             return None
@@ -2751,9 +2749,7 @@ class HardcoverProvider(MetadataProvider):
 
         to_date = datetime.now(UTC).date()
         from_date = to_date - timedelta(days=90)
-        query = (
-            DISCOVER_NEW_RELEASES_AUDIO_QUERY if audio_only else DISCOVER_NEW_RELEASES_QUERY
-        )
+        query = DISCOVER_NEW_RELEASES_AUDIO_QUERY if audio_only else DISCOVER_NEW_RELEASES_QUERY
         try:
             data = self._execute_query(
                 query,
@@ -2764,7 +2760,7 @@ class HardcoverProvider(MetadataProvider):
                 },
                 raise_on_error=True,
             )
-        except (RuntimeError, HardcoverGraphQLError):
+        except RuntimeError, HardcoverGraphQLError:
             return None
         if data is None:
             return None

@@ -190,6 +190,8 @@ def test_validate_user_settings_rejects_unverified_topic_path():
 
     assert "DEFAULT_DISCOVER_TOPIC" not in valid
     assert errors == ["The selected Audible topic is no longer available. Choose another topic."]
+
+
 def test_build_user_preferences_payload_carries_the_language_default():
     """BOOK_LANGUAGE rides along with the other search preferences on its tab."""
     import shelfmark.config.settings  # noqa: F401

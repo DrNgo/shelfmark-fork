@@ -537,6 +537,7 @@ class TestAdminUserUpdateEndpoint:
             "Fantasy",
         ]
         assert settings["DESTINATION"] == "/books/topic-reader"
+
     def test_update_user_settings_normalizes_book_languages(self, admin_client, user_db):
         user = user_db.create_user(username="alice")
 

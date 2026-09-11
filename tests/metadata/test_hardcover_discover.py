@@ -115,8 +115,6 @@ class TestDiscoverNewReleases:
             assert provider.discover_new_releases() == []
 
     def test_audio_only_uses_audio_query(self, provider):
-        with patch.object(
-            provider, "_execute_query", return_value={"books": []}
-        ) as mock_q:
+        with patch.object(provider, "_execute_query", return_value={"books": []}) as mock_q:
             provider.discover_new_releases(audio_only=True)
         assert "default_audio_edition_id" in mock_q.call_args.args[0]

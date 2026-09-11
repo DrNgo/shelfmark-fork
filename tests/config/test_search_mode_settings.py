@@ -88,6 +88,8 @@ def test_on_save_search_mode_skips_topic_validation_when_not_present():
         result = settings_module._on_save_search_mode(values)
 
     assert result == {"error": False, "values": values}
+
+
 def test_book_language_is_user_overridable():
     fields = {field.key: field for field in search_mode_settings() if hasattr(field, "key")}
 

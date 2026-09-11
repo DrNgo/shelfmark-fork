@@ -216,6 +216,8 @@ def test_users_me_update_normalizes_visible_topic_setting_and_preserves_existing
     settings = user_db.get_user_settings(user["id"])
     assert settings["DEFAULT_DISCOVER_TOPIC"] == ["Science Fiction & Fantasy", "Fantasy"]
     assert settings["DESTINATION"] == "/books/topic-reader"
+
+
 def test_users_me_update_accepts_book_language_when_search_section_visible(app, user_db):
     user = user_db.create_user(username="alice")
     client = _authed_client_for_user(app, user)
