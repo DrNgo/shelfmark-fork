@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS download_history (
     format TEXT,
     size TEXT,
     preview TEXT,
+    cover_aspect TEXT,
     content_type TEXT,
     origin TEXT NOT NULL DEFAULT 'direct',
     final_status TEXT NOT NULL,
@@ -207,6 +208,7 @@ class UserDB:
                 self._migrate_request_destination_key(conn)
                 self._migrate_download_history_queued_at(conn)
                 self._migrate_download_history_retry_payload(conn)
+                self._migrate_download_history_cover_aspect(conn)
                 conn.commit()
                 # WAL mode must be changed outside an open transaction.
                 conn.execute("PRAGMA journal_mode=WAL")
@@ -295,6 +297,28 @@ class UserDB:
         column_names = {str(col["name"]) for col in columns}
         if "retry_payload" not in column_names:
             conn.execute("ALTER TABLE download_history ADD COLUMN retry_payload TEXT")
+
+    def _migrate_download_history_cover_aspect(self, conn: sqlite3.Connection) -> None:
+        """Ensure download_history.cover_aspect exists, backfilled from retry payloads.
+
+        Terminal downloads are served to the activity view from this row rather
+        than from the live task, so without the column every finished audiobook
+        reverts to a 2:3 frame. The retry payload has carried the aspect all
+        along, so historical rows can be recovered rather than left wrong.
+        """
+        columns = conn.execute("PRAGMA table_info(download_history)").fetchall()
+        column_names = {str(col["name"]) for col in columns}
+        if "cover_aspect" in column_names:
+            return
+
+        conn.execute("ALTER TABLE download_history ADD COLUMN cover_aspect TEXT")
+        conn.execute(
+            """
+            UPDATE download_history
+            SET cover_aspect = json_extract(retry_payload, '$.cover_aspect')
+            WHERE retry_payload IS NOT NULL AND json_valid(retry_payload)
+            """
+        )
 
     def create_user(
         self,

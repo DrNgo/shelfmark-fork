@@ -1392,6 +1392,7 @@ def _record_download_queued(task_id: str, task: Any) -> None:
             file_format=normalize_optional_text(getattr(task, "format", None)),
             size=normalize_optional_text(getattr(task, "size", None)),
             preview=normalize_optional_text(getattr(task, "preview", None)),
+            cover_aspect=normalize_optional_text(getattr(task, "cover_aspect", None)),
             content_type=normalize_optional_text(getattr(task, "content_type", None)),
             origin=origin,
             retry_payload=backend.serialize_task_for_retry(task),

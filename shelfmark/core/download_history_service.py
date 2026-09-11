@@ -204,6 +204,9 @@ class DownloadHistoryService:
             "format": row.get("format"),
             "size": row.get("size"),
             "preview": row.get("preview"),
+            # Shape of `preview`, not of the release: the activity view frames
+            # square audiobook art differently from 2:3 book covers.
+            "cover_aspect": row.get("cover_aspect"),
             "content_type": row.get("content_type"),
             "source": row.get("source"),
             "source_display_name": row.get("source_display_name"),
@@ -273,6 +276,7 @@ class DownloadHistoryService:
         preview: str | None,
         content_type: str | None,
         origin: str,
+        cover_aspect: str | None = None,
         retry_payload: dict[str, Any] | None = None,
     ) -> None:
         """Record a download at queue time with final_status='active'.
@@ -304,16 +308,17 @@ class DownloadHistoryService:
                 INSERT INTO download_history (
                     task_id, user_id, username, request_id,
                     source, source_display_name,
-                    title, author, format, size, preview, content_type,
+                    title, author, format, size, preview, cover_aspect, content_type,
                     origin, final_status,
                     status_message, download_path, retry_payload,
                     queued_at, terminal_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', NULL, NULL, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', NULL, NULL, ?, ?, ?)
                 ON CONFLICT(task_id) DO UPDATE SET
                     final_status = 'active',
                     status_message = NULL,
                     download_path = NULL,
+                    cover_aspect = COALESCE(excluded.cover_aspect, download_history.cover_aspect),
                     retry_payload = excluded.retry_payload,
                     terminal_at = ?
                 """,
@@ -329,6 +334,7 @@ class DownloadHistoryService:
                         normalize_optional_text(file_format),
                         normalize_optional_text(size),
                         normalize_optional_text(preview),
+                        normalize_optional_text(cover_aspect),
                         normalize_optional_text(content_type),
                         normalized_origin,
                         normalized_retry_payload,

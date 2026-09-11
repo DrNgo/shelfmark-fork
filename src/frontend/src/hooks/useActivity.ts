@@ -13,6 +13,7 @@ import {
   listActivityHistory,
 } from '../services/api';
 import type { Book, RequestRecord, StatusData } from '../types';
+import { toCoverAspect } from '../utils/coverAspect.js';
 import { isRecord } from '../utils/objectHelpers';
 import { getActivityErrorMessage } from './useActivity.helpers.js';
 
@@ -77,6 +78,8 @@ const parseHistoryBook = (value: unknown): Book | null => {
     return null;
   }
 
+  const coverAspect = toCoverAspect(value.cover_aspect);
+
   return {
     id,
     title,
@@ -87,6 +90,7 @@ const parseHistoryBook = (value: unknown): Book | null => {
     ...(typeof value.format === 'string' ? { format: value.format } : {}),
     ...(typeof value.size === 'string' ? { size: value.size } : {}),
     ...(typeof value.preview === 'string' ? { preview: value.preview } : {}),
+    ...(coverAspect ? { cover_aspect: coverAspect } : {}),
     ...(typeof value.download_path === 'string' ? { download_path: value.download_path } : {}),
     ...(typeof value.status_message === 'string' ? { status_message: value.status_message } : {}),
     ...(typeof value.source === 'string' ? { source: value.source } : {}),
@@ -180,7 +184,7 @@ const parseHistoryRequestRecord = (value: unknown): RequestRecord | null => {
   };
 };
 
-const mapHistoryRowToActivityItem = (
+export const mapHistoryRowToActivityItem = (
   row: ActivityHistoryItem,
   viewerRole: 'user' | 'admin',
 ): ActivityItem => {

@@ -197,6 +197,70 @@ class TestUserDBInitialization:
         assert by_username["oidc_user"] == "oidc"
         conn.close()
 
+    def test_initialize_backfills_download_history_cover_aspect_from_retry_payload(self, db_path):
+        """Rows recorded before the column existed already carry the aspect inside
+        their retry payload, so the migration can recover it instead of leaving
+        finished audiobooks framed as 2:3 covers forever."""
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE download_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT UNIQUE NOT NULL,
+                user_id INTEGER,
+                username TEXT,
+                request_id INTEGER,
+                source TEXT NOT NULL,
+                source_display_name TEXT,
+                title TEXT NOT NULL,
+                author TEXT,
+                format TEXT,
+                size TEXT,
+                preview TEXT,
+                content_type TEXT,
+                origin TEXT NOT NULL DEFAULT 'direct',
+                final_status TEXT NOT NULL,
+                status_message TEXT,
+                download_path TEXT,
+                retry_payload TEXT,
+                queued_at TIMESTAMP,
+                terminal_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO download_history
+                (task_id, source, title, origin, final_status, retry_payload)
+            VALUES (?, ?, ?, 'direct', 'complete', ?)
+            """,
+            [
+                ("square-task", "prowlarr", "Audiobook", '{"cover_aspect": "square"}'),
+                ("portrait-task", "prowlarr", "Book", '{"cover_aspect": null}'),
+                ("payload-less-task", "prowlarr", "Legacy", None),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        from shelfmark.core.user_db import UserDB
+
+        db = UserDB(db_path)
+        db.initialize()
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        columns = {str(c["name"]) for c in conn.execute("PRAGMA table_info(download_history)")}
+        assert "cover_aspect" in columns
+
+        rows = conn.execute("SELECT task_id, cover_aspect FROM download_history").fetchall()
+        by_task = {r["task_id"]: r["cover_aspect"] for r in rows}
+        conn.close()
+
+        assert by_task["square-task"] == "square"
+        assert by_task["portrait-task"] is None
+        assert by_task["payload-less-task"] is None
+
     def test_initialize_preserves_existing_users_and_user_settings_rows(self, db_path):
         conn = sqlite3.connect(db_path)
         conn.executescript(

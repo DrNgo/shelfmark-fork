@@ -56,6 +56,7 @@ def _record_terminal_download(
     request_id: int | None = None,
     status_message: str | None = None,
     download_path: str | None = None,
+    cover_aspect: str | None = None,
 ) -> None:
     svc = main_module.download_history_service
     svc.record_download(
@@ -71,6 +72,7 @@ def _record_terminal_download(
         size="1 MB",
         preview=None,
         content_type="ebook",
+        cover_aspect=cover_aspect,
         origin=origin,
     )
     svc.finalize_download(
@@ -1051,6 +1053,32 @@ class TestActivityRoutes:
             response.json["status"]["complete"]["cross-user-expired-task"]["id"]
             == "cross-user-expired-task"
         )
+
+    def test_snapshot_keeps_square_cover_aspect_on_terminal_downloads(self, main_module, client):
+        """A finished audiobook is served from the DB row, not the live task, so the
+        square-art hint has to survive the round trip or the sidebar reframes it 2:3."""
+        user = _create_user(main_module, prefix="reader")
+        _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
+
+        _record_terminal_download(
+            main_module,
+            task_id="audiobook-task-1",
+            user_id=user["id"],
+            username=user["username"],
+            title="Finished Audiobook",
+            author="Some Narrator",
+            cover_aspect="square",
+        )
+
+        with patch.object(main_module, "get_auth_mode", return_value="builtin"):
+            with patch.object(
+                main_module.backend, "queue_status", return_value=_sample_status_payload()
+            ):
+                response = client.get("/api/activity/snapshot")
+
+        assert response.status_code == 200
+        complete = response.json["status"]["complete"]["audiobook-task-1"]
+        assert complete["cover_aspect"] == "square"
 
     def test_snapshot_shows_stale_active_download_as_interrupted_error(self, main_module, client):
         user = _create_user(main_module, prefix="reader")
