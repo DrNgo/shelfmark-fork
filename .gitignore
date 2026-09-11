@@ -246,3 +246,5 @@ node_modules/
 .codegraph/
 SESSION_STATE.md
 .worktrees/
+.superpowers/
+src/frontend/downloaded_files/
