@@ -8,6 +8,7 @@ import { useTabIndicator } from '../hooks/ui/useTabIndicator';
 import { useAudiobookDestinations } from '../hooks/useAudiobookDestinations';
 import { useBodyScrollLock } from '../hooks/useBodyScrollLock';
 import { useEscapeKey } from '../hooks/useEscapeKey';
+import { inspectRelease } from '../services/api';
 import type {
   Book,
   Release,
@@ -19,6 +20,8 @@ import type {
   LeadingCellConfig,
   ContentType,
   RequestPolicyMode,
+  PackBook,
+  PackPlan,
 } from '../types';
 import { isMetadataBook } from '../types';
 import {
@@ -37,7 +40,10 @@ import {
 } from '../utils/languageFilters';
 import { coverAspectForContentType } from '../utils/mediaType';
 import { getNestedValue, toComparableText, toStringValue } from '../utils/objectHelpers';
+import { toBookPlanPayload } from '../utils/packReview';
 import { getReleaseFormats } from '../utils/releaseFormats';
+import { INITIAL_ENTER_ANIMATION, nextEnterAnimation } from '../utils/releaseModalEnterAnimation';
+import { buildReleaseDownloadPayload, type ReleaseDownloadOptions } from '../utils/releasePayload';
 import {
   getBookTitleCandidates,
   getBookAuthorCandidates,
@@ -58,6 +64,7 @@ import { BookTargetDropdown } from './BookTargetDropdown';
 import { Dropdown } from './Dropdown';
 import { DropdownList } from './DropdownList';
 import { LanguageMultiSelect } from './LanguageMultiSelect';
+import { PackReviewPanel } from './PackReviewPanel';
 import { ReleaseCell } from './ReleaseCell';
 
 // Combined mode configuration for the ReleaseModal
@@ -152,7 +159,7 @@ interface ReleaseModalProps {
     book: Book,
     release: Release,
     contentType: ContentType,
-    destinationKey?: string,
+    options?: ReleaseDownloadOptions,
   ) => Promise<void>;
   onRequestRelease?: (book: Book, release: Release, contentType: ContentType) => Promise<void>;
   onRequestBook?: (book: Book, contentType: ContentType) => Promise<void>;
@@ -843,6 +850,15 @@ const ReleaseModalSession = ({
   const [isRequestingBook, setIsRequestingBook] = useState(false);
   const [selectedRelease, setSelectedRelease] = useState<Release | null>(null);
   const [destinationKey, setDestinationKey] = useState('');
+  // Multi-book packs: `multiBook` is the manual header toggle (heuristic split for
+  // releases we can't inspect); `packReview` holds an inspected pack awaiting approval.
+  const [multiBook, setMultiBook] = useState(false);
+  const [packReview, setPackReview] = useState<{
+    release: Release;
+    plan: PackPlan;
+    books: PackBook[];
+  } | null>(null);
+  const [packSubmitting, setPackSubmitting] = useState(false);
   const isCombinedMode = combinedMode != null;
   const combinedPhase = combinedMode?.phase ?? null;
   const combinedStepLabel = combinedMode?.stepLabel ?? '';
@@ -966,6 +982,11 @@ const ReleaseModalSession = ({
     } finally {
       setIsRequestingBook(false);
     }
+    // Kept against the advisory: the body really does read both. `handleClose` is aliased
+    // from the `onClose` prop, which is why the compiler names the source instead, and
+    // dropping `contentType` would let this close over a stale one and request the wrong
+    // format. Correctness first; the cost is an extra callback identity.
+    // oxlint-disable-next-line react/memo-dependencies
   }, [book, onRequestBook, isRequestingBook, contentType, handleClose]);
 
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
@@ -1212,7 +1233,9 @@ const ReleaseModalSession = ({
     const narratorField = book.display_fields.find((f) => f.icon === 'microphone');
 
     return { starField, ratingsField, usersField, pagesField, lengthField, narratorField };
-  }, [book?.display_fields]);
+    // `book`, not `book?.display_fields`: the body reads `book.display_fields`
+    // unguarded after the early return, which is the dependency the compiler infers.
+  }, [book]);
 
   const getReleaseActionMode = useCallback(
     (release: Release): RequestPolicyMode => {
@@ -1293,7 +1316,41 @@ const ReleaseModalSession = ({
 
       const mode = getReleaseActionMode(release);
       if (mode === 'download') {
-        await onDownload(book, release, contentType, chosenDestinationKey);
+        // Look at the release's files before queueing so a whole-series pack can be
+        // reviewed and filed as separate books instead of one mangled item.
+        let inspected = false;
+        let plan: PackPlan | null = null;
+        let reason: string | null = null;
+        try {
+          const inspection = await inspectRelease(
+            buildReleaseDownloadPayload(book, release, contentType, {
+              destinationKey: chosenDestinationKey,
+            }),
+          );
+          inspected = inspection.inspected;
+          plan = inspection.plan;
+          reason = inspection.reason;
+        } catch (error) {
+          console.error('Release inspection failed:', error);
+        }
+        if (inspected && plan?.is_pack) {
+          setPackReview({ release, plan, books: plan.books });
+          return;
+        }
+        // Not a pack (or couldn't be inspected): queue exactly as before. A release we
+        // couldn't inspect might still be an unnoticed pack, so leave a console breadcrumb
+        // rather than interrupting the user; the multi-book toggle forces the split.
+        if (!inspected && !multiBook) {
+          console.warn(
+            `Could not inspect release "${release.title}" before download${
+              reason ? `: ${reason}` : ''
+            }. If it contains several books, enable the multi-book pack toggle.`,
+          );
+        }
+        await onDownload(book, release, contentType, {
+          destinationKey: chosenDestinationKey,
+          ...(multiBook ? { multiBook: true } : {}),
+        });
         handleClose();
         return;
       }
@@ -1313,7 +1370,30 @@ const ReleaseModalSession = ({
       contentType,
       chosenDestinationKey,
       handleClose,
+      multiBook,
     ],
+  );
+
+  const handlePackConfirm = useCallback(
+    async (books: PackBook[] | null): Promise<void> => {
+      if (!book || !packReview) {
+        return;
+      }
+      setPackSubmitting(true);
+      try {
+        await onDownload(book, packReview.release, contentType, {
+          destinationKey: chosenDestinationKey,
+          ...(books ? { multiBook: true, bookPlan: toBookPlanPayload(books) } : {}),
+        });
+        handleClose();
+      } finally {
+        setPackSubmitting(false);
+      }
+    },
+    // Same as handleRequestBook above: the body reads `onDownload`, `contentType` and
+    // `handleClose`, so they stay in the list whatever the advisory infers.
+    // oxlint-disable-next-line react/memo-dependencies
+    [book, packReview, onDownload, contentType, chosenDestinationKey, handleClose],
   );
 
   const titleId = `release-modal-title-${book.id}`;
@@ -1771,6 +1851,37 @@ const ReleaseModalSession = ({
                   </div>
 
                   <div className="flex items-center gap-3 pr-1 pl-2">
+                    {/* Multi-book pack toggle (fallback for releases that can't be inspected) */}
+                    {!isCombinedMode && (
+                      <button
+                        type="button"
+                        onClick={() => setMultiBook((prev) => !prev)}
+                        className={`hover-surface relative rounded-full p-2.5 text-zinc-500 transition-colors dark:text-zinc-400 ${
+                          multiBook ? 'text-emerald-600 dark:text-emerald-400' : ''
+                        }`}
+                        aria-label="Multi-book pack"
+                        aria-pressed={multiBook}
+                        title="Multi-book pack: file each subfolder (or each file) as a separate book. Only needed when a release can't be inspected before download."
+                      >
+                        <svg
+                          className="h-4 w-4"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                          strokeWidth={1.5}
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="M6.429 9.75 2.25 12l4.179 2.25m0-4.5 5.571 3 5.571-3m-11.142 0L2.25 7.5 12 2.25l9.75 5.25-4.179 2.25m0 0L21.75 12l-4.179 2.25m0 0 4.179 2.25L12 21.75 2.25 16.5l4.179-2.25m11.142 0-5.571 3-5.571-3"
+                          />
+                        </svg>
+                        {multiBook && (
+                          <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-emerald-500" />
+                        )}
+                      </button>
+                    )}
+
                     {/* Manual query button */}
                     <button
                       type="button"
@@ -2196,6 +2307,19 @@ const ReleaseModalSession = ({
             {/* Release list content */}
             <div className="min-h-[200px]">
               {(() => {
+                if (packReview) {
+                  return (
+                    <PackReviewPanel
+                      release={packReview.release}
+                      plan={packReview.plan}
+                      books={packReview.books}
+                      onChange={(books) => setPackReview({ ...packReview, books })}
+                      onBack={() => setPackReview(null)}
+                      onConfirm={handlePackConfirm}
+                      isSubmitting={packSubmitting}
+                    />
+                  );
+                }
                 if (sourcesLoading) {
                   return <ReleaseSkeleton />;
                 }
@@ -2412,7 +2536,7 @@ const ReleaseModalSession = ({
 
 export const ReleaseModal = ({ book, onClose, ...rest }: ReleaseModalProps) => {
   const [isClosing, setIsClosing] = useState(false);
-  const previousSessionKeyRef = useRef<string | null>(null);
+  const [enterAnimation, setEnterAnimation] = useState(INITIAL_ENTER_ANIMATION);
 
   const handleClose = useCallback(() => {
     setIsClosing(true);
@@ -2436,12 +2560,13 @@ export const ReleaseModal = ({ book, onClose, ...rest }: ReleaseModalProps) => {
       ].join('|')
     : null;
 
-  const animateEnter =
-    !rest.combinedMode ||
-    previousSessionKeyRef.current === null ||
-    previousSessionKeyRef.current === sessionKey;
-
-  previousSessionKeyRef.current = sessionKey;
+  // Decided once per session key and held for that session's lifetime, so a
+  // re-render mid-session cannot restart the enter animation.
+  const nextAnimation = nextEnterAnimation(enterAnimation, sessionKey, rest.combinedMode != null);
+  if (nextAnimation !== enterAnimation) {
+    setEnterAnimation(nextAnimation);
+  }
+  const animateEnter = nextAnimation.animate;
 
   if (!book && !isClosing) return null;
   if (!book || !sessionKey) return null;

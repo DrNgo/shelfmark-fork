@@ -235,8 +235,10 @@ pyrightconfig.json
 /.local/
 *.local.*
 # Keep Claude Code runtime state local while allowing repository skills to be shared.
+# (Upstream ignores AGENTS.md too; the fork tracks it deliberately.)
 .claude/*
 !.claude/skills/
+CLAUDE.md
 .nvmrc
 .playwright-mcp/
 frontend-dist/
