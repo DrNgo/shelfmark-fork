@@ -95,11 +95,18 @@ approval and a verified field-specific write protocol (see *Writes*).
 `--apply` executes decisions recorded in a named report rather than re-scoring, so
 what was reviewed is what is written.
 
-### Dedicated write account with full library visibility
+### Reuse Shelfmark's Grimmory account
 
-The tool authenticates as a new Grimmory account (`shelfmark-tagger`, metadata-edit
-permission, **assigned to every library**). The existing `shelfmark` account stays
-read-only. Each run checks coverage (see *Inventory*).
+The tool authenticates with the credentials Shelfmark already holds
+(`BOOKLORE_USERNAME` / `BOOKLORE_PASSWORD`, the `shelfmark` account, id 2). On
+2026-10-06 that account was granted `canEditMetadata` + `canBulkLockUnlockMetadata`
+on top of `canUpload` + `canManageLibrary`; it is assigned all three libraries.
+
+Rejected: a dedicated `shelfmark-tagger` account. It would have kept the password
+Shelfmark stores at rest (`/config/plugins/grimmory.json`) unable to rewrite metadata,
+but the user preferred one credential over a second secret to manage. Accepted
+consequence: that stored password can now rewrite and lock metadata on every book.
+Each run checks coverage (see *Inventory*).
 
 ### Notifications reuse Shelfmark's Apprise routes
 
@@ -300,8 +307,8 @@ python -m shelfmark.tools.grimmory_tagger apply --report REPORT_ID
 - `backfill` never writes to Grimmory. It prints the report ID and paths.
 - `apply` requires an explicit report ID. It writes `accepted` rows, plus `review`
   rows that have a recorded decision. It never scores and never reads new queue entries.
-- Credentials: `GRIMMORY_TAGGER_USERNAME`, `GRIMMORY_TAGGER_PASSWORD` (env). Grimmory
-  host from Shelfmark's `BOOKLORE_HOST`; Hardcover token from Shelfmark's config.
+- Credentials: Shelfmark's own config — `BOOKLORE_HOST`, `BOOKLORE_USERNAME`,
+  `BOOKLORE_PASSWORD` for Grimmory, and the Hardcover token. No new secret.
 - Exit codes: `0` completed (per-book problems live in the report); non-zero only for
   setup failures — bad credentials, missing permission, Grimmory unreachable,
   coverage regression.
@@ -402,7 +409,7 @@ window is one request; the post-write verification reports any mismatch.
 
 ## Implementation Order (for the plan)
 
-1. **Live probe** with the new `shelfmark-tagger` account. Read-only against Overlord
+1. **Live probe** with the `shelfmark` account. Read-only against Overlord
    vol 1 and 3 and a Fiction title: capture `prospective` SSE output and Hardcover
    edition data; record per-provider fields. Then **one write experiment on a
    throwaway test book** to determine `PUT` semantics for absent fields, `clearFlags`,
@@ -418,9 +425,9 @@ window is one request; the post-write verification reports any mismatch.
 
 ## Operational Follow-ups (not code)
 
-- Create the `shelfmark-tagger` Grimmory account (edit-metadata permission, assigned
-  to all three libraries); store its credentials as a SealedSecret in fleet-infra,
-  exposed to the Shelfmark pod.
+- ~~Grant the account metadata permissions~~ — done 2026-10-06 (`shelfmark` now
+  holds `canEditMetadata` + `canBulkLockUnlockMetadata`; recorded in fleet-infra
+  `clusters/my-cluster/media/CLAUDE.md`).
 - Put `Hardcover` first in Grimmory's default fetch priority, so manual and future
   bulk fetches populate Hardcover IDs too.
 - Create a throwaway test book for the step-1 write experiment.
