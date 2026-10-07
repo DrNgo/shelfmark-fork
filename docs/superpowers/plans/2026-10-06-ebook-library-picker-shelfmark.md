@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** An admin picks the Grimmory library an ebook goes into (release window, approve panel, combined mode); Shelfmark verifies that choice fresh, uploads straight there, and hands the custom-script hook the book's identity and what was uploaded.
+**Goal:** An admin picks the Grimmory library an ebook goes into (release window, approve panel, combined mode); Shelfmark verifies that choice fresh, uploads straight there, and hands the custom-script hook the book's identity and what was uploaded — without a hook failure ever failing the upload, and without any non-admin path being able to choose a library.
 
 **Architecture:** An ebook choice travels as the existing `destination_key`, spelled `grimmory:<libraryId>:<pathId>`. One endpoint, `GET /api/download-destinations?content_type=…`, lists choices for both formats (the ebook list comes from the cached Grimmory library list and is display-only); `build_booklore_config()` re-checks an explicit key against a fresh `GET /api/v1/libraries` and fails the task before upload if it cannot. `DownloadTask` gains `provider`, `provider_id`, `isbn_13`, `asin`, normalized once at queue time and carried by every producer (direct download, requests, fulfil, retry), and the version-1 hook payload gains those plus `uploaded_files` and the upload window.
 
 **Tech Stack:** Python 3.14 (Flask, `requests`, SQLite), pytest, Ruff, BasedPyright, vulture; React 19 + TypeScript, vitest, oxlint, oxfmt, knip.
 
-**Spec:** `docs/superpowers/specs/2026-10-06-ebook-library-picker-ingest-design.md` — sections 1, 2 and 3 only. Read it before any task. Sections 4–5 (dispatcher, tagger hook, manifest) are Plan B in `fleet-infra` and are **out of scope here**.
+**Spec:** `docs/superpowers/specs/2026-10-06-ebook-library-picker-ingest-design.md` — sections 1, 2 and 3 only (including the 2026-10-07 revisions: request-key authorization, best-effort Grimmory post-upload hook, browser never blanking an ebook pick, empty lists not cached, `978`/`979` ISBN prefix). Read it before any task. Sections 4–5 (dispatcher, tagger hook, manifest) are Plan B in `fleet-infra` and are **out of scope here**.
 
 ## Global Constraints
 
@@ -18,9 +18,12 @@
 - `GET /api/download-destinations?content_type=ebook|audiobook` returns `{"destinations": [{"key": str, "name": str}], "default_name": str}`; `default_name` is `""` for both types. Admin-only, open in auth mode `none`; a missing or unknown `content_type` is a 400. `/api/audiobook-destinations` is removed.
 - Ebook option names: the library name, or `"<library> — <path>"` (em dash) when the library has more than one path; ordered by library name, then path. Not `booklore` output mode, or Grimmory unreachable → `[]`.
 - Picker blank-option label: `Default (<default_name>)` when the name is known, else `Default <format> destination` (`Default ebook destination` / `Default audiobook destination`).
-- Authorization is unchanged: `authorize_destination_key()` (`shelfmark/main.py:1101`) still strips a non-admin's key; auth mode `none` keeps it. Do not edit that function.
+- Authorization: `authorize_destination_key()` (`shelfmark/main.py:1101`) still strips a non-admin's key on `/api/releases/download`; auth mode `none` keeps it. Do not edit that function. The same guard now also runs on `/api/requests` and `/api/requests/batch` submissions (both the stored-request and the download-policy path, top-level and `extra` keys), and fulfilment strips any key stored inside `release_data` so only the approving admin's explicit key travels (Task 6).
+- An explicit **ebook** pick is never blanked in the browser — not by display-list membership, a list still loading, or a hidden picker. It is sent unchanged and the server's fresh check decides (fail closed). Audiobooks keep today's fallback (a key not in the list, or a hidden picker, sends nothing).
+- The frontend never caches an empty destinations list (the server answers `200 []` while Grimmory is down).
+- After a successful Grimmory upload, the `post_upload` custom script is **best-effort**: a missing or non-executable script, a timeout, a non-zero exit or an exception while building the payload is logged as a warning and the task still completes as uploaded. Folder and email outputs keep failing the task on a script failure, as today.
 - Combined mode: each leg carries only its own key (`ebookDestinationKey` / `audiobookDestinationKey`); an ebook key is never sent on an audiobook leg.
-- `provider` and `provider_id` travel as a pair: one without the other drops both. A request's identity never mixes with a release's different provider. ISBN is canonical ISBN-13 or dropped; strings trimmed or `None`.
+- `provider` and `provider_id` travel as a pair: one without the other drops both. A request's identity never mixes with a release's different provider — including a release that names another provider but lost its id. ISBN is canonical ISBN-13 with a `978`/`979` prefix, or dropped; strings trimmed or `None`.
 - Hook payload stays `"version": 1`; fields are only added: `task.provider`, `task.provider_id`, `task.isbn_13`, `task.asin` (str or null); `output.details.booklore.uploaded_files: [{"name": str, "size_bytes": int, "response": object|null}]`, `upload_started_at`, `upload_finished_at` (ISO-8601 UTC strings). Existing fields unchanged; `library_id`/`path_id` reflect the target actually used. This is the contract Plan B consumes — do not rename anything.
 - Python: bare `except A, B:` (PEP 758) is valid Python 3.14 here — do not "fix" it.
 - Gates before each commit: the task's own test command plus `uv run ruff check shelfmark tests && uv run ruff format --check shelfmark tests` (backend) or `cd src/frontend && npm run typecheck && npm run lint && npm run format:check && npm run test:unit` (frontend). Before release: `make python-checks python-test frontend-checks frontend-test`.
@@ -30,24 +33,30 @@
 ## Review Focus
 
 1. **An ebook key in the wrong shape** — an audiobook key (`lib-kids`), padding, upper case, Unicode digits (`grimmory:³:4`), a missing part — is malformed and fails the upload; it is never trimmed into validity or re-routed. Test: `TestKeyFormat.test_rejects_anything_else` in Task 1.
-2. **Junk ISBNs from metadata** — a bad check digit, `"N/A"`, a zero-filled placeholder, a number or a boolean — are dropped, never forwarded as an ISBN. Test: `TestNormalizeBookIdentity.test_an_invalid_isbn_is_dropped` in Task 4.
-3. **An upload response that is JSON but not an object** (`"OK"`, a list, `null`, a number) gives `response: null`, never a crash or a non-object in the payload. Test: `test_booklore_upload_file_returns_none_for_json_that_is_not_an_object` in Task 6.
+2. **Junk ISBNs from metadata** — a bad check digit, a checksum-valid EAN without the `978`/`979` prefix (`1234567890128`), `"N/A"`, a zero-filled placeholder, a number or a boolean — are dropped, never forwarded as an ISBN. Test: `TestNormalizeBookIdentity.test_an_invalid_isbn_is_dropped` in Task 4.
+3. **An upload response that is JSON but not an object** (`"OK"`, a list, `null`, a number) gives `response: null`, never a crash or a non-object in the payload. Test: `test_booklore_upload_file_returns_none_for_json_that_is_not_an_object` in Task 7.
 4. **Grimmory returning ids as strings, or junk rows** in `GET /api/v1/libraries` — verification still matches `"3"` to `3`, and junk never matches. Test: `TestLibraryPathExists.test_string_ids_from_the_api_still_match` in Task 1.
 5. **`content_type` spelled differently** (`Ebook`, ` ebook`, `AUDIOBOOK`) is a 400, not silently treated as one of the formats. Test: `TestContentTypeParameter.test_content_type_is_case_sensitive_and_untrimmed` in Task 3.
 
 ## Rulings on spec gaps
 
-Where the spec is silent, this plan decides as follows (the reviewer should check these, not rediscover them):
+Where the spec is silent, this plan decides as follows (revised after a Codex review of the first version; the spec was updated where a finding changed one of its statements) (the reviewer should check these, not rediscover them):
 
 - **Endpoint home.** The route moves to a new `shelfmark/core/destination_routes.py`; `shelfmark/audiobookshelf/routes.py` held only the old endpoint and is deleted (its tests move to `tests/core/test_destination_routes.py`).
 - **Auth before validation.** A non-admin gets 403 even with a bad `content_type`; `content_type` must match `ebook`/`audiobook` exactly.
-- **Display cache lifetime.** The ebook list reuses the settings-options cache as-is, keyed by credentials: a library added in Grimmory shows after a credential change, a "Test connection" in settings, or a restart. Uploads never depend on it.
+- **Display cache lifetime.** The ebook list reuses the settings-options cache as-is, keyed by credentials: a library added in Grimmory shows after a credential change, a "Test connection" in settings, or a restart. Uploads never depend on it. (A failed server-side read is never cached, and neither is an empty list in the browser.)
 - **Where verification happens.** Inside `build_booklore_config()` (as the spec says), with its own login, so a bad key fails before staging; the upload logs in again as today.
 - **`response`.** Only a JSON *object* body is kept; any other JSON or a non-JSON body is `null` (the contract says `object|null`). `size_bytes` is the prepared file's on-disk size just before its upload. Timestamps are `datetime.now(UTC).isoformat()` (`+00:00` offset).
 - **Identity sources.** `queue_release` reads identity from top-level release fields only, never from a release source's `extra`. A `manual` provider carries no provider identity (frontend and backend). The ISBN is read from `isbn_13`, else `isbn_10`.
 - **Fulfil fill rule.** A release with a complete provider pair keeps it and takes ISBN/ASIN from `book_data` only when `book_data` names the same pair (provider compared case-insensitively); a release without a complete pair takes `book_data`'s pair whole, plus any missing ISBN/ASIN.
 - **Direct-browse mode** (`buildDirectRequestPayload`, `buildReleaseDataFromDirectBook`) is not in the spec's producer table and is left unchanged.
-- **Combined Next/Back** carry the picker's *validated* key (`chosenDestinationKey`), and restore the stored key of the phase being entered.
+- **Combined Next/Back** carry the key the phase would send (`chosenDestinationKey`, from `destinationKeyToSend`): for an ebook that is the raw nonblank pick even while the list loads; for an audiobook only a listed key with the picker shown. Each restores the stored key of the phase being entered.
+- **Unlisted ebook pick in the UI.** The picker stays visible while an ebook key is selected, and a key missing from the list is shown as its own option, `"<key> (not in the current list)"`, so the admin can see and clear it.
+- **Request-submission keys.** The actor's own admin flag decides (an admin may still submit a key on a download-policy request); keys stored in a pending request are never used — fulfilment sends only the approval's explicit key.
+- **Fill rule refinement.** A release that names a provider but has no id, against `book_data` naming a *different* provider, drops its half pair and imports nothing; with the same provider (case-insensitive) it takes `book_data`'s pair and hints. With no `book_data` identity nothing is adopted.
+- **ISBN prefix.** `normalize_isbn` lives in `shelfmark/library/matching.py` and is shared with library matching and the Grimmory index provider. The `978`/`979` rule is added there, so a non-ISBN EAN also stops making a library match key — strictly safer under that module's "a false 'owned' is worse than a missed badge" rule; every existing library test fixture is `978`/`979` and stays green.
+- **Best-effort hook scope.** Only `_post_process_booklore` changes (new `_run_post_upload_hook`); `maybe_run_custom_script` and the folder/email outputs are untouched. Script "error" statuses are captured and logged instead of being forwarded, so the task never flashes an error after a good upload. This reverses the spec's earlier "declined: Shelfmark-side best-effort policy" for this one path; the spec is updated to match.
+- **Empty-list caching.** An empty list resolves normally but is evicted from the cache, so the next picker mount retries.
 - **Hook shape.** `useDownloadDestinations(contentType | null)` returns `{ destinations, defaultName }`; `null` skips the lookup, and a list loaded for the other format is never returned.
 
 ## File Structure
@@ -55,7 +64,7 @@ Where the spec is silent, this plan decides as follows (the reviewer should chec
 | File | Change |
 |---|---|
 | `shelfmark/grimmory/destinations.py` | **new** — key format/parse, `library_path_exists`, `build_destination_options` (pure) |
-| `shelfmark/download/outputs/booklore.py` | explicit-key verification in `build_booklore_config`; upload returns the JSON body; `uploaded_files` + upload window in the hook details |
+| `shelfmark/download/outputs/booklore.py` | explicit-key verification in `build_booklore_config`; upload returns the JSON body; `uploaded_files` + upload window in the hook details; best-effort `_run_post_upload_hook` |
 | `shelfmark/config/booklore_settings.py` | cache also holds ebook picker options; `get_booklore_destination_options()` |
 | `shelfmark/core/destination_routes.py` | **new** — `GET /api/download-destinations` |
 | `shelfmark/audiobookshelf/routes.py` | **deleted** (held only `/api/audiobook-destinations`) |
@@ -63,7 +72,9 @@ Where the spec is silent, this plan decides as follows (the reviewer should chec
 | `shelfmark/core/book_identity.py` | **new** — `BookIdentity`, `normalize_book_identity`, `fill_identity_from_book_data` |
 | `shelfmark/core/models.py` | `DownloadTask.provider/provider_id/isbn_13/asin` |
 | `shelfmark/download/orchestrator.py` | identity in `queue_release`, retry serialize/restore |
-| `shelfmark/core/requests_service.py` | `fulfil_request` fills identity from `book_data` |
+| `shelfmark/core/requests_service.py` | `fulfil_request` fills identity from `book_data`; strips keys stored inside `release_data` |
+| `shelfmark/core/request_routes.py` | request submissions run `authorize_destination_key` on `release_data` |
+| `shelfmark/library/matching.py` | `normalize_isbn` requires a `978`/`979` prefix for 13 digits |
 | `shelfmark/download/postprocess/custom_script.py` | four identity fields in `task` |
 | `src/frontend/src/utils/combinedSelection.ts` | **new** — combined-mode state type and pure transitions with per-phase keys |
 | `src/frontend/src/App.tsx` | uses the combined-selection helpers; passes staged keys to the modal |
@@ -71,13 +82,14 @@ Where the spec is silent, this plan decides as follows (the reviewer should chec
 | `src/frontend/src/utils/downloadDestinations.ts` | **renamed** from `audiobookDestinations.ts`; generic helpers, label, loader |
 | `src/frontend/src/hooks/useDownloadDestinations.ts` | **renamed** from `useAudiobookDestinations.ts`; per-type cache |
 | `src/frontend/src/services/api.ts` | `getDownloadDestinations(contentType)`; identity on `DownloadReleasePayload` |
-| `src/frontend/src/components/activity/ActivityCard.tsx` | approve-panel picker for ebook requests |
+| `src/frontend/src/components/activity/ActivityCard.tsx` | approve-panel picker for ebook requests; every download action carries the pick |
+| `src/frontend/src/components/activity/reviewApproval.ts` | **new** — `RequestApproveOptions`, `reviewApproveOptions(action, key)` |
 | `src/frontend/src/utils/bookIdentity.ts` | **new** — `bookIdentityFields(book)` |
 | `src/frontend/src/utils/{releasePayload,requestPayload,requestFulfil}.ts` | identity in every builder |
-| Backend tests | `tests/grimmory/test_destinations.py` (new), `tests/core/test_booklore_multiuser.py`, `tests/core/test_booklore_target.py` (new), `tests/core/test_destination_routes.py` (new, replaces `tests/audiobookshelf/test_routes.py`), `tests/core/test_auth_mode_fail_closed.py` (docstring), `tests/core/test_book_identity.py` (new), `tests/download/test_orchestrator_identity.py` (new), `tests/core/test_request_identity.py` (new), `tests/core/test_download_api_guardrails.py`, `tests/audiobookshelf/test_routing.py`, `tests/core/test_booklore_payload.py` (new), `tests/core/test_booklore_upload.py`, `tests/core/test_download_processing.py` |
-| Frontend tests | `src/tests/combinedSelection.test.ts` (new), `src/tests/downloadDestinations.test.ts` (renamed from `audiobookDestinations.test.ts`), `src/tests/releasePayload.test.ts`, `src/tests/requestPayload.test.ts`, `src/tests/requestFulfil.test.ts` |
+| Backend tests | `tests/grimmory/test_destinations.py` (new), `tests/core/test_booklore_multiuser.py`, `tests/core/test_booklore_target.py` (new), `tests/core/test_destination_routes.py` (new, replaces `tests/audiobookshelf/test_routes.py`), `tests/core/test_auth_mode_fail_closed.py` (docstring), `tests/core/test_book_identity.py` (new), `tests/download/test_orchestrator_identity.py` (new), `tests/library/test_matching.py`, `tests/core/test_request_identity.py` (new), `tests/core/test_request_destination_authorization.py` (new), `tests/core/test_download_api_guardrails.py`, `tests/audiobookshelf/test_routing.py`, `tests/core/test_booklore_payload.py` (new), `tests/core/test_booklore_upload.py`, `tests/core/test_download_processing.py` |
+| Frontend tests | `src/tests/combinedSelection.test.ts` (new), `src/tests/downloadDestinations.test.ts` (renamed from `audiobookDestinations.test.ts`), `src/tests/reviewApproval.test.ts` (new), `src/tests/releasePayload.test.ts`, `src/tests/requestPayload.test.ts`, `src/tests/requestFulfil.test.ts` |
 
-Task order note: the combined-mode refactor (Task 7) lands **before** the ebook picker is switched on (Task 8). The other way round, an ebook key picked on the last combined step would be written into today's single `destinationKey` and sent on the audiobook leg for one commit.
+Task order note: the combined-mode refactor (Task 8) lands **before** the ebook picker is switched on (Task 9). The other way round, an ebook key picked on the last combined step would be written into today's single `destinationKey` and sent on the audiobook leg for one commit.
 
 ---
 ### Task 1: Grimmory destination keys and picker options (pure)
@@ -664,7 +676,7 @@ def test_bookdrop_mode_ignores_the_key(tmp_path):
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `uv run pytest tests/core/test_booklore_multiuser.py tests/core/test_booklore_target.py -q`
-Expected: FAIL — `AttributeError: module 'shelfmark.download.outputs.booklore' has no attribute 'booklore_list_libraries'` (every new test errors in its patch/fixture; the seven existing override tests still pass).
+Expected: FAIL — `AttributeError: module 'shelfmark.download.outputs.booklore' has no attribute 'booklore_list_libraries'` in every new test's patch or fixture (9 errors in `TestExplicitDestinationKey`, 6 failures in `test_booklore_target.py`), plus `TypeError: build_booklore_config() got an unexpected keyword argument 'destination_key'` in `test_grimmory_down_fails_instead_of_using_the_default` (it patches only the login). The seven existing override tests still pass.
 
 - [ ] **Step 3: Implement in `shelfmark/download/outputs/booklore.py`**
 
@@ -1336,11 +1348,11 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 **Files:**
 - Create: `shelfmark/core/book_identity.py`
-- Modify: `shelfmark/core/models.py` (`DownloadTask`, after `destination_key`), `shelfmark/download/orchestrator.py` (import; `queue_release`; `serialize_task_for_retry`; `_restore_task_from_retry_payload`)
-- Test: `tests/core/test_book_identity.py` (new), `tests/download/test_orchestrator_identity.py` (new)
+- Modify: `shelfmark/core/models.py` (`DownloadTask`, after `destination_key`), `shelfmark/download/orchestrator.py` (import; `queue_release`; `serialize_task_for_retry`; `_restore_task_from_retry_payload`), `shelfmark/library/matching.py` (`normalize_isbn`: `978`/`979` prefix)
+- Test: `tests/core/test_book_identity.py` (new), `tests/download/test_orchestrator_identity.py` (new), `tests/library/test_matching.py` (one new test)
 
 **Interfaces:**
-- Consumes: `normalize_isbn(value: object) -> str` from `shelfmark.library.matching` (returns canonical ISBN-13 or `""`); `normalize_optional_text` from `shelfmark.core.request_helpers`.
+- Consumes: `normalize_isbn(value: object) -> str` from `shelfmark.library.matching` (returns canonical ISBN-13 or `""`; shared with library matching and the Grimmory index provider — this task tightens it to require a `978`/`979` prefix on 13-digit input); `normalize_optional_text` from `shelfmark.core.request_helpers`.
 - Produces: `@dataclass(frozen=True) class BookIdentity` with `provider`, `provider_id`, `isbn_13`, `asin` (all `str | None = None`) and `as_dict() -> dict[str, str | None]`; `normalize_book_identity(data: Mapping[str, Any]) -> BookIdentity`. `DownloadTask` gains `provider`, `provider_id`, `isbn_13`, `asin: str | None = None`. `queue_release` fills them from top-level release fields; the retry payload carries the four keys and restore re-normalizes them.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1409,7 +1421,15 @@ class TestNormalizeBookIdentity:
 
     def test_an_invalid_isbn_is_dropped(self):
         # Review Focus #2: a bad check digit, a placeholder, junk and non-strings.
-        for value in ("9780316005143", "0000000000", "N/A", 9780316005142, True, ""):
+        for value in (
+            "9780316005143",
+            "1234567890128",  # checksum-valid EAN, but not a 978/979 ISBN
+            "0000000000",
+            "N/A",
+            9780316005142,
+            True,
+            "",
+        ):
             assert normalize_book_identity({"isbn_13": value}).isbn_13 is None, repr(value)
 
     def test_a_bad_isbn_13_falls_back_to_a_valid_isbn_10(self):
@@ -1567,10 +1587,20 @@ def test_restart_restore_requeues_with_the_identity(monkeypatch):
     assert _identity(queue.add.call_args.args[0]) == IDENTITY
 ```
 
+In `tests/library/test_matching.py`, class `TestNormalizeIsbn`, add after `test_rejects_zero_filled_placeholders`:
+
+```python
+    def test_rejects_a_checksum_valid_ean_that_is_not_an_isbn(self):
+        # Only the 978/979 "Bookland" prefixes are ISBNs. Any other 13-digit EAN
+        # can pass the same check digit, and an exact match on it is a false yes.
+        assert normalize_isbn("1234567890128") == ""
+        assert isbn_match_key("1234567890128") == ""
+```
+
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `uv run pytest tests/core/test_book_identity.py tests/download/test_orchestrator_identity.py -q`
-Expected: FAIL — `ModuleNotFoundError: No module named 'shelfmark.core.book_identity'` for the first file, and `AttributeError: 'DownloadTask' object has no attribute 'provider'` / `TypeError: DownloadTask.__init__() got an unexpected keyword argument 'provider'` across the second.
+Run: `uv run pytest tests/core/test_book_identity.py tests/download/test_orchestrator_identity.py tests/library/test_matching.py -q`
+Expected: FAIL — `ModuleNotFoundError: No module named 'shelfmark.core.book_identity'` for the first file; `AttributeError: 'DownloadTask' object has no attribute 'provider'` (6) / `TypeError: DownloadTask.__init__() got an unexpected keyword argument 'provider'` (3) across the second; and `AssertionError: assert '1234567890128' == ''` in `test_rejects_a_checksum_valid_ean_that_is_not_an_isbn`. Every other library matching test still passes.
 
 - [ ] **Step 3: Implement**
 
@@ -1645,6 +1675,39 @@ def normalize_book_identity(data: Mapping[str, Any]) -> BookIdentity:
         asin=normalize_optional_text(data.get("asin")),
     )
 ```
+
+**`shelfmark/library/matching.py`** — replace:
+
+```python
+ISBN_KEY_PREFIX = "isbn:"
+```
+
+with:
+
+```python
+ISBN_KEY_PREFIX = "isbn:"
+# Only the "Bookland" EAN prefixes are ISBNs; any other 13-digit EAN can still
+# pass the ISBN-13 check digit.
+_ISBN13_PREFIXES = ("978", "979")
+```
+
+and in `normalize_isbn` replace:
+
+```python
+    if _ISBN13_SHAPE.match(candidate):
+        return candidate if _isbn13_is_valid(candidate) else ""
+```
+
+with:
+
+```python
+    if _ISBN13_SHAPE.match(candidate):
+        if not candidate.startswith(_ISBN13_PREFIXES):
+            return ""
+        return candidate if _isbn13_is_valid(candidate) else ""
+```
+
+(The ISBN-10 branch always produces a `978` ISBN-13, so it needs no change.)
 
 **`shelfmark/core/models.py`** — in `DownloadTask`, replace:
 
@@ -1764,16 +1827,17 @@ with:
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `uv run pytest tests/core/test_book_identity.py tests/download tests/audiobookshelf -q`
-Expected: PASS (12 + 9 new tests; existing orchestrator and routing tests unchanged).
+Run: `uv run pytest tests/core/test_book_identity.py tests/download tests/audiobookshelf tests/library -q`
+Expected: PASS (12 + 9 + 1 new tests; existing orchestrator, routing and library tests unchanged).
 
 - [ ] **Step 5: Lint, typecheck, commit**
 
 ```bash
 uv run ruff check shelfmark tests && uv run ruff format --check shelfmark tests
-uv run basedpyright shelfmark/core shelfmark/download/orchestrator.py
+uv run basedpyright shelfmark/core shelfmark/library shelfmark/download/orchestrator.py
 git add shelfmark/core/book_identity.py shelfmark/core/models.py shelfmark/download/orchestrator.py \
-  tests/core/test_book_identity.py tests/download/test_orchestrator_identity.py
+  shelfmark/library/matching.py tests/core/test_book_identity.py tests/download/test_orchestrator_identity.py \
+  tests/library/test_matching.py
 git commit -m "feat(download): carry book identity on DownloadTask through queue and retry
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
@@ -1788,7 +1852,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `BookIdentity`, `normalize_book_identity` (Task 4).
-- Produces: `fill_identity_from_book_data(release_data: Mapping[str, Any], book_data: object) -> dict[str, Any]` — returns a new dict; never mutates its input. `fulfil_request` queues `fill_identity_from_book_data(selected_release_data, request_row.get("book_data"))` plus `_request_id` and `destination_key`.
+- Produces: `fill_identity_from_book_data(release_data: Mapping[str, Any], book_data: object) -> dict[str, Any]` — returns a new dict; never mutates its input. Rule: a release with a complete pair keeps it and takes ISBN/ASIN only from a `book_data` naming the same pair; a release naming a *different* provider without an id drops its half pair and imports nothing; otherwise a release without a complete pair takes `book_data`'s pair and missing hints. `fulfil_request` queues `fill_identity_from_book_data(selected_release_data, request_row.get("book_data"))` plus `_request_id` and `destination_key`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1806,6 +1870,12 @@ from shelfmark.core.book_identity import (
     fill_identity_from_book_data,
     normalize_book_identity,
 )
+```
+
+add a second constant directly after the `ISBN_10 = ...` line:
+
+```python
+OTHER_ISBN_13 = "9780593135204"  # a different, valid book
 ```
 
 and append to the end of the file:
@@ -1854,12 +1924,28 @@ class TestFillIdentityFromBookData:
 
         assert fill_identity_from_book_data(release, self.BOOK_DATA)["asin"] == "B0BSHZ1234"
 
-    def test_a_half_pair_on_the_release_is_replaced_as_a_pair(self):
-        release = {"provider": "openlibrary"}
+    def test_a_same_provider_half_pair_is_replaced_as_a_pair(self):
+        release = {"provider": "Hardcover"}
 
         filled = fill_identity_from_book_data(release, self.BOOK_DATA)
 
         assert (filled["provider"], filled["provider_id"]) == ("hardcover", "886465")
+        assert filled["asin"] == "B0BSHZ1234"
+
+    def test_a_half_pair_naming_another_provider_imports_nothing(self):
+        """The release says Open Library but lost its id; the request is Hardcover.
+
+        Adopting the request's pair would pin this release's ISBN to another
+        book's Hardcover id, so the half pair is dropped and nothing is imported.
+        """
+        release = {"provider": "openlibrary", "isbn_13": OTHER_ISBN_13}
+
+        filled = fill_identity_from_book_data(release, self.BOOK_DATA)
+
+        assert filled["provider"] is None
+        assert filled["provider_id"] is None
+        assert filled["isbn_13"] == OTHER_ISBN_13
+        assert "asin" not in filled
 
     def test_an_isbn_10_in_book_data_is_used(self):
         book_data = {**self.BOOK_DATA, "isbn_13": None, "isbn_10": ISBN_10}
@@ -2082,7 +2168,7 @@ class TestCrossFormatKeys:
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `uv run pytest tests/core/test_book_identity.py tests/core/test_request_identity.py tests/core/test_download_api_guardrails.py tests/audiobookshelf/test_routing.py -q`
-Expected: FAIL — `ImportError: cannot import name 'fill_identity_from_book_data'` (collection error in `test_book_identity.py`), and in `test_request_identity.py` two failures (`test_an_old_release_without_identity_is_filled_from_book_data`, `test_the_destination_key_still_travels_alongside`) with a `KeyError`/assertion on the missing identity. The guardrail, cross-format and "another provider" tests **pass already**: they pin behaviour that must not change (the route forwards the payload untouched; non-admin keys are stripped; auth mode `none` keeps the key; an unmapped key falls back for Audiobookshelf).
+Expected: FAIL — `ImportError: cannot import name 'fill_identity_from_book_data'` (collection error in `test_book_identity.py`), (including the new `test_a_half_pair_naming_another_provider_imports_nothing`, which pins the review finding: release `{"provider": "openlibrary", "isbn_13": A}` against a Hardcover request for book B must not become B's pair with A's ISBN), and in `test_request_identity.py` two failures (`test_an_old_release_without_identity_is_filled_from_book_data`, `test_the_destination_key_still_travels_alongside`) with a `KeyError`/assertion on the missing identity. The guardrail, cross-format and "another provider" tests **pass already**: they pin behaviour that must not change (the route forwards the payload untouched; non-admin keys are stripped; auth mode `none` keeps the key; an unmapped key falls back for Audiobookshelf).
 
 - [ ] **Step 3: Implement**
 
@@ -2098,8 +2184,12 @@ def fill_identity_from_book_data(
     A release carrying its own complete provider pair keeps it, and takes the
     ISBN and ASIN from the book data only when both name the same book (same
     provider and id): an admin may have browsed to a release described by a
-    different provider. A release without a complete pair takes the book data's
-    pair whole. Returns a new dict; the input is not modified.
+    different provider. A release that names a provider but lost its id, while
+    the book data names a different provider, drops its half pair and imports
+    nothing: adopting the request's pair would pin the release's ISBN to
+    another book.
+    Otherwise a release without a complete pair takes the book data's pair
+    whole. Returns a new dict; the input is not modified.
     """
     filled = dict(release_data)
     if not isinstance(book_data, dict):
@@ -2109,6 +2199,15 @@ def fill_identity_from_book_data(
     book = normalize_book_identity(book_data)
 
     if release.provider is None:
+        named_provider = _identity_text(release_data.get("provider"))
+        if (
+            named_provider is not None
+            and book.provider is not None
+            and named_provider.casefold() != book.provider.casefold()
+        ):
+            filled["provider"] = None
+            filled["provider_id"] = None
+            return filled
         if book.provider is not None:
             filled["provider"] = book.provider
             filled["provider_id"] = book.provider_id
@@ -2168,16 +2267,382 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
-### Task 6: Identity and uploaded files in the custom-script payload
+### Task 6: Only an admin's key reaches the queue from request workflows
 
 **Files:**
-- Modify: `shelfmark/download/outputs/booklore.py` (import; `_utc_now`; `booklore_upload_file` return; the upload loop and hook details in `_post_process_booklore`), `shelfmark/download/postprocess/custom_script.py` (`_build_custom_script_payload`)
+- Modify: `shelfmark/core/request_routes.py` (import; `_prepare_request_create_arguments`), `shelfmark/core/requests_service.py` (new `_without_destination_keys`; `fulfil_request`)
+- Test: `tests/core/test_request_destination_authorization.py` (new)
+
+**Interfaces:**
+- Consumes: `authorize_destination_key(payload, *, is_admin)` from `shelfmark.audiobookshelf.destinations` (unchanged); `fill_identity_from_book_data` (Task 5).
+- Produces: `_prepare_request_create_arguments` returns `release_data` with `destination_key` stripped (top level and `extra`) unless the session is an admin — this feeds both `create_request(s)` (stored requests) and `_queue_prepared_download_submission` (download policy). `fulfil_request` queues release data with every stored key removed, then sets only the explicit `destination_key` argument.
+
+Why: `authorize_destination_key` guarded `/api/releases/download` only. A requester could post `release_data.destination_key` (or `release_data.extra.destination_key`) to `/api/requests` or `/api/requests/batch`: a download-policy submission queued it at once, and a pending request stored it, where an approval with a blank library set the top-level key to `None` and `queue_release` (`release_data.get("destination_key") or extra.get("destination_key")`) revived the nested copy. This predates the ebook picker (audiobook keys were exposed the same way) and is fixed here because ebook keys write into a library that cannot be corrected afterwards.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `tests/core/test_request_destination_authorization.py`:
+
+```python
+"""A destination key reaches the queue only from an admin (fork-only).
+
+`authorize_destination_key` guarded `/api/releases/download` alone. A requester
+could put a key in a request's `release_data` (top level or `extra`): a
+download-policy submission queued it straight away, and a pending request
+stored it, where a blank approval let `queue_release` revive the nested copy.
+"""
+
+from __future__ import annotations
+
+import importlib
+import os
+import tempfile
+import uuid
+from typing import Any
+from unittest.mock import patch
+
+import pytest
+
+from shelfmark.core.requests_service import fulfil_request
+from shelfmark.core.user_db import UserDB
+
+
+@pytest.fixture(scope="module")
+def main_module():
+    """Import `shelfmark.main` with background startup disabled."""
+    with patch("shelfmark.download.orchestrator.start"):
+        import shelfmark.main as main
+
+        importlib.reload(main)
+        return main
+
+
+@pytest.fixture
+def client(main_module):
+    return main_module.app.test_client()
+
+
+def _login(client, user: dict, *, is_admin: bool) -> None:
+    with client.session_transaction() as sess:
+        sess["user_id"] = user["username"]
+        sess["db_user_id"] = user["id"]
+        sess["is_admin"] = is_admin
+
+
+def _create_user(main_module, *, role: str = "user") -> dict:
+    return main_module.user_db.create_user(username=f"u-{uuid.uuid4().hex[:8]}", role=role)
+
+
+def _policy(*, ebook: str, audiobook: str) -> dict:
+    return {
+        "REQUESTS_ENABLED": True,
+        "REQUEST_POLICY_DEFAULT_EBOOK": ebook,
+        "REQUEST_POLICY_DEFAULT_AUDIOBOOK": audiobook,
+        "MAX_PENDING_REQUESTS_PER_USER": 20,
+        "REQUESTS_ALLOW_NOTES": True,
+        "REQUEST_POLICY_RULES": [],
+    }
+
+
+def _payload(content_type: str = "ebook") -> dict:
+    tag = uuid.uuid4().hex[:8]
+    return {
+        "book_data": {
+            "title": f"Planted {tag}",
+            "author": "Shelfmark",
+            "content_type": content_type,
+            "provider": "openlibrary",
+            "provider_id": f"planted-{tag}",
+        },
+        "context": {"source": "prowlarr", "content_type": content_type, "request_level": "release"},
+        "release_data": {
+            "source": "prowlarr",
+            "source_id": f"planted-release-{tag}",
+            "title": f"Planted {tag}.epub",
+            "destination_key": "grimmory:5:8",
+            "extra": {"destination_key": "grimmory:5:8", "indexer": "x"},
+        },
+    }
+
+
+def _post(main_module, client, path, body, *, policy):
+    queued: list[dict[str, Any]] = []
+
+    def fake_queue_release(release_data, priority, user_id=None, username=None):
+        queued.append(release_data)
+        return True, None
+
+    with (
+        patch.object(main_module, "get_auth_mode", return_value="builtin"),
+        patch.object(main_module, "load_users_request_policy_settings", return_value=policy),
+        patch(
+            "shelfmark.core.request_routes.load_users_request_policy_settings",
+            return_value=policy,
+        ),
+        patch.object(main_module.backend, "queue_release", side_effect=fake_queue_release),
+        patch("shelfmark.core.request_routes.notify_admin"),
+        patch("shelfmark.core.request_routes.notify_user"),
+    ):
+        resp = client.post(path, json=body)
+    return resp, queued
+
+
+def _has_key(release_data: dict) -> bool:
+    extra = release_data.get("extra") or {}
+    return "destination_key" in release_data or "destination_key" in extra
+
+
+class TestRequestSubmission:
+    def test_a_stored_request_keeps_no_key(self, main_module, client):
+        user = _create_user(main_module)
+        _login(client, user, is_admin=False)
+
+        resp, queued = _post(
+            main_module,
+            client,
+            "/api/requests",
+            _payload(),
+            policy=_policy(ebook="request_release", audiobook="request_release"),
+        )
+
+        assert resp.status_code == 201, resp.json
+        assert queued == []
+        stored = main_module.user_db.get_request(resp.json["id"])
+        assert not _has_key(stored["release_data"])
+        assert stored["release_data"]["extra"] == {"indexer": "x"}
+
+    def test_a_download_policy_submission_queues_no_key(self, main_module, client):
+        user = _create_user(main_module)
+        _login(client, user, is_admin=False)
+
+        resp, queued = _post(
+            main_module,
+            client,
+            "/api/requests",
+            _payload(),
+            policy=_policy(ebook="download", audiobook="download"),
+        )
+
+        assert resp.status_code == 200, resp.json
+        assert len(queued) == 1
+        assert not _has_key(queued[0])
+
+    def test_a_batch_strips_both_policy_paths(self, main_module, client):
+        user = _create_user(main_module)
+        _login(client, user, is_admin=False)
+
+        resp, queued = _post(
+            main_module,
+            client,
+            "/api/requests/batch",
+            {"requests": [_payload("ebook"), _payload("audiobook")]},
+            policy=_policy(ebook="download", audiobook="request_release"),
+        )
+
+        assert resp.status_code == 201, resp.json
+        assert len(queued) == 1
+        assert not _has_key(queued[0])
+        stored = [row for row in resp.json if row.get("kind") != "download"]
+        assert len(stored) == 1
+        assert not _has_key(main_module.user_db.get_request(stored[0]["id"])["release_data"])
+
+    def test_an_admin_download_policy_submission_keeps_the_key(self, main_module, client):
+        admin = _create_user(main_module, role="admin")
+        _login(client, admin, is_admin=True)
+
+        resp, queued = _post(
+            main_module,
+            client,
+            "/api/requests",
+            _payload(),
+            policy=_policy(ebook="download", audiobook="download"),
+        )
+
+        assert resp.status_code == 200, resp.json
+        assert queued[0]["destination_key"] == "grimmory:5:8"
+
+
+@pytest.fixture
+def user_db():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = UserDB(os.path.join(tmpdir, "shelfmark.db"))
+        db.initialize()
+        yield db
+
+
+class TestFulfilment:
+    """Only the approving admin's explicit choice travels with an approval."""
+
+    def approve(self, user_db: UserDB, **kwargs: Any) -> dict[str, Any]:
+        requester = user_db.create_user("ada")
+        admin = user_db.create_user("root", role="admin")
+        # A row saved before submissions were sanitized, or written by hand.
+        created = user_db.create_request(
+            user_id=requester["id"],
+            content_type="ebook",
+            request_level="release",
+            policy_mode="request_release",
+            book_data={"title": "Overlord", "author": "Kugane Maruyama"},
+            release_data={
+                "source": "prowlarr",
+                "source_id": "r1",
+                "title": "Overlord.epub",
+                "destination_key": "grimmory:9:9",
+                "extra": {"destination_key": "grimmory:9:9", "indexer": "x"},
+            },
+        )
+        queued: list[dict[str, Any]] = []
+
+        def fake_queue_release(data, priority=0, **_kwargs):
+            queued.append(data)
+            return True, None
+
+        fulfil_request(
+            user_db,
+            request_id=created["id"],
+            admin_user_id=admin["id"],
+            queue_release=fake_queue_release,
+            **kwargs,
+        )
+        return queued[0]
+
+    def test_a_blank_approval_revives_no_stored_key(self, user_db):
+        queued = self.approve(user_db)
+
+        assert queued["destination_key"] is None
+        assert queued["extra"] == {"indexer": "x"}
+
+    def test_the_approval_key_is_the_only_key(self, user_db):
+        queued = self.approve(user_db, destination_key="grimmory:5:8")
+
+        assert queued["destination_key"] == "grimmory:5:8"
+        assert "destination_key" not in queued["extra"]
+
+    def test_queue_release_sees_no_key_after_a_blank_approval(self, user_db, monkeypatch):
+        from shelfmark.download import orchestrator
+
+        captured = {}
+        monkeypatch.setattr(orchestrator.config, "get", lambda _k, default=None, **_kw: default)
+        monkeypatch.setattr(orchestrator, "_source_unavailable_message", lambda _s: None)
+        monkeypatch.setattr(orchestrator.book_queue, "add", lambda t: captured.setdefault("t", t))
+        monkeypatch.setattr(orchestrator, "ws_manager", None)
+
+        ok, error = orchestrator.queue_release(self.approve(user_db))
+
+        assert ok, error
+        assert captured["t"].destination_key is None
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `uv run pytest tests/core/test_request_destination_authorization.py -q`
+Expected: FAIL — 6 of 7: the three submission tests fail with `assert not True` from `_has_key(...)` (the key is stored or queued as sent; the batch test fails on its first `_has_key` assertion), and the three fulfilment tests fail because the stored key survives (`'destination_key' not in {... 'grimmory:9:9' ...}`, and `queue_release` builds a task whose `destination_key == 'grimmory:9:9'`). `test_an_admin_download_policy_submission_keeps_the_key` passes already and must keep passing.
+
+- [ ] **Step 3: Implement**
+
+**`shelfmark/core/request_routes.py`** — add the import directly above `from shelfmark.core.logger import setup_logger`:
+
+```python
+from shelfmark.audiobookshelf.destinations import authorize_destination_key
+```
+
+In `_prepare_request_create_arguments`, the release data is normalized and then validated twice. Replace the second validation and the policy lookup that follows it:
+
+```python
+    _validate_release_source_matches_policy_context(
+        source=source,
+        release_data=release_data,
+    )
+
+    global_settings, user_settings, effective, requests_enabled = _resolve_effective_policy(
+```
+
+with:
+
+```python
+    _validate_release_source_matches_policy_context(
+        source=source,
+        release_data=release_data,
+    )
+    # Routing to a specific library is an admin decision. Without this, a
+    # requester could plant a key in release_data (top level or `extra`): a
+    # download-policy submission would queue it, and a stored request would
+    # carry it to approval.
+    if isinstance(release_data, dict):
+        release_data = authorize_destination_key(
+            release_data, is_admin=bool(session.get("is_admin", False))
+        )
+
+    global_settings, user_settings, effective, requests_enabled = _resolve_effective_policy(
+```
+
+(Only the second `_validate_release_source_matches_policy_context(...)` call is directly followed by a blank line and `global_settings, ...`, so the anchor is unique.)
+
+**`shelfmark/core/requests_service.py`** — insert directly above `def fulfil_request(`:
+
+```python
+def _without_destination_keys(release_data: dict[str, Any]) -> dict[str, Any]:
+    """Drop any destination key stored inside a request's release data.
+
+    The only key an approval may carry is the one the approving admin passes
+    now. A stored one (top level or in `extra`) would otherwise be revived by
+    `queue_release` when the admin left the library blank.
+    """
+    cleaned = {key: value for key, value in release_data.items() if key != "destination_key"}
+    extra = cleaned.get("extra")
+    if isinstance(extra, dict) and "destination_key" in extra:
+        cleaned["extra"] = {key: value for key, value in extra.items() if key != "destination_key"}
+    return cleaned
+
+
+```
+
+and in `fulfil_request` replace:
+
+```python
+    queued_release_data = fill_identity_from_book_data(
+        selected_release_data, request_row.get("book_data")
+    )
+```
+
+with:
+
+```python
+    queued_release_data = fill_identity_from_book_data(
+        _without_destination_keys(selected_release_data), request_row.get("book_data")
+    )
+```
+
+(The existing `queued_release_data["destination_key"] = normalized_destination_key` line below then attaches the approval's key — or `None` — as the only one.)
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `uv run pytest tests/core/test_request_destination_authorization.py tests/core/test_request_routes_api.py tests/core/test_requests_service.py tests/core/test_request_identity.py tests/audiobookshelf -q`
+Expected: PASS (7 new tests; the existing request API, service and destination tests unchanged).
+
+- [ ] **Step 5: Lint, typecheck, commit**
+
+```bash
+uv run ruff check shelfmark tests && uv run ruff format --check shelfmark tests
+uv run basedpyright shelfmark/core
+git add shelfmark/core/request_routes.py shelfmark/core/requests_service.py \
+  tests/core/test_request_destination_authorization.py
+git commit -m "fix(requests): only an admin's approval key reaches the queue
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+---
+### Task 7: Identity and uploaded files in the custom-script payload; the post-upload hook never fails an upload
+
+**Files:**
+- Modify: `shelfmark/download/outputs/booklore.py` (imports; `_utc_now`; `booklore_upload_file` return; new `_run_post_upload_hook`; the upload loop, hook details and hook call in `_post_process_booklore`), `shelfmark/download/postprocess/custom_script.py` (`_build_custom_script_payload`)
 - Modify: `tests/core/test_download_processing.py` (one patch gains `return_value=None`)
 - Test: `tests/core/test_booklore_payload.py` (new), `tests/core/test_booklore_upload.py` (append)
 
 **Interfaces:**
 - Consumes: `DownloadTask.provider/provider_id/isbn_13/asin` (Task 4); explicit-key resolution (Task 2) for `library_id`/`path_id`.
-- Produces: `booklore_upload_file(booklore_config, token, file_path) -> dict[str, Any] | None` (the JSON object body, else `None`); `_utc_now() -> str` in `shelfmark.download.outputs.booklore` (tests patch it); payload fields `task.provider|provider_id|isbn_13|asin` and `output.details.booklore.uploaded_files|upload_started_at|upload_finished_at` exactly as in Global Constraints.
+- Produces: `booklore_upload_file(booklore_config, token, file_path) -> dict[str, Any] | None` (the JSON object body, else `None`); `_utc_now() -> str` in `shelfmark.download.outputs.booklore` (tests patch it); `_run_post_upload_hook(script_context, task, status_callback) -> None` (never raises, never reports `"error"`; logs `"Task %s: post-upload custom script failed; the upload stands: %s"` as a warning, or `"Task %s: post-upload custom script crashed; the upload stands"` via `logger.exception`); payload fields `task.provider|provider_id|isbn_13|asin` and `output.details.booklore.uploaded_files|upload_started_at|upload_finished_at` exactly as in Global Constraints.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2187,9 +2652,12 @@ Create `tests/core/test_booklore_payload.py`:
 """The custom-script payload after a Grimmory upload (fork-only additions, version 1)."""
 
 import json
+import subprocess
 from datetime import datetime, timedelta
 from threading import Event
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
+
+import pytest
 
 from shelfmark.core.models import DownloadTask, SearchMode
 
@@ -2331,6 +2799,100 @@ def test_the_real_clock_gives_ordered_utc_timestamps():
 
     assert first.utcoffset() == timedelta(0)
     assert first <= second
+
+
+def _run_with_failing_hook(tmp_path, *, run_side_effect=None, payload_error=None):
+    """Upload one file, then make the post-upload custom script fail."""
+    from shelfmark.download.postprocess.router import post_process_download
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    temp_file = staging / "book.epub"
+    temp_file.write_bytes(b"1234")
+    task = DownloadTask(
+        task_id="ebook-1",
+        source="direct_download",
+        title="Overlord",
+        author="Kugane Maruyama",
+        format="epub",
+        search_mode=SearchMode.DIRECT,
+    )
+    statuses: list[tuple[str, str | None]] = []
+    uploads: list[str] = []
+
+    with (
+        patch("shelfmark.core.config.config") as mock_config,
+        patch("shelfmark.config.env.TMP_DIR", staging),
+        patch("shelfmark.download.outputs.booklore.booklore_login", return_value="token"),
+        patch(
+            "shelfmark.download.outputs.booklore.booklore_upload_file",
+            side_effect=lambda _c, _t, path: uploads.append(path.name),
+        ),
+        patch("shelfmark.download.outputs.booklore.booklore_refresh_library"),
+        patch("shelfmark.download.outputs.booklore.logger") as mock_logger,
+        patch("subprocess.run", side_effect=run_side_effect) as mock_run,
+        patch(
+            "shelfmark.download.postprocess.custom_script._build_custom_script_payload",
+            side_effect=payload_error,
+            return_value={"version": 1},
+        ),
+    ):
+        mock_config.get = MagicMock(
+            side_effect=lambda key, default=None, **_kwargs: SETTINGS.get(key, default)
+        )
+        mock_config.CUSTOM_SCRIPT = "/opt/shelfmark-hooks/dispatch.py"
+        if run_side_effect is None:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+        result = post_process_download(
+            temp_file, task, Event(), lambda status, message: statuses.append((status, message))
+        )
+
+    return result, statuses, uploads, mock_logger
+
+
+class TestHookFailureAfterUpload:
+    """The book is already in Grimmory, which cannot move or dedupe it.
+
+    Failing the task would invite a retry that uploads it again, so any hook
+    failure after a successful upload is logged and the task still completes.
+    """
+
+    @pytest.mark.parametrize(
+        "run_side_effect",
+        [
+            FileNotFoundError("/opt/shelfmark-hooks/dispatch.py"),
+            PermissionError("/opt/shelfmark-hooks/dispatch.py"),
+            subprocess.TimeoutExpired("dispatch.py", 300),
+            subprocess.CalledProcessError(1, "dispatch.py", stderr="boom"),
+        ],
+        ids=["missing", "not-executable", "timeout", "non-zero-exit"],
+    )
+    def test_a_failing_script_still_completes_the_upload(self, tmp_path, run_side_effect):
+        result, statuses, uploads, mock_logger = _run_with_failing_hook(
+            tmp_path, run_side_effect=run_side_effect
+        )
+
+        assert result == "booklore://ebook-1"
+        assert uploads == ["book.epub"]
+        assert [status for status, _ in statuses if status == "error"] == []
+        assert statuses[-1][0] == "complete"
+        mock_logger.warning.assert_any_call(
+            "Task %s: post-upload custom script failed; the upload stands: %s",
+            "ebook-1",
+            ANY,
+        )
+
+    def test_a_payload_error_still_completes_the_upload(self, tmp_path):
+        result, statuses, uploads, mock_logger = _run_with_failing_hook(
+            tmp_path, payload_error=TypeError("not JSON serializable")
+        )
+
+        assert result == "booklore://ebook-1"
+        assert uploads == ["book.epub"]
+        assert statuses[-1][0] == "complete"
+        mock_logger.exception.assert_called_once_with(
+            "Task %s: post-upload custom script crashed; the upload stands", "ebook-1"
+        )
 ```
 
 Append to the end of `tests/core/test_booklore_upload.py`:
@@ -2369,11 +2931,11 @@ def test_booklore_upload_file_returns_none_for_json_that_is_not_an_object(tmp_pa
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `uv run pytest tests/core/test_booklore_payload.py tests/core/test_booklore_upload.py -q`
-Expected: FAIL — `AttributeError: <module 'shelfmark.download.outputs.booklore'> does not have the attribute '_utc_now'` for the pipeline tests and `ImportError: cannot import name '_utc_now'` for the clock test, and `test_booklore_upload_file_returns_the_parsed_json_object` fails with `assert None == {'id': 41, ...}`. The two "returns none" upload tests pass already (today's function returns `None` for everything).
+Expected: FAIL — 12 failed, 4 passed: `AttributeError: <module 'shelfmark.download.outputs.booklore'> does not have the attribute '_utc_now'` for the five pipeline payload tests; `ImportError: cannot import name '_utc_now'` for the clock test; `test_booklore_upload_file_returns_the_parsed_json_object` with `assert None == {'id': 41, ...}`; and all five `TestHookFailureAfterUpload` tests with `assert None == 'booklore://ebook-1'` (today a hook failure, or a payload error caught by the outer `except (OSError, TypeError, ValueError)`, fails the task after the upload). The two "returns none" upload tests and the two existing upload tests pass already.
 
 - [ ] **Step 3: Implement**
 
-**`shelfmark/download/outputs/booklore.py`** — four edits.
+**`shelfmark/download/outputs/booklore.py`** — seven edits.
 
 1. Imports: replace
 
@@ -2508,6 +3070,81 @@ with:
                 }
 ```
 
+5. In the `if TYPE_CHECKING:` block at the top, replace:
+
+```python
+    from shelfmark.core.models import DownloadTask
+
+logger = setup_logger(__name__)
+```
+
+with:
+
+```python
+    from shelfmark.core.models import DownloadTask
+    from shelfmark.download.postprocess.custom_script import CustomScriptContext
+
+logger = setup_logger(__name__)
+```
+
+6. Insert this helper directly above `def _post_process_booklore(`:
+
+```python
+def _run_post_upload_hook(
+    script_context: CustomScriptContext,
+    task: DownloadTask,
+    status_callback: StatusCallback,
+) -> None:
+    """Run the custom script after a Grimmory upload without failing the task.
+
+    The book is already in Grimmory, which cannot move or dedupe it: failing
+    the task here would invite a retry that uploads it a second time. So a
+    missing or non-executable script, a timeout, a non-zero exit, or an error
+    while building its payload is logged, and the upload still counts (fork-only;
+    folder and email outputs keep failing the task as before).
+    """
+    from shelfmark.download.postprocess.pipeline import maybe_run_custom_script
+
+    failures: list[str] = []
+
+    def hook_status(status: str, message: str | None) -> None:
+        if status == "error":
+            failures.append(message or "custom script failed")
+        else:
+            status_callback(status, message)
+
+    try:
+        succeeded = maybe_run_custom_script(script_context, status_callback=hook_status)
+    except Exception:
+        logger.exception(
+            "Task %s: post-upload custom script crashed; the upload stands", task.task_id
+        )
+        return
+    if not succeeded:
+        logger.warning(
+            "Task %s: post-upload custom script failed; the upload stands: %s",
+            task.task_id,
+            "; ".join(failures) or "unknown error",
+        )
+
+
+```
+
+7. In `_post_process_booklore`, delete `        maybe_run_custom_script,` from the local `from shelfmark.download.postprocess.pipeline import (...)` block (the helper imports it now), and replace:
+
+```python
+        if not maybe_run_custom_script(script_context, status_callback=status_callback):
+            return None
+```
+
+with:
+
+```python
+        _run_post_upload_hook(script_context, task, status_callback)
+```
+
+(`maybe_run_custom_script`, `run_custom_script` and the folder/email outputs are untouched: there, a script failure still fails the task, as `tests/core/test_download_processing.py::TestCustomScriptExecution` already pins.)
+
 **`shelfmark/download/postprocess/custom_script.py`** — in `_build_custom_script_payload`, replace:
 
 ```python
@@ -2551,13 +3188,13 @@ uv run ruff check shelfmark tests && uv run ruff format --check shelfmark tests
 uv run basedpyright shelfmark/download
 git add shelfmark/download/outputs/booklore.py shelfmark/download/postprocess/custom_script.py \
   tests/core/test_booklore_payload.py tests/core/test_booklore_upload.py tests/core/test_download_processing.py
-git commit -m "feat(hooks): identity and uploaded files in the custom-script payload
+git commit -m "feat(hooks): identity and uploaded files in the custom-script payload; post-upload hook is best-effort
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
-### Task 7: Combined mode keeps one destination key per leg through Next/Back
+### Task 8: Combined mode keeps one destination key per leg through Next/Back
 
 **Files:**
 - Create: `src/frontend/src/utils/combinedSelection.ts`
@@ -3070,19 +3707,20 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
-### Task 8: Generic destination picker — one endpoint, both formats, neutral ebook label
+### Task 9: Generic destination picker — one endpoint, both formats, neutral ebook label
 
 **Files:**
 - Rename + rewrite: `src/frontend/src/utils/audiobookDestinations.ts` → `src/frontend/src/utils/downloadDestinations.ts`
 - Rename + rewrite: `src/frontend/src/hooks/useAudiobookDestinations.ts` → `src/frontend/src/hooks/useDownloadDestinations.ts`
 - Rename + rewrite: `src/frontend/src/tests/audiobookDestinations.test.ts` → `src/frontend/src/tests/downloadDestinations.test.ts`
+- Create: `src/frontend/src/components/activity/reviewApproval.ts`, `src/frontend/src/tests/reviewApproval.test.ts`
 - Modify: `src/frontend/src/services/api.ts` (imports; `getAudiobookDestinations` → `getDownloadDestinations`; `destination_key` comment), `src/frontend/src/utils/releasePayload.ts` (import path; doc comment), `src/frontend/src/components/ReleaseModal.tsx`, `src/frontend/src/components/activity/ActivityCard.tsx`
 
 All paths below are relative to `src/frontend/`.
 
 **Interfaces:**
 - Consumes: `GET /api/download-destinations?content_type=` (Task 3).
-- Produces (in `src/utils/downloadDestinations.ts`): `interface DownloadDestination { key; name }`; `interface DownloadDestinationList { destinations: DownloadDestination[]; defaultName: string }`; `EMPTY_DESTINATION_LIST`; `shouldShowDestinationPicker(contentType: string | null | undefined, destinations) -> boolean` (ebook or audiobook, more than one destination); `destinationDefaultLabel(contentType: ContentType, defaultName: string) -> string`; `resolveDefaultDestinationKey` and `withDestinationKey` (unchanged behaviour); `createDestinationLoader(fetch) -> (contentType) => Promise<DownloadDestinationList>` (per-type cache, `EMPTY_DESTINATION_LIST` on error, not cached). `getDownloadDestinations(contentType: ContentType): Promise<DownloadDestinationList>` in `services/api.ts`. `useDownloadDestinations(contentType: ContentType | null): DownloadDestinationList`.
+- Produces (in `src/utils/downloadDestinations.ts`): `interface DownloadDestination { key; name }`; `interface DownloadDestinationList { destinations: DownloadDestination[]; defaultName: string }`; `EMPTY_DESTINATION_LIST`; `shouldShowDestinationPicker(contentType: string | null | undefined, destinations, selectedKey?) -> boolean` (ebook or audiobook with more than one destination, or an ebook with a nonblank `selectedKey`); `destinationDefaultLabel(contentType: ContentType, defaultName: string) -> string`; `resolveDefaultDestinationKey` and `withDestinationKey` (unchanged behaviour); `resolveSelectedDestinationKey(contentType, currentKey, destinations) -> string` (ebook: the trimmed pick, never blanked; audiobook: `resolveDefaultDestinationKey`); `destinationKeyToSend(contentType, currentKey, destinations) -> string | undefined` (ebook: any nonblank pick; audiobook: a listed key, only while the picker shows); `pickerDestinations(contentType, selectedKey, destinations) -> DownloadDestination[]` (adds `"<key> (not in the current list)"` for an unlisted ebook pick); `createDestinationLoader(fetch) -> (contentType) => Promise<DownloadDestinationList>` (per-type cache; an error resolves to `EMPTY_DESTINATION_LIST`; neither an error nor an empty list is cached). In `src/components/activity/reviewApproval.ts`: `interface RequestApproveOptions { browseOnly?; manualApproval?; destinationKey? }` and `reviewApproveOptions(action: 'approve' | 'browse' | 'manual', destinationKey?: string) -> RequestApproveOptions`. `getDownloadDestinations(contentType: ContentType): Promise<DownloadDestinationList>` in `services/api.ts`. `useDownloadDestinations(contentType: ContentType | null): DownloadDestinationList`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3100,8 +3738,11 @@ import { buildFulfilAdminRequestBody } from '../services/requestApiHelpers';
 import {
   createDestinationLoader,
   destinationDefaultLabel,
+  destinationKeyToSend,
   type DownloadDestinationList,
+  pickerDestinations,
   resolveDefaultDestinationKey,
+  resolveSelectedDestinationKey,
   shouldShowDestinationPicker,
   withDestinationKey,
 } from '../utils/downloadDestinations';
@@ -3248,6 +3889,17 @@ describe('createDestinationLoader', () => {
     expect(calls).toEqual(['ebook', 'audiobook']);
   });
 
+  it('never caches an empty list, so a Grimmory outage clears up on its own', async () => {
+    // The server answers 200 [] while Grimmory is unreachable.
+    const responses = [{ destinations: [], defaultName: '' }, list('ebook')];
+    const load = createDestinationLoader(async () => responses.shift() ?? list('late'));
+
+    expect(await load('ebook')).toEqual({ destinations: [], defaultName: '' });
+    expect(await load('ebook')).toEqual(list('ebook'));
+    expect(await load('ebook')).toEqual(list('ebook'));
+    expect(responses).toEqual([]);
+  });
+
   it('yields an empty list on error and retries next time', async () => {
     let attempts = 0;
     const load = createDestinationLoader(async (contentType) => {
@@ -3262,12 +3914,115 @@ describe('createDestinationLoader', () => {
     expect(await load('ebook')).toEqual(list('ebook'));
   });
 });
+
+// An explicit ebook pick is never erased in the browser: the list may still be
+// loading, empty because Grimmory is down, or stale. The server verifies the key
+// against a fresh read and fails closed, so the browser sends it unchanged.
+describe('an explicit ebook pick survives the display list', () => {
+  const loading: typeof EBOOK_DESTINATIONS = [];
+
+  it('is kept while the list is still loading', () => {
+    expect(resolveSelectedDestinationKey('ebook', 'grimmory:5:8', loading)).toBe('grimmory:5:8');
+    expect(destinationKeyToSend('ebook', 'grimmory:5:8', loading)).toBe('grimmory:5:8');
+  });
+
+  it('is kept when the loaded list no longer has it', () => {
+    expect(destinationKeyToSend('ebook', 'grimmory:9:9', EBOOK_DESTINATIONS)).toBe('grimmory:9:9');
+  });
+
+  it('keeps the picker visible so the admin can see and clear it', () => {
+    expect(shouldShowDestinationPicker('ebook', loading, 'grimmory:5:8')).toBe(true);
+    expect(shouldShowDestinationPicker('ebook', loading, '')).toBe(false);
+  });
+
+  it('lists an unlisted pick as its own option', () => {
+    expect(pickerDestinations('ebook', 'grimmory:9:9', EBOOK_DESTINATIONS)).toEqual([
+      ...EBOOK_DESTINATIONS,
+      { key: 'grimmory:9:9', name: 'grimmory:9:9 (not in the current list)' },
+    ]);
+    expect(pickerDestinations('ebook', 'grimmory:5:8', EBOOK_DESTINATIONS)).toEqual(
+      EBOOK_DESTINATIONS,
+    );
+    expect(pickerDestinations('ebook', '', EBOOK_DESTINATIONS)).toEqual(EBOOK_DESTINATIONS);
+  });
+
+  it('a blank ebook choice sends nothing', () => {
+    expect(destinationKeyToSend('ebook', '  ', EBOOK_DESTINATIONS)).toBeUndefined();
+    expect(destinationKeyToSend('ebook', undefined, EBOOK_DESTINATIONS)).toBeUndefined();
+  });
+});
+
+describe('audiobook picks keep the existing fallback', () => {
+  it('drops a key the list no longer has', () => {
+    expect(resolveSelectedDestinationKey('audiobook', 'lib-gone', DESTINATIONS)).toBe('');
+    expect(destinationKeyToSend('audiobook', 'lib-gone', DESTINATIONS)).toBeUndefined();
+  });
+
+  it('sends nothing while the picker is hidden', () => {
+    expect(destinationKeyToSend('audiobook', 'lib-kids', [])).toBeUndefined();
+    expect(destinationKeyToSend('audiobook', 'lib-kids', [DESTINATIONS[1]])).toBeUndefined();
+    expect(shouldShowDestinationPicker('audiobook', [], 'lib-kids')).toBe(false);
+  });
+
+  it('sends a listed key', () => {
+    expect(destinationKeyToSend('audiobook', 'lib-kids', DESTINATIONS)).toBe('lib-kids');
+  });
+
+  it('never lists an unknown audiobook key', () => {
+    expect(pickerDestinations('audiobook', 'lib-gone', DESTINATIONS)).toEqual(DESTINATIONS);
+  });
+});
+```
+
+Create `src/tests/reviewApproval.test.ts`:
+
+```ts
+import { describe, it, expect } from 'vitest';
+
+import { reviewApproveOptions } from '../components/activity/reviewApproval';
+import { buildFulfilAdminRequestBody } from '../services/requestApiHelpers';
+import { destinationKeyToSend } from '../utils/downloadDestinations';
+
+describe('reviewApproveOptions', () => {
+  it('approving keeps the library pick', () => {
+    expect(reviewApproveOptions('approve', 'grimmory:5:8')).toEqual({
+      destinationKey: 'grimmory:5:8',
+    });
+  });
+
+  it('browsing (before approve or for alternatives) keeps the library pick', () => {
+    // The browse modal hides its own picker, so this is the only carrier.
+    expect(reviewApproveOptions('browse', 'grimmory:5:8')).toEqual({
+      browseOnly: true,
+      destinationKey: 'grimmory:5:8',
+    });
+  });
+
+  it('manual approval downloads nothing, so it carries no library', () => {
+    expect(reviewApproveOptions('manual', 'grimmory:5:8')).toEqual({ manualApproval: true });
+  });
+
+  it('select → browse alternatives → fulfil sends the chosen library', () => {
+    // Picked while the ebook list was still loading: the pick still travels.
+    const options = reviewApproveOptions(
+      'browse',
+      destinationKeyToSend('ebook', 'grimmory:5:8', []),
+    );
+
+    const body = buildFulfilAdminRequestBody({
+      release_data: { source: 'prowlarr', source_id: 'rel-42' },
+      destination_key: options.destinationKey,
+    });
+
+    expect(body.destination_key).toBe('grimmory:5:8');
+  });
+});
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `npx vitest run src/tests/downloadDestinations.test.ts`
-Expected: FAIL — `Error: Cannot find module '../utils/downloadDestinations'`.
+Run: `npx vitest run src/tests/downloadDestinations.test.ts src/tests/reviewApproval.test.ts`
+Expected: FAIL — `Error: Cannot find module '../utils/downloadDestinations'` and `Error: Cannot find module '../components/activity/reviewApproval'` (both files fail to load).
 
 - [ ] **Step 3: Implement**
 
@@ -3303,13 +4058,22 @@ export const EMPTY_DESTINATION_LIST: DownloadDestinationList = {
  * Whether a library picker should be offered.
  *
  * Ebooks pick a Grimmory library, audiobooks an Audiobookshelf one. A single
- * destination is not a choice — the picker would be a control with one option.
+ * destination is not a choice — the picker would be a control with one option —
+ * unless an ebook already carries an explicit pick, which stays visible (and
+ * clearable) whatever the list currently holds.
  */
 export const shouldShowDestinationPicker = (
   contentType: string | null | undefined,
   destinations: DownloadDestination[],
+  selectedKey?: string | null,
 ): boolean => {
-  return (contentType === 'ebook' || contentType === 'audiobook') && destinations.length > 1;
+  if (contentType !== 'ebook' && contentType !== 'audiobook') {
+    return false;
+  }
+  if (destinations.length > 1) {
+    return true;
+  }
+  return contentType === 'ebook' && Boolean((selectedKey ?? '').trim());
 };
 
 /**
@@ -3338,6 +4102,61 @@ export const resolveDefaultDestinationKey = (
 };
 
 /**
+ * The picker's current value.
+ *
+ * An explicit ebook pick is never blanked by the display list: the list may be
+ * loading, empty while Grimmory is down, or stale, and the server verifies the
+ * key against a fresh read and fails closed. Audiobooks keep the fallback of
+ * `resolveDefaultDestinationKey`.
+ */
+export const resolveSelectedDestinationKey = (
+  contentType: string | null | undefined,
+  currentKey: string | null | undefined,
+  destinations: DownloadDestination[],
+): string => {
+  if (contentType === 'ebook') {
+    return (currentKey ?? '').trim();
+  }
+  return resolveDefaultDestinationKey(currentKey, destinations);
+};
+
+/**
+ * The key a download or approval sends, or undefined for "use the default".
+ *
+ * Ebooks send any nonblank pick unchanged (see `resolveSelectedDestinationKey`);
+ * audiobooks send only a listed key, and only while the picker is shown.
+ */
+export const destinationKeyToSend = (
+  contentType: string | null | undefined,
+  currentKey: string | null | undefined,
+  destinations: DownloadDestination[],
+): string | undefined => {
+  if (contentType === 'ebook') {
+    return resolveSelectedDestinationKey(contentType, currentKey, destinations) || undefined;
+  }
+  if (!shouldShowDestinationPicker(contentType, destinations)) {
+    return undefined;
+  }
+  return resolveDefaultDestinationKey(currentKey, destinations) || undefined;
+};
+
+/** The picker's options: an ebook pick missing from the list is shown as its own option. */
+export const pickerDestinations = (
+  contentType: string | null | undefined,
+  selectedKey: string,
+  destinations: DownloadDestination[],
+): DownloadDestination[] => {
+  if (
+    contentType !== 'ebook' ||
+    !selectedKey ||
+    destinations.some((destination) => destination.key === selectedKey)
+  ) {
+    return destinations;
+  }
+  return [...destinations, { key: selectedKey, name: `${selectedKey} (not in the current list)` }];
+};
+
+/**
  * Attach an admin's library choice to a direct-download payload.
  *
  * Copied rather than mutated, and omitted rather than blanked: '' is the
@@ -3357,9 +4176,10 @@ export const withDestinationKey = <T extends object>(
  * Build a loader that fetches each content type's destinations once.
  *
  * Shared across every mounted picker: the lists change only when an admin
- * edits settings or Grimmory libraries. A failed lookup is not cached — the
- * next caller retries — and resolves to an empty list, which hides the picker
- * instead of blocking the download.
+ * edits settings or Grimmory libraries. A failed lookup, and an empty list
+ * (what the server answers while Grimmory is unreachable), are not cached —
+ * the next caller retries. Both hide the picker instead of blocking the
+ * download.
  */
 export const createDestinationLoader = (
   fetchDestinations: (contentType: ContentType) => Promise<DownloadDestinationList>,
@@ -3368,10 +4188,18 @@ export const createDestinationLoader = (
   return (contentType) => {
     let request = cache.get(contentType);
     if (!request) {
-      request = fetchDestinations(contentType).catch(() => {
-        cache.delete(contentType);
-        return EMPTY_DESTINATION_LIST;
-      });
+      request = fetchDestinations(contentType).then(
+        (list) => {
+          if (list.destinations.length === 0) {
+            cache.delete(contentType);
+          }
+          return list;
+        },
+        () => {
+          cache.delete(contentType);
+          return EMPTY_DESTINATION_LIST;
+        },
+      );
       cache.set(contentType, request);
     }
     return request;
@@ -3522,7 +4350,9 @@ and add, directly after `import { coverObjectPositionClass, isSquareCover } from
 ```ts
 import {
   destinationDefaultLabel,
-  resolveDefaultDestinationKey,
+  destinationKeyToSend,
+  pickerDestinations,
+  resolveSelectedDestinationKey,
   shouldShowDestinationPicker,
 } from '../utils/downloadDestinations';
 ```
@@ -3542,7 +4372,7 @@ with:
   // key from anyone else's download payload.
 ```
 
-4. Replace:
+4. Replace the destination block:
 
 ```ts
   // In combined mode `contentType` tracks the current phase, so the picker
@@ -3550,6 +4380,16 @@ with:
   const destinations = useAudiobookDestinations(
     canChooseDestination && contentType === 'audiobook',
   );
+  const showDestinationPicker =
+    canChooseDestination && shouldShowDestinationPicker(contentType, destinations);
+  // Drop a selection whose library disappeared from settings while the modal
+  // was open, so a download can never carry a key that routes nowhere.
+  const selectedDestinationKey = resolveDefaultDestinationKey(destinationKey, destinations);
+  // Only a download consumes it; a release the admin can merely request goes
+  // through the normal approve flow, which asks for the library separately.
+  const chosenDestinationKey = showDestinationPicker
+    ? selectedDestinationKey || undefined
+    : undefined;
 ```
 
 with:
@@ -3560,13 +4400,32 @@ with:
   const { destinations, defaultName: destinationDefaultName } = useDownloadDestinations(
     canChooseDestination ? contentType : null,
   );
+  const showDestinationPicker =
+    canChooseDestination && shouldShowDestinationPicker(contentType, destinations, destinationKey);
+  // An audiobook selection whose library disappeared while the modal was open is
+  // dropped. An ebook pick is kept even while the list loads or lacks it: the
+  // server verifies it fresh and fails closed rather than re-routing.
+  const selectedDestinationKey = resolveSelectedDestinationKey(
+    contentType,
+    destinationKey,
+    destinations,
+  );
+  const destinationOptions = pickerDestinations(contentType, selectedDestinationKey, destinations);
+  // Only a download consumes it; a release the admin can merely request goes
+  // through the normal approve flow, which asks for the library separately.
+  const chosenDestinationKey = canChooseDestination
+    ? destinationKeyToSend(contentType, destinationKey, destinations)
+    : undefined;
 ```
+
+(The combined Next/Back buttons from Task 8 pass `chosenDestinationKey`, so a restored ebook key now survives a phase switch even before that phase's list has loaded.)
 
 5. Replace `{/* Library picker — where this audiobook lands once downloaded */}` with `{/* Library picker — where this download lands */}`.
 6. In that picker, replace:
 
 ```tsx
                   <option value="">Default audiobook destination</option>
+                  {destinations.map((destination) => (
 ```
 
 with:
@@ -3575,9 +4434,38 @@ with:
                   <option value="">
                     {destinationDefaultLabel(contentType, destinationDefaultName)}
                   </option>
+                  {destinationOptions.map((destination) => (
 ```
 
-**`src/components/activity/ActivityCard.tsx`** — four edits.
+**`src/components/activity/reviewApproval.ts`** (new):
+
+```ts
+/** Options the approve panel hands to the request-approve handler. */
+export interface RequestApproveOptions {
+  browseOnly?: boolean;
+  manualApproval?: boolean;
+  destinationKey?: string;
+}
+
+/**
+ * Options for one approve-panel action.
+ *
+ * Every action that ends in a download keeps the admin's library pick —
+ * including browsing for an alternative release, whose modal hides its own
+ * picker. Manual approval downloads nothing, so it carries none.
+ */
+export const reviewApproveOptions = (
+  action: 'approve' | 'browse' | 'manual',
+  destinationKey?: string,
+): RequestApproveOptions => {
+  if (action === 'manual') {
+    return { manualApproval: true };
+  }
+  return action === 'browse' ? { browseOnly: true, destinationKey } : { destinationKey };
+};
+```
+
+**`src/components/activity/ActivityCard.tsx`** — eight edits.
 
 1. Replace `import { useAudiobookDestinations } from '../../hooks/useAudiobookDestinations';` with `import { useDownloadDestinations } from '../../hooks/useDownloadDestinations';`.
 2. Delete:
@@ -3594,15 +4482,43 @@ and add, directly after `import { coverObjectPositionClass, isSquareCover } from
 ```ts
 import {
   destinationDefaultLabel,
-  resolveDefaultDestinationKey,
+  destinationKeyToSend,
+  pickerDestinations,
+  resolveSelectedDestinationKey,
   shouldShowDestinationPicker,
 } from '../../utils/downloadDestinations';
 ```
 
-3. In `ReviewInlinePanel`, replace:
+3. Replace the local options interface (and the blank line before it) —
+
+```ts
+import type { ActivityItem } from './activityTypes';
+
+interface RequestApproveOptions {
+  browseOnly?: boolean;
+  manualApproval?: boolean;
+  destinationKey?: string;
+}
+```
+
+— with the shared one:
+
+```ts
+import type { ActivityItem } from './activityTypes';
+import { type RequestApproveOptions, reviewApproveOptions } from './reviewApproval';
+```
+
+4. In `ReviewInlinePanel`, replace:
 
 ```ts
   const destinations = useAudiobookDestinations(reviewRecord.content_type === 'audiobook');
+  const showDestinationPicker = shouldShowDestinationPicker(
+    reviewRecord.content_type,
+    destinations,
+  );
+  // Drop a selection whose library disappeared from settings mid-review, so an
+  // approval can never carry a key that no longer routes anywhere.
+  const selectedDestinationKey = resolveDefaultDestinationKey(destinationKey, destinations);
 ```
 
 with:
@@ -3611,12 +4527,92 @@ with:
   const { destinations, defaultName: destinationDefaultName } = useDownloadDestinations(
     reviewRecord.content_type,
   );
+  const showDestinationPicker = shouldShowDestinationPicker(
+    reviewRecord.content_type,
+    destinations,
+    destinationKey,
+  );
+  // An audiobook selection whose library disappeared mid-review is dropped; an
+  // ebook pick is kept and verified by the server, which fails closed.
+  const selectedDestinationKey = resolveSelectedDestinationKey(
+    reviewRecord.content_type,
+    destinationKey,
+    destinations,
+  );
+  const approvalDestinationKey = destinationKeyToSend(
+    reviewRecord.content_type,
+    destinationKey,
+    destinations,
+  );
+  const destinationOptions = pickerDestinations(
+    reviewRecord.content_type,
+    selectedDestinationKey,
+    destinations,
+  );
 ```
 
-4. Replace:
+5. In `handleReviewApprove`, replace:
+
+```ts
+      if (requiresBrowseBeforeApprove) {
+        await reviewApproveHandler(reviewRecord.id, reviewRecord, {
+          browseOnly: true,
+          destinationKey: selectedDestinationKey || undefined,
+        });
+        return;
+      }
+
+      await reviewApproveHandler(reviewRecord.id, reviewRecord, {
+        destinationKey: selectedDestinationKey || undefined,
+      });
+```
+
+with:
+
+```ts
+      await reviewApproveHandler(
+        reviewRecord.id,
+        reviewRecord,
+        reviewApproveOptions(
+          requiresBrowseBeforeApprove ? 'browse' : 'approve',
+          approvalDestinationKey,
+        ),
+      );
+```
+
+6. In `handleReviewBrowseAlternatives` — the review finding: it sent only `{ browseOnly: true }`, so a library picked on the panel was lost on the browse detour (the browse modal hides its own picker) and the fulfilment used the default — replace:
+
+```ts
+      await reviewApproveHandler(reviewRecord.id, reviewRecord, { browseOnly: true });
+```
+
+with:
+
+```ts
+      await reviewApproveHandler(
+        reviewRecord.id,
+        reviewRecord,
+        reviewApproveOptions('browse', approvalDestinationKey),
+      );
+```
+
+7. In `handleReviewManualApproval`, replace:
+
+```ts
+      await reviewApproveHandler(reviewRecord.id, reviewRecord, { manualApproval: true });
+```
+
+with:
+
+```ts
+      await reviewApproveHandler(reviewRecord.id, reviewRecord, reviewApproveOptions('manual'));
+```
+
+8. In the picker, replace:
 
 ```tsx
             <option value="">Default audiobook destination</option>
+            {destinations.map((destination) => (
 ```
 
 with:
@@ -3625,14 +4621,15 @@ with:
             <option value="">
               {destinationDefaultLabel(reviewRecord.content_type, destinationDefaultName)}
             </option>
+            {destinationOptions.map((destination) => (
 ```
 
-(The approve panel is admin-only already, and the browse-to-fulfil detour keeps carrying the panel's key through `fulfillingRequest.destinationKey`; `ReleaseModal` still hides its own picker in that mode.)
+(`App.handleRequestApprove` already stores `options.destinationKey` on `fulfillingRequest` for any browse, and `handleBrowseFulfilDownload` passes it to the fulfil call; `ReleaseModal` still hides its own picker in that mode.)
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `npx vitest run src/tests/downloadDestinations.test.ts && npm run test:unit`
-Expected: PASS (21 tests in `downloadDestinations.test.ts`; whole suite green).
+Run: `npx vitest run src/tests/downloadDestinations.test.ts src/tests/reviewApproval.test.ts && npm run test:unit`
+Expected: PASS (31 tests in `downloadDestinations.test.ts`, 4 in `reviewApproval.test.ts`; whole suite green).
 
 - [ ] **Step 5: Typecheck, lint, format, knip, commit**
 
@@ -3646,7 +4643,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
-### Task 9: Every frontend payload builder carries the book identity
+### Task 10: Every frontend payload builder carries the book identity
 
 **Files:**
 - Create: `src/frontend/src/utils/bookIdentity.ts`
@@ -3656,7 +4653,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 All paths below are relative to `src/frontend/`.
 
 **Interfaces:**
-- Consumes: `combinedLegOptions`, `completeCombinedSelection` (Task 7); `downloadRelease(payload, onBehalfOfUserId?)` from `services/api.ts`.
+- Consumes: `combinedLegOptions`, `completeCombinedSelection` (Task 8); `downloadRelease(payload, onBehalfOfUserId?)` from `services/api.ts`.
 - Produces: `interface BookIdentityFields { provider?; provider_id?; isbn_13?; asin? }` and `bookIdentityFields(book: Book): BookIdentityFields` (`{}` for `provider === 'manual'`; `isbn_13: book.isbn_13 ?? book.isbn_10`). `DownloadReleasePayload` gains the four optional fields. `buildReleaseDownloadPayload` and `buildReleaseDataFromMetadataRelease` spread `bookIdentityFields(book)`; `buildMetadataBookRequestData` also stores `isbn_13` and `isbn_10`; `bookFromRequestData` keeps `isbn_13`, `isbn_10`, `asin`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -4022,7 +5019,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
-### Task 10: Full gates
+### Task 11: Full gates
 
 **Files:** none (verification only).
 
@@ -4040,7 +5037,7 @@ uv run basedpyright
 uv run vulture shelfmark
 ```
 
-Expected: pytest reports only the 9 known failures in `tests/config/test_entrypoint_permissions.py` (macOS; none elsewhere — about 90 more passing tests than `main`); ruff clean; BasedPyright shows only the 4 known errors at `shelfmark/main.py:2305-2308`; vulture prints nothing.
+Expected: pytest reports only the 9 known failures in `tests/config/test_entrypoint_permissions.py` (macOS; none elsewhere — about 106 more passing tests than `main`: 3591 passed on the dry run); ruff clean; BasedPyright shows only the 4 known errors at `shelfmark/main.py:2305-2308`; vulture prints nothing.
 
 - [ ] **Step 2: Frontend gates**
 
@@ -4050,7 +5047,7 @@ npm run typecheck && npm run lint && npm run format:check && npm run test:unit
 npm run knip
 ```
 
-Expected: typecheck, lint, format clean; vitest all green (about 24 more tests than `main`); knip lists exactly the findings `main` already has.
+Expected: typecheck, lint, format clean; vitest all green (about 38 more tests than `main`: 357 on the dry run); knip lists exactly the findings `main` already has.
 
 - [ ] **Step 3: Contract spot-check against Plan B**
 
