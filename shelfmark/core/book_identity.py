@@ -67,6 +67,27 @@ def normalize_book_identity(data: Mapping[str, Any]) -> BookIdentity:
     )
 
 
+def _differ(left: str | None, right: str | None) -> bool:
+    return left is not None and right is not None and left.casefold() != right.casefold()
+
+
+def _identifiers_conflict(
+    release_data: Mapping[str, Any],
+    release: BookIdentity,
+    book: BookIdentity,
+) -> bool:
+    """True when an identifier present on both sides names a different book.
+
+    The release's provider id is read raw: a lone id is dropped by the pair
+    rule, yet it still says which book the release is.
+    """
+    return (
+        _differ(_identity_text(release_data.get("provider_id")), book.provider_id)
+        or _differ(release.isbn_13, book.isbn_13)
+        or _differ(release.asin, book.asin)
+    )
+
+
 def fill_identity_from_book_data(
     release_data: Mapping[str, Any],
     book_data: object,
@@ -79,7 +100,9 @@ def fill_identity_from_book_data(
     different provider. A release that names a provider but lost its id, while
     the book data names a different provider, drops its half pair and imports
     nothing: adopting the request's pair would pin the release's ISBN to
-    another book.
+    another book. Likewise, a release without a complete pair whose provider
+    id, ISBN or ASIN disagrees with the book data's drops its half pair and
+    imports nothing.
     Otherwise a release without a complete pair takes the book data's pair
     whole. Returns a new dict; the input is not modified.
     """
@@ -96,7 +119,7 @@ def fill_identity_from_book_data(
             named_provider is not None
             and book.provider is not None
             and named_provider.casefold() != book.provider.casefold()
-        ):
+        ) or _identifiers_conflict(release_data, release, book):
             filled["provider"] = None
             filled["provider_id"] = None
             return filled

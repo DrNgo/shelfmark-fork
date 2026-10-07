@@ -162,6 +162,49 @@ class TestFillIdentityFromBookData:
         assert filled["isbn_13"] == OTHER_ISBN_13
         assert "asin" not in filled
 
+    def test_a_same_provider_half_pair_with_a_conflicting_isbn_imports_nothing(self):
+        """The release names Hardcover without an id and carries another book's ISBN.
+
+        Adopting the request's Hardcover id would pair it with this release's
+        ISBN and the request's ASIN: three identifiers from two books.
+        """
+        release = {"provider": "hardcover", "isbn_13": OTHER_ISBN_13}
+
+        filled = fill_identity_from_book_data(release, self.BOOK_DATA)
+
+        assert filled["provider"] is None
+        assert filled["provider_id"] is None
+        assert filled["isbn_13"] == OTHER_ISBN_13
+        assert "asin" not in filled
+
+    def test_a_lone_provider_id_that_conflicts_imports_nothing(self):
+        release = {"provider_id": "999999", "isbn_13": OTHER_ISBN_13}
+
+        filled = fill_identity_from_book_data(release, self.BOOK_DATA)
+
+        assert filled["provider"] is None
+        assert filled["provider_id"] is None
+        assert filled["isbn_13"] == OTHER_ISBN_13
+        assert "asin" not in filled
+
+    def test_a_conflicting_asin_imports_nothing(self):
+        release = {"provider": "hardcover", "asin": "B0OTHER999"}
+
+        filled = fill_identity_from_book_data(release, self.BOOK_DATA)
+
+        assert filled["provider"] is None
+        assert filled["provider_id"] is None
+        assert filled["asin"] == "B0OTHER999"
+        assert "isbn_13" not in filled
+
+    def test_a_half_pair_whose_shared_identifiers_agree_is_completed(self):
+        release = {"provider_id": "886465", "isbn_13": ISBN_10}
+
+        filled = fill_identity_from_book_data(release, self.BOOK_DATA)
+
+        assert (filled["provider"], filled["provider_id"]) == ("hardcover", "886465")
+        assert filled["asin"] == "B0BSHZ1234"
+
     def test_an_isbn_10_in_book_data_is_used(self):
         book_data = {**self.BOOK_DATA, "isbn_13": None, "isbn_10": ISBN_10}
 
