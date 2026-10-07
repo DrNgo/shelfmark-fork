@@ -994,3 +994,47 @@ class TestIdentityReviewFixes:
     def test_any_identity_hit_survives_junk_results(self, results):
         identity = SearchIdentity(series_key="Overlord", position=5)
         assert any_identity_hit(results, identity, content_type="ebook") is False
+
+
+class TestLiveAcceptanceShapes:
+    """Release names from the 2026-10-07 live acceptance run that the predicate missed."""
+
+    @staticmethod
+    def _identity(title: str, series: str, position: int) -> SearchIdentity:
+        return build_search_identity(
+            title=title, current_query=title, series_name=series, series_position=position
+        )
+
+    @staticmethod
+    def _hit(title: str, identity: SearchIdentity) -> bool:
+        return is_identity_hit(
+            title,
+            series_key=identity.series_key,
+            position=identity.position,
+            title_tokens=identity.title_tokens,
+            content_type="ebook",
+            title_names_volume=identity.title_names_volume,
+        )
+
+    def test_a_bracketed_series_number_names_the_volume(self):
+        overlord2 = self._identity(f"{OL}, Vol. 2: The Dark Warrior", OL, 2)
+
+        assert self._hit("Kugane Maruyama - [Overlord 02] - The Dark Warrior (epub)", overlord2)
+        assert not self._hit("Kugane Maruyama - [Overlord 03] - The Bloody Valkyrie", overlord2)
+
+    def test_a_file_version_tag_is_not_a_volume(self):
+        shield3 = self._identity(f"{SH}, Vol. 3", SH, 3)
+
+        assert self._hit(
+            "Aneko Yusagi - [Shield Hero 03] - The Rising of the Shield Hero Volume 3 (v2.0) (epub)",
+            shield3,
+        )
+        # A fractional volume is still not this volume.
+        assert not self._hit("The Rising of the Shield Hero v3.5 (epub)", shield3)
+
+    def test_an_html_escaped_ampersand_still_marks_a_bundle(self):
+        leviathan = self._identity("Leviathan Wakes", "The Expanse", 1)
+
+        # Named by title: "&amp;" is the same "&" that marks two books in one release.
+        assert not self._hit("Leviathan Wakes &amp; Caliban's War (epub)", leviathan)
+        assert self._hit("James S A Corey - The Expanse 01 Leviathan Wakes (epub, mobi)", leviathan)

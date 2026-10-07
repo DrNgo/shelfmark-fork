@@ -13,6 +13,7 @@ nothing here raises.
 
 from __future__ import annotations
 
+import html
 import math
 import re
 from dataclasses import dataclass
@@ -285,6 +286,8 @@ _MULTI_VOLUME_RE = re.compile(
     r"|(?<![\d.])\d{1,3}\s*(?:-|–|—|~|&|\+|\bto\b|\band\b)\s*\d{1,3}(?![\d.])",
     re.IGNORECASE,
 )
+# A release's file version, "(v2.0)" or "[v1.1]": not a volume number.
+_VERSION_TAG_RE = re.compile(r"[(\[]\s*v\d+(?:\.\d+)+\s*[)\]]", re.IGNORECASE)
 # Any standalone 1-3 digit number ("2", "#2", "Book 2"); four-digit years are not volumes.
 _ANY_NUMBER_RE = re.compile(r"(?<![\d.])\d{1,3}(?![\d.])")
 
@@ -355,9 +358,11 @@ def _release_volumes(text: str, series_tokens: tuple[str, ...]) -> set[int] | No
     """The volume numbers ``text`` names, or None if any of them is not a whole volume."""
     patterns = list(_RELEASE_VOLUME_RES)
     if series_tokens:
-        # "Expanse 01 - Leviathan Wakes": the series, its number, then " - ".
+        # "Expanse 01 - Leviathan Wakes": the series, its number, then " - "; and the
+        # bracketed "[Overlord 02] - The Dark Warrior".
         last = re.escape(series_tokens[-1])
         patterns.append(re.compile(rf"\b{last}[\s._]+(\d{{1,3}})\s+-\s"))
+        patterns.append(re.compile(rf"\b{last}[\s._]+(\d{{1,3}})\s*\]"))
     numbers: set[int] = set()
     for pattern in patterns:
         for match in pattern.finditer(text):
@@ -396,7 +401,8 @@ def is_identity_hit(
         series_key, position = "", None
     if position is not None and not isinstance(position, int):
         position = None
-    text = release_title.casefold()
+    # Indexers send "&amp;" for "&"; a file version tag "(v2.0)" is not a volume.
+    text = _VERSION_TAG_RE.sub(" ", html.unescape(release_title)).casefold()
     if _VIDEO_RE.search(text):
         return False
     if str(content_type).strip().lower() == "ebook" and _AUDIO_RE.search(text):
