@@ -10,7 +10,7 @@ import {
 } from '../../utils/audiobookDestinations';
 import { withBasePath } from '../../utils/basePath';
 import { coverObjectPositionClass, isSquareCover } from '../../utils/coverAspect';
-import { singleBookLookup } from '../../utils/libraryMatches';
+import { hardcoverIdentity, singleBookLookup } from '../../utils/libraryMatches';
 import { InLibraryBadge } from '../shared/InLibraryBadge';
 import { Tooltip } from '../shared/Tooltip';
 import type { ActivityCardAction } from './activityCardModel';
@@ -309,6 +309,7 @@ const ReviewInlinePanel = ({
   // The approving admin is the last person who can catch a duplicate, so the
   // badge belongs here too — not only on the requester's side.
   const reviewBookData = asRecord(reviewRecord.book_data);
+  const reviewIdentity = hardcoverIdentity(reviewBookData);
   const lookupBooks = useMemo(
     () =>
       singleBookLookup(
@@ -318,6 +319,8 @@ const ReviewInlinePanel = ({
         toOptionalText(reviewBookData.asin),
         toOptionalText(reviewBookData.isbn_13) ?? toOptionalText(reviewBookData.isbn_10),
         reviewRecord.content_type,
+        reviewIdentity.provider,
+        reviewIdentity.providerId,
       ),
     [
       reviewRecord.id,
@@ -327,6 +330,8 @@ const ReviewInlinePanel = ({
       reviewBookData.asin,
       reviewBookData.isbn_13,
       reviewBookData.isbn_10,
+      reviewIdentity.provider,
+      reviewIdentity.providerId,
     ],
   );
   const libraryMatch = useLibraryMatches(lookupBooks)[`review-${reviewRecord.id}`];

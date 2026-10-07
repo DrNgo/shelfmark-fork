@@ -3,14 +3,19 @@ import { createPortal } from 'react-dom';
 
 import { useBodyScrollLock } from '../hooks/useBodyScrollLock';
 import { useEscapeKey } from '../hooks/useEscapeKey';
-import { useLibraryMatches } from '../hooks/useLibraryMatches';
+import { useBothFormatMatches, useLibraryMatches } from '../hooks/useLibraryMatches';
 import { useMountEffect } from '../hooks/useMountEffect';
 import type { Book, ButtonStateInfo } from '../types';
 import { isMetadataBook } from '../types';
 import { bookSupportsTargets } from '../utils/bookTargetLoader';
 import { isSquareCover } from '../utils/coverAspect';
 import { isUserCancelledError } from '../utils/errors';
-import { applyInLibraryLock, isHeldInFormat, singleBookLookup } from '../utils/libraryMatches';
+import {
+  applyInLibraryLock,
+  bothFormatsFor,
+  isLockedInLibrary,
+  singleBookLookup,
+} from '../utils/libraryMatches';
 import { BookTargetDropdown } from './BookTargetDropdown';
 
 interface DetailsModalProps {
@@ -29,6 +34,8 @@ interface DetailsModalProps {
    * card it was opened from already does.
    */
   defaultContentType?: string;
+  /** Combined mode acquires both formats, so the lock needs both held. */
+  combinedMode?: boolean;
 }
 
 interface DetailsModalAutoCloseProps {
@@ -56,6 +63,7 @@ export const DetailsModal = ({
   showReleaseSourceLinks = true,
   onShowToast,
   defaultContentType,
+  combinedMode = false,
 }: DetailsModalProps) => {
   const [isQueuing, setIsQueuing] = useState(false);
   const [isClosing, setIsClosing] = useState(false);
@@ -83,6 +91,8 @@ export const DetailsModal = ({
         book?.asin,
         book?.isbn_13 ?? book?.isbn_10,
         book?.content_type ?? defaultContentType,
+        book?.provider,
+        book?.provider_id,
       ),
     [
       book?.id,
@@ -92,10 +102,13 @@ export const DetailsModal = ({
       book?.isbn_13,
       book?.isbn_10,
       book?.content_type,
+      book?.provider,
+      book?.provider_id,
       defaultContentType,
     ],
   );
   const libraryMatch = useLibraryMatches(lookupBooks)[`details-${book?.id ?? ''}`];
+  const bothFormatMatches = useBothFormatMatches(lookupBooks, combinedMode);
 
   const hasBookTargets = Boolean(book && isMetadataBook(book) && bookSupportsTargets(book));
 
@@ -121,7 +134,10 @@ export const DetailsModal = ({
 
   // Determine if this is a metadata book (Universal mode) vs a release (Direct Download)
   const isMetadata = isMetadataBook(book);
-  const effectiveButtonState = applyInLibraryLock(buttonState, isHeldInFormat(libraryMatch));
+  const effectiveButtonState = applyInLibraryLock(
+    buttonState,
+    isLockedInLibrary(libraryMatch, bothFormatsFor(bothFormatMatches, `details-${book.id}`)),
+  );
   const showBookSourceLink = Boolean(book.source_url) && (isMetadata || showReleaseSourceLinks);
   const metadataActionText =
     isMetadata && effectiveButtonState.state === 'download' && effectiveButtonState.text === 'Get'

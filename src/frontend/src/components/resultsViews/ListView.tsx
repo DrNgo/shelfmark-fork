@@ -7,8 +7,8 @@ import { getFormatColor, getLanguageColor } from '../../utils/colorMaps';
 import type { CoverAspect } from '../../utils/coverAspect';
 import { coverObjectPositionClass, isSquareCover } from '../../utils/coverAspect';
 import { summarizeNameList } from '../../utils/displayFields';
-import { isHeldInFormat } from '../../utils/libraryMatches';
-import type { LibraryMatch } from '../../utils/libraryMatches';
+import { bothFormatsFor, isLockedInLibrary } from '../../utils/libraryMatches';
+import type { BothFormatMatches, LibraryMatch } from '../../utils/libraryMatches';
 import { isBookRequested } from '../../utils/requestedBooks';
 import { BookActionButton } from '../BookActionButton';
 import { BookTargetDropdown } from '../BookTargetDropdown';
@@ -25,6 +25,7 @@ interface ListViewProps {
   onShowToast?: (message: string, type: 'success' | 'error' | 'info') => void;
   libraryMatches?: Record<string, LibraryMatch>;
   openRequestKeys?: Set<string>;
+  bothFormatMatches?: BothFormatMatches | null;
 }
 
 const NO_LIBRARY_MATCHES: Record<string, LibraryMatch> = {};
@@ -103,6 +104,7 @@ export const ListView = ({
   onShowToast,
   libraryMatches = NO_LIBRARY_MATCHES,
   openRequestKeys = NO_OPEN_REQUESTS,
+  bothFormatMatches = null,
 }: ListViewProps) => {
   const { searchMode } = useSearchMode();
   const [detailsLoadingId, setDetailsLoadingId] = useState<string | null>(null);
@@ -365,7 +367,10 @@ export const ListView = ({
                       void handleGetReleases(selectedBook);
                     }}
                     isLoadingReleases={releasesLoadingId === book.id}
-                    isInLibrary={isHeldInFormat(libraryMatches[book.id])}
+                    isInLibrary={isLockedInLibrary(
+                      libraryMatches[book.id],
+                      bothFormatsFor(bothFormatMatches, book.id),
+                    )}
                     variant="icon"
                     size="md"
                   />

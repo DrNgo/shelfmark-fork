@@ -5,8 +5,8 @@ import type { Book, ButtonStateInfo } from '../../types';
 import { bookSupportsTargets } from '../../utils/bookTargetLoader';
 import { coverObjectPosition, isSquareCover } from '../../utils/coverAspect';
 import { summarizeNameList } from '../../utils/displayFields';
-import { isHeldInFormat } from '../../utils/libraryMatches';
-import type { LibraryMatch } from '../../utils/libraryMatches';
+import { isLockedInLibrary } from '../../utils/libraryMatches';
+import type { FormatMatches, LibraryMatch } from '../../utils/libraryMatches';
 import { BookActionButton } from '../BookActionButton';
 import { BookTargetDropdown } from '../BookTargetDropdown';
 import { DisplayFieldBadges, DisplayFieldIcon, InLibraryBadge, RequestedBadge } from '../shared';
@@ -27,6 +27,8 @@ interface CompactViewProps {
   onShowToast?: (message: string, type: 'success' | 'error' | 'info') => void;
   libraryMatch?: LibraryMatch;
   isRequested?: boolean;
+  /** Both formats' holdings; set only in combined mode. */
+  bothFormats?: FormatMatches;
 }
 
 export const CompactView = ({
@@ -41,6 +43,7 @@ export const CompactView = ({
   onShowToast,
   libraryMatch,
   isRequested = false,
+  bothFormats,
 }: CompactViewProps) => {
   const { searchMode } = useSearchMode();
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
@@ -300,7 +303,7 @@ export const CompactView = ({
                   void handleGetReleases(selectedBook);
                 }}
                 isLoadingReleases={isLoadingReleases}
-                isInLibrary={isHeldInFormat(libraryMatch)}
+                isInLibrary={isLockedInLibrary(libraryMatch, bothFormats)}
                 size="sm"
                 className="flex-1"
               />
@@ -314,7 +317,7 @@ export const CompactView = ({
                 void handleGetReleases(selectedBook);
               }}
               isLoadingReleases={isLoadingReleases}
-              isInLibrary={isHeldInFormat(libraryMatch)}
+              isInLibrary={isLockedInLibrary(libraryMatch, bothFormats)}
               size="sm"
               fullWidth
             />

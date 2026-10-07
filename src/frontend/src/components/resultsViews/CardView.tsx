@@ -4,8 +4,8 @@ import { useSearchMode } from '../../contexts/SearchModeContext';
 import type { Book, ButtonStateInfo } from '../../types';
 import { bookSupportsTargets } from '../../utils/bookTargetLoader';
 import { coverAspectRatio } from '../../utils/coverAspect';
-import { isHeldInFormat } from '../../utils/libraryMatches';
-import type { LibraryMatch } from '../../utils/libraryMatches';
+import { isLockedInLibrary } from '../../utils/libraryMatches';
+import type { FormatMatches, LibraryMatch } from '../../utils/libraryMatches';
 import { BookActionButton } from '../BookActionButton';
 import { BookTargetDropdown } from '../BookTargetDropdown';
 import { DisplayFieldBadges, InLibraryBadge, RequestedBadge } from '../shared';
@@ -25,6 +25,8 @@ interface CardViewProps {
   onShowToast?: (message: string, type: 'success' | 'error' | 'info') => void;
   libraryMatch?: LibraryMatch;
   isRequested?: boolean;
+  /** Both formats' holdings; set only in combined mode. */
+  bothFormats?: FormatMatches;
 }
 
 export const CardView = ({
@@ -38,6 +40,7 @@ export const CardView = ({
   onShowToast,
   libraryMatch,
   isRequested = false,
+  bothFormats,
 }: CardViewProps) => {
   const { searchMode } = useSearchMode();
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
@@ -258,7 +261,7 @@ export const CardView = ({
               void handleGetReleases(selectedBook);
             }}
             isLoadingReleases={isLoadingReleases}
-            isInLibrary={isHeldInFormat(libraryMatch)}
+            isInLibrary={isLockedInLibrary(libraryMatch, bothFormats)}
             size="sm"
             className="flex-1"
           />
@@ -273,7 +276,7 @@ export const CardView = ({
           void handleGetReleases(selectedBook);
         }}
         isLoadingReleases={isLoadingReleases}
-        isInLibrary={isHeldInFormat(libraryMatch)}
+        isInLibrary={isLockedInLibrary(libraryMatch, bothFormats)}
         className="hidden rounded-none sm:flex"
         fullWidth
         style={{

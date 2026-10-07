@@ -2594,6 +2594,7 @@ function App() {
             getUniversalButtonState={getUniversalActionButtonState}
             openRequestKeys={openRequestKeys}
             defaultContentType={effectiveContentType}
+            combinedMode={effectiveCombinedMode}
             sortValue={visibleResultsSort}
             showSortControl={
               !activeQueryUsesSeriesBrowse && !activeQueryUsesListBrowse && !resultsSourceUrl
@@ -2645,6 +2646,7 @@ function App() {
               }
               showReleaseSourceLinks={config?.show_release_source_links !== false}
               defaultContentType={effectiveContentType}
+              combinedMode={effectiveCombinedMode}
             />
           )}
 

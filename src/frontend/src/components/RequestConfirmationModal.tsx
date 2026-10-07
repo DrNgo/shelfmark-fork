@@ -8,6 +8,7 @@ import { getMetadataBookInfo } from '../services/api';
 import type { Book, CreateRequestPayload } from '../types';
 import { coverObjectPositionClass, isSquareCover } from '../utils/coverAspect';
 import {
+  hardcoverIdentity,
   isHeldInFormat,
   libraryMatchOwnershipMessage,
   singleBookLookup,
@@ -184,6 +185,8 @@ function RequestConfirmationModalSession({
 
   // Asking about one book is cheap, and it is the moment the answer matters
   // most: the requester finds out before an admin has to.
+  // The preview carries no provider fields; the request's own book data does.
+  const requestIdentity = hardcoverIdentity(payload.book_data);
   const lookupBooks = useMemo(
     () =>
       preview
@@ -194,9 +197,11 @@ function RequestConfirmationModalSession({
             preview.asin,
             preview.isbn_13 ?? preview.isbn_10,
             preview.content_type,
+            requestIdentity.provider,
+            requestIdentity.providerId,
           )
         : EMPTY_LOOKUP_BOOKS,
-    [preview],
+    [preview, requestIdentity.provider, requestIdentity.providerId],
   );
   const libraryMatch = useLibraryMatches(lookupBooks)['request-confirmation'];
 
