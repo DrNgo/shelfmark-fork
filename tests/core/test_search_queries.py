@@ -603,7 +603,69 @@ class TestIdentityPredicate:
             position=identity.position,
             title_tokens=identity.title_tokens,
             content_type=content_type,
+            title_names_volume=identity.title_names_volume,
         )
+
+    @staticmethod
+    def _leviathan() -> SearchIdentity:
+        # A series book whose title carries no volume marker (The Expanse 1).
+        return build_search_identity(
+            title="Leviathan Wakes",
+            current_query="Leviathan Wakes",
+            series_name="The Expanse",
+            series_position=1,
+        )
+
+    def test_a_series_book_without_a_volume_marker_is_flagged(self):
+        identity = self._leviathan()
+
+        assert (identity.series_key, identity.position) == ("The Expanse", 1)
+        assert identity.title_names_volume is False
+        assert identity.title_tokens == ("leviathan", "wakes")
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "Leviathan Wakes - James S.A. Corey EPUB",
+            "James.S.A.Corey-Leviathan.Wakes.2011.RETAIL.EPUB",
+            "Reader Corey, James S A - The Expanse 01 - Leviathan Wakes (Retail)",
+        ],
+    )
+    def test_its_natural_release_name_is_a_hit(self, title):
+        assert self._hit(title, self._leviathan())
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "The Expanse 1-3 Leviathan Wakes Calibans War Abaddons Gate",
+            "The Expanse Books 1 - 3: Leviathan Wakes, Caliban's War, Abaddon's Gate (epub)",
+            "Leviathan Wakes / Caliban's War omnibus (epub)",
+            "The Expanse Box Set Leviathan Wakes (epub)",
+            "The Expanse Vol. 2 Leviathan Wakes (epub)",
+            "The Expanse Vol. 1.5 Leviathan Wakes (epub)",
+        ],
+    )
+    def test_a_multi_volume_or_other_volume_release_is_not(self, title):
+        assert not self._hit(title, self._leviathan())
+
+    def test_a_wrong_title_from_the_same_series_is_not(self):
+        assert not self._hit("The Expanse Calibans War (epub)", self._leviathan())
+        assert not self._hit("Calibans War - James S.A. Corey EPUB", self._leviathan())
+
+    def test_a_volume_marker_title_keeps_the_strict_series_rule(self):
+        identity = build_search_identity(
+            title=f"{DXD}, Vol. 5: Hellcat of the Underworld Training Camp",
+            current_query="Hellcat of the Underworld Training Camp",
+            series_name=DXD,
+            series_position=5,
+        )
+
+        assert identity.title_names_volume is True
+        # The title tokens alone are not enough: the series rule decides.
+        assert not self._hit(
+            "High School DxD Hellcat of the Underworld Training Camp (epub)", identity
+        )
+        assert self._hit("High School DxD v05 Hellcat of the Underworld Training Camp", identity)
 
     @pytest.mark.parametrize(
         "title",
@@ -832,7 +894,7 @@ class TestBuildSearchIdentity:
             series_name=None,
             series_position=None,
         )
-        assert identity == SearchIdentity(title_tokens=("housemaid",))
+        assert identity == SearchIdentity(title_tokens=("housemaid",), title_names_volume=False)
 
 
 class TestAnyIdentityHit:

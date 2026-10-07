@@ -203,6 +203,43 @@ class TestStopping:
         assert client.queries() == [DXD5, "Highschool DxD 5"]
 
 
+class TestSeriesBookNamedByTitle:
+    """A series book whose title has no volume marker is found by its own name."""
+
+    LEVIATHAN = BookMetadata(
+        provider="hardcover",
+        provider_id="1",
+        title="Leviathan Wakes",
+        authors=["James S.A. Corey"],
+        series_name="The Expanse",
+        series_position=1,
+    )
+
+    def test_the_natural_release_name_skips_the_ladder(self, monkeypatch):
+        natural = "Leviathan Wakes - James S.A. Corey EPUB"
+        client = _LadderClient({(1, "Leviathan Wakes"): [natural]})
+        lines = _info_lines(monkeypatch)
+
+        releases = _search(monkeypatch, client, book=self.LEVIATHAN)
+
+        assert client.queries() == ["Leviathan Wakes"]
+        assert [r.title for r in releases] == [natural]
+        assert "Prowlarr fallbacks: ran=no stop=hit rungs=0/3 requests=0" in lines
+
+    def test_a_multi_volume_set_does_not(self, monkeypatch):
+        boxed = "The Expanse 1-3 Leviathan Wakes Calibans War Abaddons Gate"
+        client = _LadderClient({(1, "Leviathan Wakes"): [boxed]})
+
+        _search(monkeypatch, client, book=self.LEVIATHAN)
+
+        assert client.queries() == [
+            "Leviathan Wakes",
+            "The Expanse Vol. 1",
+            "The Expanse v01",
+            "The Expanse Volume 01",
+        ]
+
+
 class TestFailedIndexers:
     def test_failed_and_rate_limited_indexers_sit_out_while_healthy_ones_continue(
         self, monkeypatch

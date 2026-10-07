@@ -276,6 +276,15 @@ _INCOMPLETE_VOLUME_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A release that is several books at once: a collection word, or two numbers joined as a
+# range or list ("The Expanse 1-3", "Books 1 & 2"). Bounded to three digits so a year
+# range is not read as volumes.
+_MULTI_VOLUME_RE = re.compile(
+    r"\b(?:omnibus|collected|box(?:ed)?[\s._-]*set|bundle|complete[\s._-]+series)\b"
+    r"|(?<![\d.])\d{1,3}\s*(?:-|–|—|~|&|\+|\bto\b|\band\b)\s*\d{1,3}(?![\d.])",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class SearchIdentity:
@@ -290,6 +299,10 @@ class SearchIdentity:
     title_tokens: tuple[str, ...] = ()
     # The requested book is itself a manga or comic, so such releases may be it.
     book_is_comic: bool = False
+    # The book's title names its volume ("..., Vol. 5"). When it does not (Leviathan
+    # Wakes is The Expanse 1), a release may name the book by title instead of by series
+    # and number, so the title-token rule also applies.
+    title_names_volume: bool = True
 
 
 def _tokens(text: str) -> list[str]:
@@ -331,6 +344,7 @@ def build_search_identity(
         position=resolved.position,
         title_tokens=title_tokens,
         book_is_comic=bool(_COMIC_BOOK_RE.search(f"{title_text} {series_text}")),
+        title_names_volume=bool(_VOLUME_MARKER_RE.search(title_text)),
     )
 
 
@@ -358,6 +372,7 @@ def is_identity_hit(
     title_tokens: tuple[str, ...] | list[str],
     content_type: str,
     book_is_comic: bool = False,
+    title_names_volume: bool = True,
 ) -> bool:
     """Whether a release name is the requested book, for deciding when fallbacks stop.
 
@@ -365,6 +380,10 @@ def is_identity_hit(
     and not be video. Any other book must carry its significant title tokens and not be
     video. Unless ``book_is_comic``, a manga, comic or graphic-novel release is not the
     book either. Never used to filter or reorder results.
+
+    A series volume whose title does not name its volume (``title_names_volume`` False:
+    "Leviathan Wakes", The Expanse 1) is also the book by its title tokens, as long as
+    the release names no other volume and is not a multi-volume set.
     """
     if not isinstance(release_title, str) or not release_title.strip():
         return False
@@ -385,9 +404,15 @@ def is_identity_hit(
     present = set(_tokens(text))
     if series_key and position is not None:
         key_tokens = significant_tokens(series_key)
-        if not key_tokens or not all(token in present for token in key_tokens):
+        has_key = bool(key_tokens) and all(token in present for token in key_tokens)
+        volumes = _release_volumes(text, key_tokens)
+        if has_key and volumes == {position}:
+            return True
+        if title_names_volume is not False:
             return False
-        return _release_volumes(text, key_tokens) == {position}
+        # Named by title: only if it names no other volume and is not a set.
+        if volumes is None or not volumes <= {position} or _MULTI_VOLUME_RE.search(text):
+            return False
 
     wanted = [token.casefold() for token in title_tokens if isinstance(token, str) and token]
     return len(wanted) >= _MIN_TITLE_TOKENS and all(token in present for token in wanted)
@@ -411,6 +436,7 @@ def any_identity_hit(
                 title_tokens=identity.title_tokens,
                 content_type=content_type,
                 book_is_comic=identity.book_is_comic,
+                title_names_volume=identity.title_names_volume,
             )
             for title in release_titles
         )

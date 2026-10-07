@@ -111,6 +111,7 @@ def _search(
     indexers=None,
     auto_expand=False,
     source=None,
+    book=None,
 ):
     rows = [{"name": name, "url": f"https://{name}.example"} for name in connections]
     values = {"NEWZNAB_INDEXERS": rows, "NEWZNAB_AUTO_EXPAND": auto_expand}
@@ -120,7 +121,7 @@ def _search(
     by_url = {f"https://{name}.example": client for name, client in connections.items()}
     monkeypatch.setattr(newznab_source, "NewznabClient", lambda url, _key: by_url[url])
 
-    book = _dxd5()
+    book = book or _dxd5()
     plan = build_release_search_plan(
         book, languages=["en"], indexers=indexers, content_type="ebook"
     )
@@ -341,6 +342,27 @@ class TestOnlyFilteredResultsCount:
 
         assert geek.queries() == UNTIL_THE_CAP
         assert [r.title for r in releases] == [WRONG_VOLUME]
+
+
+class TestSeriesBookNamedByTitle:
+    def test_the_natural_release_name_skips_the_ladder(self, monkeypatch):
+        natural = "Leviathan Wakes - James S.A. Corey EPUB"
+        geek = _FakeNewznab({"Leviathan Wakes": [natural]})
+        book = BookMetadata(
+            provider="hardcover",
+            provider_id="1",
+            title="Leviathan Wakes",
+            authors=["James S.A. Corey"],
+            series_name="The Expanse",
+            series_position=1,
+        )
+        lines = _info_lines(monkeypatch)
+
+        releases = _search(monkeypatch, {"geek": geek}, book=book)
+
+        assert geek.queries() == ["Leviathan Wakes"]
+        assert [r.title for r in releases] == [natural]
+        assert "Newznab [geek] fallbacks: ran=no stop=hit rungs=0/3 requests=0" in lines
 
 
 class TestCap:
