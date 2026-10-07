@@ -6,11 +6,13 @@ is therefore exact-after-normalization; nothing scores or fuzzy-matches.
 """
 
 from shelfmark.library.matching import (
+    HARDCOVER_KEY_PREFIX,
     KEY_SEPARATOR,
     asin_match_key,
     author_match_keys,
     build_match_keys,
     edition_qualifiers,
+    hardcover_match_key,
     normalize_asin,
     normalize_author,
     normalize_title,
@@ -75,7 +77,7 @@ class TestAuthorMatchKeys:
     """A name written "Last, First" must still match "First Last"."""
 
     def test_yields_the_plain_normalized_name(self):
-        assert author_match_keys("Freida McFadden") == {"freida mcfadden"}
+        assert author_match_keys("Freida McFadden") == {"freida mcfadden", "mcfadden freida"}
 
     def test_yields_both_orderings_for_a_single_comma(self):
         assert author_match_keys("McFadden, Freida") == {
@@ -176,7 +178,11 @@ class TestBuildMatchKeysWithAsin:
     def test_adds_the_asin_key_alongside_the_title_keys(self):
         keys = build_match_keys("The Housemaid", "Freida McFadden", asin="B0BSHZ1234")
 
-        assert keys == {"housemaid|freida mcfadden", "asin:B0BSHZ1234"}
+        assert keys == {
+            "housemaid|freida mcfadden",
+            "housemaid|mcfadden freida",
+            "asin:B0BSHZ1234",
+        }
 
     def test_an_asin_alone_is_a_complete_identity(self):
         """A book with no usable author is still matchable by ASIN."""
@@ -192,7 +198,7 @@ class TestBuildMatchKeysWithAsin:
     def test_a_malformed_asin_is_simply_ignored(self):
         keys = build_match_keys("The Housemaid", "Freida McFadden", asin="N/A")
 
-        assert keys == {"housemaid|freida mcfadden"}
+        assert keys == {"housemaid|freida mcfadden", "housemaid|mcfadden freida"}
 
 
 from shelfmark.library.matching import ISBN_KEY_PREFIX, isbn_match_key, normalize_isbn
@@ -308,3 +314,69 @@ class TestEditionQualifiers:
 
     def test_a_non_string_has_no_qualifiers(self):
         assert edition_qualifiers(None) == frozenset()
+
+
+class TestAuthorReversal:
+    """Grimmory stores light-novel authors surname-first with no comma
+    ("Maruyama Kugane"); Hardcover has "Kugane Maruyama"."""
+
+    def test_two_token_name_matches_either_way_round(self):
+        assert author_match_keys("Maruyama Kugane") & author_match_keys("Kugane Maruyama")
+
+    def test_reversal_only_meets_the_same_title(self):
+        overlord = build_match_keys("Overlord, Vol. 1", "Maruyama Kugane")
+        other = build_match_keys("Overlord, Vol. 2", "Kugane Maruyama")
+
+        assert not overlord & other
+
+    def test_a_different_author_with_the_same_title_shares_no_key(self):
+        assert not build_match_keys("Overlord, Vol. 1", "Kugane Maruyama") & build_match_keys(
+            "Overlord, Vol. 1", "Satoshi Oshio"
+        )
+
+    def test_three_tokens_are_not_reversed(self):
+        assert author_match_keys("Rifujin na Magonote") == {"rifujin na magonote"}
+
+    def test_a_comma_keeps_the_existing_inversion_only(self):
+        assert author_match_keys("Maruyama, Kugane") == {"maruyama kugane", "kugane maruyama"}
+
+
+class TestMediumLabels:
+    """A format label on one title only is not a different edition."""
+
+    def test_light_novel_novel_and_ln_are_ignored(self):
+        for title in ("Overlord (Light Novel), Vol. 1", "Overlord (Novel)", "Overlord [LN]"):
+            assert edition_qualifiers(title) == frozenset(), title
+
+    def test_manga_still_marks_a_different_edition(self):
+        assert edition_qualifiers("Overlord (Manga) Vol. 1") == frozenset({"manga"})
+
+    def test_graphic_novel_still_marks_a_different_edition(self):
+        assert edition_qualifiers("Overlord (Graphic Novel)") == frozenset({"graphic novel"})
+
+
+class TestHardcoverKey:
+    """A Hardcover book id names a work; only a clean id becomes a key."""
+
+    def test_digits_make_a_namespaced_key(self):
+        assert hardcover_match_key("886465") == f"{HARDCOVER_KEY_PREFIX}886465"
+        assert hardcover_match_key(886465) == "hardcover:886465"
+
+    def test_surrounding_whitespace_is_ignored(self):
+        assert hardcover_match_key(" 886465 ") == "hardcover:886465"
+
+    def test_anything_else_is_unusable(self):
+        # Review Focus #2
+        for value in ("hc-123", "12a", "", "   ", None, True, "²", "886 465", 1.5):
+            assert hardcover_match_key(value) == "", repr(value)
+
+    def test_build_match_keys_adds_the_hardcover_key(self):
+        keys = build_match_keys("Overlord, Vol. 2", "Maruyama Kugane", hardcover_id="886465")
+
+        assert "hardcover:886465" in keys
+        assert "overlord vol 2|maruyama kugane" in keys
+
+    def test_hardcover_key_never_collides_with_a_title_key(self):
+        keys = build_match_keys("886465", "Someone", hardcover_id="886465")
+
+        assert sum(k.startswith(HARDCOVER_KEY_PREFIX) for k in keys) == 1

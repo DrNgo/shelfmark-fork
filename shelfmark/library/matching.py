@@ -62,7 +62,9 @@ def author_match_keys(author: str | None) -> set[str]:
 
     A single comma means an inverted name ("McFadden, Freida"), so both
     orderings are emitted. Two or more commas means a list of authors, where
-    flipping would invent a person who does not exist.
+    flipping would invent a person who does not exist. A comma-less two-token
+    name is also emitted reversed, since surname-first order is common and
+    carries no comma to announce it.
     """
     normalized = normalize_author(author)
     if not normalized:
@@ -76,6 +78,14 @@ def author_match_keys(author: str | None) -> set[str]:
         flipped = normalize_author(f"{first.strip()} {last.strip()}")
         if flipped:
             keys.add(flipped)
+    elif "," not in raw:
+        # Surname-first without a comma ("Maruyama Kugane") is common for Japanese
+        # names. Only a two-token name is reversed: longer names have no single
+        # obvious flip, and the reversed key still only ever pairs with the same
+        # normalized title, so it cannot reach a different book by itself.
+        parts = normalized.split()
+        if len(parts) == 2:
+            keys.add(f"{parts[1]} {parts[0]}")
 
     return keys
 
@@ -183,15 +193,35 @@ def isbn_match_key(value: object) -> str:
     return f"{ISBN_KEY_PREFIX}{normalized}" if normalized else ""
 
 
+HARDCOVER_KEY_PREFIX = "hardcover:"
+
+
+def hardcover_match_key(value: object) -> str:
+    """Build the namespaced key for a Hardcover book id, or "" if it is unusable.
+
+    A Hardcover book id names a *work*: every edition shares it, and different
+    adaptations (light novel vs manga) get different ids. Only a clean ASCII
+    digit string is accepted — an exact match on junk is still an exact match.
+    """
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return ""
+    text = str(value).strip()
+    if not text or not text.isascii() or not text.isdigit():
+        return ""
+    return f"{HARDCOVER_KEY_PREFIX}{text}"
+
+
 # The bracketed segments `_BRACKETED_NOISE` deletes, recovered for ranking.
 # Deleting them is right for keying — an edition marker must never break a
 # match — but once two items key together the marker is the only thing left
 # saying they are different recordings.
 _EDITION_QUALIFIER = re.compile(r"[(\[{]([^)\]}]*)[)\]}]")
 
-# Completeness, not edition. "(Unabridged)" is near-universal shelf noise: one
-# side carries it and the other does not, for the very same recording.
-_NON_EDITION_QUALIFIERS = frozenset({"unabridged", "abridged"})
+# Completeness and medium, not edition. "(Unabridged)" is near-universal shelf
+# noise, and "(Light Novel)" / "(Novel)" / "(LN)" name the medium — one side
+# carries the label and the other does not, for the very same release.
+# "(Manga)" and "(Graphic Novel)" stay: those are different adaptations.
+_NON_EDITION_QUALIFIERS = frozenset({"unabridged", "abridged", "light novel", "novel", "ln"})
 
 
 def edition_qualifiers(title: str | None) -> frozenset[str]:
@@ -214,23 +244,20 @@ def build_match_keys(
     subtitle: str | None = None,
     asin: object = None,
     isbn: object = None,
+    hardcover_id: object = None,
 ) -> set[str]:
     """Build the match keys for one book.
 
     Title keys are every title variant × every author variant; without both
     halves none are emitted, since half a key would match every other half-key.
-    A valid ASIN or ISBN adds one more key on top, and either is enough on its
-    own — both are complete identities where a bare title is not.
+    A valid ASIN, ISBN or Hardcover id adds one more key on top, and any of them
+    is enough on its own — each is a complete identity where a bare title is not.
     """
     keys: set[str] = set()
 
-    asin_key = asin_match_key(asin)
-    if asin_key:
-        keys.add(asin_key)
-
-    isbn_key = isbn_match_key(isbn)
-    if isbn_key:
-        keys.add(isbn_key)
+    for key in (asin_match_key(asin), isbn_match_key(isbn), hardcover_match_key(hardcover_id)):
+        if key:
+            keys.add(key)
 
     titles = title_match_keys(title, subtitle)
     authors = author_match_keys(author)
