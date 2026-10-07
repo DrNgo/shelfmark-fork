@@ -19,12 +19,19 @@ with ``"found": null`` per book, for a person to adjudicate.
 
 Usage (Prowlarr reachable, e.g. `kubectl port-forward -n media svc/prowlarr 9696:9696`):
 
-    PROWLARR_URL=http://localhost:9696 PROWLARR_API_KEY=... \\
+    LADDER_PROWLARR_URL=http://localhost:9696 LADDER_PROWLARR_API_KEY=... \\
         uv run python scripts/ladder_acceptance.py [--auto-expand] [--only DxD] \\
         [--json ladder_acceptance.json]
 
 Target (adjudicated from the JSON): at least 18 of 19 found, and the three standalones
-search exactly as before (no fallback requests - the one thing this script checks).
+search exactly as before (no fallback requests - the one thing this script checks: the
+exit code is 1 if a standalone has fallback variants planned or any fallback request sent).
+
+Isolation: the script points CONFIG_DIR, TMP_DIR and LOG_ROOT at a fresh temporary
+directory before importing shelfmark, and serves every setting from an in-memory mapping,
+so it never reads or writes a real Shelfmark config. The credentials are read from
+LADDER_PROWLARR_URL / LADDER_PROWLARR_API_KEY (not PROWLARR_*) so they stay out of the
+environment Shelfmark itself reads. The JSON is rewritten after every book.
 """
 
 from __future__ import annotations
@@ -34,11 +41,18 @@ import json
 import os
 import re
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
+
+# Isolate shelfmark's on-disk state BEFORE anything imports it (unconditional override).
+_SCRATCH = tempfile.mkdtemp(prefix="ladder-acceptance-")
+os.environ["CONFIG_DIR"] = _SCRATCH
+os.environ["TMP_DIR"] = _SCRATCH
+os.environ["LOG_ROOT"] = _SCRATCH
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -143,6 +157,7 @@ class BookResult:
     title: str
     requests: int
     fallback_variants: int
+    fallback_requests: int
     elapsed: float
     releases: list[str] = field(default_factory=list)
     hits: list[str] = field(default_factory=list)  # informational: the predicate's view
@@ -157,15 +172,19 @@ class BookResult:
 class _CountingClient:
     """A Prowlarr client that counts the Torznab requests sent through it."""
 
-    def __init__(self, client: Any) -> None:
+    def __init__(self, client: Any, fallback_titles: frozenset[str] = frozenset()) -> None:
         self._client = client
+        self._fallback_titles = fallback_titles
         self.requests = 0
+        self.fallback_requests = 0
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._client, name)
 
     def torznab_search(self, **kwargs: Any) -> Any:
         self.requests += 1
+        if kwargs.get("query") in self._fallback_titles:
+            self.fallback_requests += 1
         return self._client.torznab_search(**kwargs)
 
 
@@ -199,12 +218,13 @@ def endpoint_book(
 def run_books(
     books: Sequence[tuple[int, str, str | None, list[str], str | None, int | None]],
     client_factory: Callable[[], Any],
+    on_result: Callable[[list[BookResult]], None] | None = None,
+    secrets: Sequence[str] = (),
 ) -> list[BookResult]:
     """Search each book through the production plan and Prowlarr source path."""
     from shelfmark.core import search_deadline
     from shelfmark.core.search_plan import build_release_search_plan
     from shelfmark.core.search_queries import build_search_identity, is_identity_hit
-    from shelfmark.release_sources import SourceUnavailableError
     from shelfmark.release_sources.prowlarr.source import ProwlarrSource
 
     results: list[BookResult] = []
@@ -218,7 +238,8 @@ def run_books(
             series_position=book.series_position,
         )
 
-        client = _CountingClient(client_factory())
+        fallback_titles = frozenset(v.title for v in plan.title_variants if v.fallback)
+        client = _CountingClient(client_factory(), fallback_titles)
         source = ProwlarrSource()
         error: str | None = None
         started = time.monotonic()
@@ -228,8 +249,12 @@ def run_books(
         ):
             try:
                 releases = source.search(book, plan, content_type="ebook")
-            except (SourceUnavailableError, TimeoutError) as e:
-                releases, error = [], str(e)
+            except Exception as e:  # one book must not abort the run
+                message = str(e)
+                for secret in secrets:
+                    if secret:
+                        message = message.replace(secret, "***")
+                releases, error = [], f"{type(e).__name__}: {message}"
         elapsed = time.monotonic() - started
 
         hits = [
@@ -249,6 +274,7 @@ def run_books(
                 title=book.title,
                 requests=client.requests,
                 fallback_variants=sum(1 for v in plan.title_variants if v.fallback),
+                fallback_requests=client.fallback_requests,
                 elapsed=elapsed,
                 releases=[release.title for release in releases],
                 hits=hits,
@@ -256,7 +282,29 @@ def run_books(
                 error=error,
             )
         )
+        if on_result is not None:
+            on_result(results)
     return results
+
+
+def write_json(results: Sequence[BookResult], json_path: Path) -> None:
+    payload = [
+        {
+            "title": r.title,
+            "found": None,
+            "requests": r.requests,
+            "elapsed_seconds": round(r.elapsed, 1),
+            "fallback_variants": r.fallback_variants,
+            "fallback_requests": r.fallback_requests,
+            "incomplete": r.incomplete,
+            "error": r.error,
+            "predicate_hits": r.hits,
+            "suspect": r.suspect,
+            "releases": r.releases,
+        }
+        for r in results
+    ]
+    json_path.write_text(json.dumps(payload, indent=1, ensure_ascii=False) + "\n")
 
 
 def report(results: Sequence[BookResult], json_path: Path | None = None) -> int:
@@ -281,7 +329,9 @@ def report(results: Sequence[BookResult], json_path: Path | None = None) -> int:
         if len(result.releases) > SHOWN_TITLES:
             print(f"      ... {len(result.releases) - SHOWN_TITLES} more (all in the JSON)")
     standalones_changed = [
-        r.title for r in results if r.title in STANDALONES and r.fallback_variants
+        r.title
+        for r in results
+        if r.title in STANDALONES and (r.fallback_variants or r.fallback_requests)
     ]
     print(f"\nrequests total {sum(r.requests for r in results)}")
     print(
@@ -290,33 +340,20 @@ def report(results: Sequence[BookResult], json_path: Path | None = None) -> int:
     )
     print(f"Adjudicate 'found' per book (target >= {TARGET_FOUND} of {len(BOOKS)}).")
     if json_path is not None:
-        payload = [
-            {
-                "title": r.title,
-                "found": None,
-                "requests": r.requests,
-                "elapsed_seconds": round(r.elapsed, 1),
-                "fallback_variants": r.fallback_variants,
-                "incomplete": r.incomplete,
-                "error": r.error,
-                "predicate_hits": r.hits,
-                "suspect": r.suspect,
-                "releases": r.releases,
-            }
-            for r in results
-        ]
-        json_path.write_text(json.dumps(payload, indent=1, ensure_ascii=False) + "\n")
+        write_json(results, json_path)
         print(f"wrote {json_path}")
     if standalones_changed:
-        print(f"standalones with fallbacks (should be none): {standalones_changed}")
+        print(
+            f"standalones with fallback variants or requests (should be none): {standalones_changed}"
+        )
         return 1
     return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0] if __doc__ else "")
-    parser.add_argument("--url", default=os.environ.get("PROWLARR_URL", ""))
-    parser.add_argument("--api-key", default=os.environ.get("PROWLARR_API_KEY", ""))
+    parser.add_argument("--url", default=os.environ.get("LADDER_PROWLARR_URL", ""))
+    parser.add_argument("--api-key", default=os.environ.get("LADDER_PROWLARR_API_KEY", ""))
     parser.add_argument("--auto-expand", action="store_true", help="PROWLARR_AUTO_EXPAND on")
     parser.add_argument("--indexer-timeout", type=int, default=None)
     parser.add_argument("--only", default="", help="run only books whose title contains this")
@@ -324,13 +361,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if not args.url or not args.api_key:
-        print("Set PROWLARR_URL and PROWLARR_API_KEY (or pass --url/--api-key).")
+        print("Set LADDER_PROWLARR_URL and LADDER_PROWLARR_API_KEY (or pass --url/--api-key).")
         return 2
+
+    if "--api-key" in (argv if argv is not None else sys.argv[1:]):
+        print("warning: --api-key is visible in the process list; prefer LADDER_PROWLARR_API_KEY.")
 
     from shelfmark.core.config import config
     from shelfmark.release_sources.prowlarr.api import ProwlarrClient
 
+    # Every setting comes from this mapping or the caller's own default: the real
+    # config (disk, env sync) is never consulted.
     overrides: dict[str, object] = {
+        "PROWLARR_ENABLED": True,
         "PROWLARR_URL": args.url,
         "PROWLARR_API_KEY": args.api_key,
         "PROWLARR_INDEXERS": "",
@@ -339,17 +382,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     if args.indexer_timeout is not None:
         overrides["PROWLARR_INDEXER_TIMEOUT"] = args.indexer_timeout
-    real_get = config.get
 
     def get(key: str, default: object = None, user_id: int | None = None) -> object:
-        if key in overrides:
-            return overrides[key]
-        return real_get(key, default, user_id=user_id)
+        del user_id
+        return overrides.get(key, default)
 
+    json_path = Path(args.json)
     books = [row for row in BOOKS if args.only.lower() in row[1].lower()]
     with patch.object(config, "get", get):
-        results = run_books(books, lambda: ProwlarrClient(args.url, args.api_key))
-    return report(results, Path(args.json))
+        results = run_books(
+            books,
+            lambda: ProwlarrClient(args.url, args.api_key),
+            on_result=lambda partial: write_json(partial, json_path),
+            secrets=(args.api_key,),
+        )
+    return report(results, json_path)
 
 
 if __name__ == "__main__":
