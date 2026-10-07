@@ -51,3 +51,33 @@ def test_booklore_upload_file_uses_bookdrop_endpoint_without_query_params(tmp_pa
     assert args[0] == "http://booklore:6060/api/v1/files/upload/bookdrop"
     assert kwargs["params"] is None
     assert kwargs["headers"] == {"Authorization": "Bearer token"}
+
+
+def _upload_with_body(tmp_path, json_side_effect):
+    file_path = tmp_path / "book.epub"
+    file_path.write_bytes(b"content")
+    response = MagicMock()
+    response.raise_for_status.return_value = None
+    response.json.side_effect = json_side_effect
+
+    with patch("shelfmark.download.outputs.booklore.requests.post", return_value=response):
+        return booklore_upload_file(_booklore_config(upload_to_bookdrop=False), "token", file_path)
+
+
+def test_booklore_upload_file_returns_the_parsed_json_object(tmp_path):
+    body = {"id": 41, "fileName": "book.epub"}
+
+    assert _upload_with_body(tmp_path, lambda: body) == body
+
+
+def test_booklore_upload_file_returns_none_for_a_non_json_body(tmp_path):
+    def not_json():
+        raise ValueError("Expecting value")
+
+    assert _upload_with_body(tmp_path, not_json) is None
+
+
+def test_booklore_upload_file_returns_none_for_json_that_is_not_an_object(tmp_path):
+    # Review Focus #3: "OK", [ ... ] and null are JSON but not an object.
+    for body in ("OK", [{"id": 41}], None, 41):
+        assert _upload_with_body(tmp_path, lambda body=body: body) is None, repr(body)

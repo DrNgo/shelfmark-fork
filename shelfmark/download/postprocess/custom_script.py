@@ -231,6 +231,11 @@ def _build_custom_script_payload(
             "subtitle": context.task.subtitle,
             "language": context.task.language,
             "original_download_path": context.task.original_download_path,
+            # Fork-only book identity, for hooks that tag the book.
+            "provider": context.task.provider,
+            "provider_id": context.task.provider_id,
+            "isbn_13": context.task.isbn_13,
+            "asin": context.task.asin,
         },
         "output": {
             "mode": context.output_mode,
