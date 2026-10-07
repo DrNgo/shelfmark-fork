@@ -245,3 +245,34 @@ def test_one_failing_book_does_not_abort_the_run(harness, monkeypatch, tmp_path)
     assert results[1].releases == ["The Housemaid"]
     assert results[0].error is not None
     assert "secret-key" not in results[0].error
+
+
+def test_main_searches_only_the_indexers_it_is_given(monkeypatch, tmp_path):
+    import shelfmark.release_sources.prowlarr.api as prowlarr_api
+
+    searched: list[int] = []
+
+    class _TwoIndexers(_FakeProwlarr):
+        def get_enabled_indexers_detailed(self, *, raise_on_error=False):
+            del raise_on_error
+            return [
+                {"id": i, "name": f"idx{i}", "enable": True, "capabilities": {"categories": []}}
+                for i in (1, 2)
+            ]
+
+        def torznab_search(self, *, indexer_id, query, categories=None, **kw):
+            searched.append(int(indexer_id))
+            return super().torznab_search(
+                indexer_id=indexer_id, query=query, categories=categories, **kw
+            )
+
+    monkeypatch.setattr(prowlarr_api, "ProwlarrClient", lambda url, key: _TwoIndexers({}))
+    monkeypatch.setenv("LADDER_PROWLARR_URL", "http://prowlarr.invalid")
+    monkeypatch.setenv("LADDER_PROWLARR_API_KEY", "secret-key")
+
+    with _harness() as harness:
+        args = ["--only", "Housemaid", "--indexers", "2", "--json", str(tmp_path / "o.json")]
+        assert harness.main(args) == 0
+
+    assert searched
+    assert set(searched) == {2}

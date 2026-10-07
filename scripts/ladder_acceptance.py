@@ -355,6 +355,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--url", default=os.environ.get("LADDER_PROWLARR_URL", ""))
     parser.add_argument("--api-key", default=os.environ.get("LADDER_PROWLARR_API_KEY", ""))
     parser.add_argument("--auto-expand", action="store_true", help="PROWLARR_AUTO_EXPAND on")
+    parser.add_argument(
+        "--indexers",
+        default=os.environ.get("LADDER_PROWLARR_INDEXERS", ""),
+        help="comma-separated Prowlarr indexer ids, as PROWLARR_INDEXERS (default: all enabled)",
+    )
     parser.add_argument("--indexer-timeout", type=int, default=None)
     parser.add_argument("--only", default="", help="run only books whose title contains this")
     parser.add_argument("--json", default="ladder_acceptance.json", help="where to write titles")
@@ -376,7 +381,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "PROWLARR_ENABLED": True,
         "PROWLARR_URL": args.url,
         "PROWLARR_API_KEY": args.api_key,
-        "PROWLARR_INDEXERS": "",
+        "PROWLARR_INDEXERS": [i.strip() for i in args.indexers.split(",") if i.strip()],
         "PROWLARR_AUTO_EXPAND": args.auto_expand,
         "PROWLARR_USE_SEED_PREFERENCES": False,
     }
