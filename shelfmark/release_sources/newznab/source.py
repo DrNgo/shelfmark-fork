@@ -454,7 +454,11 @@ class NewznabSource(ReleaseSource):
         seen_keys: set = set()
         all_results: list[dict] = []
         cut_short = False
+        # Failed mandatory requests: these decide whether an empty search was a failure.
         errors: list[str] = []
+        # Failed fallback requests only end their connection's ladder (and are logged);
+        # the search they were extra to still completed.
+        fallback_errors: list[str] = []
 
         def add_results(connection: _NamedClient, raw: list[dict]) -> list[dict]:
             """Label and keep one response; return the rows it newly kept that are shown.
@@ -508,7 +512,7 @@ class NewznabSource(ReleaseSource):
                     query,
                     cats,
                     rung=rung,
-                    errors=errors,
+                    errors=fallback_errors,
                     expanded=cats is None and bool(categories),
                 )
                 return "failed" if raw is None else raw
@@ -594,6 +598,13 @@ class NewznabSource(ReleaseSource):
         except TimeoutError as e:
             logger.warning("Newznab search timed out: %s", e)
             cut_short = True
+
+        if fallback_errors:
+            logger.warning(
+                "Newznab: %d fallback request(s) failed, not counted as a failed search (%s)",
+                len(fallback_errors),
+                "; ".join(fallback_errors[-3:]),
+            )
 
         results = [_newznab_result_to_release(r, content_type, categories) for r in all_results]
         if selected_indexers is not None:

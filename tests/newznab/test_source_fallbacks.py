@@ -186,11 +186,40 @@ class TestFailureIsNotEmpty:
         flaky = _FakeNewznab(
             {RUNG_1: NewznabSearchError("Newznab search failed: indexer error 900")}
         )
+        lines = _info_lines(monkeypatch)
 
-        with pytest.raises(SourceUnavailableError, match="indexer error 900"):
-            _search(monkeypatch, {"flaky": flaky})
+        _search(monkeypatch, {"flaky": flaky})
 
         assert flaky.queries() == [DXD5, RUNG_1]
+        assert "Newznab [flaky] fallbacks: ran=yes stop=failed rungs=1/5 requests=1" in lines
+
+    def test_a_fallback_failure_is_not_a_failed_search(self, monkeypatch):
+        # Every mandatory request answered (empty); only a fallback failed. The search
+        # completed and found nothing: "no releases", not "source unavailable".
+        flaky = _FakeNewznab(
+            {RUNG_1: NewznabSearchError("Newznab search failed: 429", rate_limited=True)}
+        )
+        empty = _FakeNewznab()
+        source = NewznabSource()
+
+        releases = _search(monkeypatch, {"flaky": flaky, "empty": empty}, source=source)
+
+        assert releases == []
+        assert source.last_search_incomplete is False
+        assert flaky.queries() == [DXD5, RUNG_1]
+        assert empty.queries() == UNTIL_THE_CAP
+
+    def test_a_fallback_failure_does_not_mask_a_mandatory_one(self, monkeypatch):
+        down = _FakeNewznab({DXD5: NewznabSearchError("Newznab search failed: down")})
+        flaky = _FakeNewznab(
+            {RUNG_1: NewznabSearchError("Newznab search failed: indexer error 900")}
+        )
+
+        with pytest.raises(SourceUnavailableError, match="1 Newznab search") as excinfo:
+            _search(monkeypatch, {"down": down, "flaky": flaky})
+
+        assert "down" in str(excinfo.value)
+        assert "indexer error 900" not in str(excinfo.value)
 
 
 class TestOnlyFilteredResultsCount:
