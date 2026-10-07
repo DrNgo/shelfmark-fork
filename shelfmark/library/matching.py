@@ -137,6 +137,9 @@ _ISBN_SEPARATORS = re.compile(r"[-\s]")
 _ISBN10_SHAPE = re.compile(r"^[0-9]{9}[0-9X]$")
 _ISBN13_SHAPE = re.compile(r"^[0-9]{13}$")
 ISBN_KEY_PREFIX = "isbn:"
+# Only the "Bookland" EAN prefixes are ISBNs; any other 13-digit EAN can still
+# pass the ISBN-13 check digit.
+_ISBN13_PREFIXES = ("978", "979")
 
 
 def _isbn13_check_digit(body: str) -> str:
@@ -176,6 +179,8 @@ def normalize_isbn(value: object) -> str:
         return ""
 
     if _ISBN13_SHAPE.match(candidate):
+        if not candidate.startswith(_ISBN13_PREFIXES):
+            return ""
         return candidate if _isbn13_is_valid(candidate) else ""
 
     if _ISBN10_SHAPE.match(candidate):

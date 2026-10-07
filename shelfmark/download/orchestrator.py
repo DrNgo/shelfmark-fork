@@ -14,6 +14,7 @@ from pathlib import Path
 from threading import Event, Lock
 from typing import TYPE_CHECKING, Any
 
+from shelfmark.core.book_identity import normalize_book_identity
 from shelfmark.core.config import config
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.models import DownloadTask, QueueStatus, SearchMode
@@ -276,6 +277,10 @@ def queue_release(
             release_data.get("destination_key") or extra.get("destination_key")
         )
 
+        # Top-level only: a release source's `extra` describes the release as the
+        # indexer saw it, and must not be mistaken for the book's identity.
+        identity = normalize_book_identity(release_data)
+
         books_output_mode = (
             str(config.get("BOOKS_OUTPUT_MODE", "folder", user_id=user_id) or "folder")
             .strip()
@@ -317,6 +322,10 @@ def queue_release(
             output_mode=output_mode,
             output_args=output_args,
             destination_key=destination_key,
+            provider=identity.provider,
+            provider_id=identity.provider_id,
+            isbn_13=identity.isbn_13,
+            asin=identity.asin,
             priority=priority,
             user_id=user_id,
             username=username,
@@ -516,6 +525,10 @@ def serialize_task_for_retry(task: DownloadTask) -> dict[str, Any]:
         # Captured for the same reason as output_mode: the retry must land where
         # the admin originally chose, not wherever the default points by then.
         "destination_key": getattr(task, "destination_key", None),
+        "provider": getattr(task, "provider", None),
+        "provider_id": getattr(task, "provider_id", None),
+        "isbn_13": getattr(task, "isbn_13", None),
+        "asin": getattr(task, "asin", None),
         "user_id": getattr(task, "user_id", None),
         "username": getattr(task, "username", None),
         "request_id": getattr(task, "request_id", None),
@@ -555,6 +568,7 @@ def _restore_task_from_retry_payload(payload: object) -> DownloadTask | None:
 
     output_args = payload.get("output_args")
     retry_source_context = payload.get("retry_source_context")
+    identity = normalize_book_identity(payload)
 
     return DownloadTask(
         task_id=task_id,
@@ -578,6 +592,10 @@ def _restore_task_from_retry_payload(payload: object) -> DownloadTask | None:
         output_mode=normalize_optional_text(payload.get("output_mode")),
         output_args=dict(output_args) if isinstance(output_args, dict) else {},
         destination_key=normalize_optional_text(payload.get("destination_key")),
+        provider=identity.provider,
+        provider_id=identity.provider_id,
+        isbn_13=identity.isbn_13,
+        asin=identity.asin,
         user_id=normalize_positive_int(payload.get("user_id")),
         username=normalize_optional_text(payload.get("username")),
         request_id=normalize_positive_int(payload.get("request_id")),
