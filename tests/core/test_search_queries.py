@@ -852,3 +852,44 @@ class TestAnyIdentityHit:
             SearchIdentity(series_key="Overlord", position=2),
             content_type="ebook",
         )
+
+
+class TestIdentityReviewFixes:
+    @pytest.mark.parametrize("title", ["Spice and Wolf, Vol. 5.5", "Spice and Wolf, Vol. 1-3"])
+    def test_a_numeric_volume_marker_title_never_stops_the_ladder(self, title):
+        identity = build_search_identity(
+            title=title, current_query=title, series_name="Spice and Wolf", series_position=5
+        )
+        for release in (
+            "Spice and Wolf Vol. 5",
+            "Spice and Wolf Vol. 5.5",
+            "Spice and Wolf Vol. 1-3",
+        ):
+            assert not is_identity_hit(
+                release,
+                series_key=identity.series_key,
+                position=identity.position,
+                title_tokens=identity.title_tokens,
+                content_type="ebook",
+            )
+
+    @pytest.mark.parametrize(
+        "title", ["Overlord Vol 5, 6", "Overlord Vol. 5, Vol. 6", "Overlord Vol. 5, v06"]
+    )
+    def test_a_comma_separated_volume_list_is_not_a_hit(self, title):
+        assert not TestIdentityPredicate()._hit(
+            title, SearchIdentity(series_key="Overlord", position=5)
+        )
+
+    @pytest.mark.parametrize(
+        "title", ["Overlord, Vol. 5", "Overlord Vol. 5, 2018", "Overlord Vol. 5, 1st edition"]
+    )
+    def test_a_comma_around_the_volume_is_still_a_hit(self, title):
+        assert TestIdentityPredicate()._hit(
+            title, SearchIdentity(series_key="Overlord", position=5)
+        )
+
+    @pytest.mark.parametrize("results", [None, 5, object()])
+    def test_any_identity_hit_survives_junk_results(self, results):
+        identity = SearchIdentity(series_key="Overlord", position=5)
+        assert any_identity_hit(results, identity, content_type="ebook") is False

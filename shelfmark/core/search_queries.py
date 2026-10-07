@@ -242,6 +242,8 @@ _TITLE_NOISE = frozenset({"vol", "volume"})
 # anything; with fewer, nothing stops the ladder (which costs requests, never results).
 _MIN_TITLE_TOKENS = 2
 _TOKEN_RE = re.compile(r"[^\W_]+")
+# A number joined to another by a dot or range mark: a fractional or multi-volume title.
+_NUMBER_JOINER_RE = re.compile(r"\d\s*[.\-–—~&+]\s*\d")
 
 # Release names that are not an ebook of the book: video encodes and episode markers.
 _VIDEO_RE = re.compile(
@@ -269,7 +271,8 @@ _RELEASE_VOLUME_RES = (
 # ("5a"), or a second volume ("5 & 6", "5 to 7", "5-7", "5—7", "v05-07") make it not a
 # single complete volume.
 _INCOMPLETE_VOLUME_RE = re.compile(
-    r"\.\d(?!\d)|[^\W\d_]|\s*(?:[-–—~&+]|\bto\b|\band\b)\s*v?\d",
+    r"\.\d(?!\d)|[^\W\d_]|\s*(?:[-–—~&+]|\bto\b|\band\b)\s*v?\d"
+    r"|\s*,\s*(?:vol(?:ume)?s?\b\.?\s*|v)?\d{1,3}(?!\d|[^\W\d_])",
     re.IGNORECASE,
 )
 
@@ -318,6 +321,10 @@ def build_search_identity(
     # The full title, not today's (often shortened) query: "Spice, Vol. 5: Wolf" must not
     # be stopped by any release that merely says "Wolf".
     title_tokens = _title_tokens(title_text) or _title_tokens(clean_query(current_query))
+    if _NUMBER_JOINER_RE.search(title_text):
+        # "Vol. 5.5", "Vol. 1-3": the tokens cannot tell this book from its neighbours,
+        # so nothing may stop the ladder (costs requests, never results).
+        title_tokens = ()
     series_text = series_name if isinstance(series_name, str) else ""
     return SearchIdentity(
         series_key=resolved.series,
@@ -395,14 +402,17 @@ def any_identity_hit(
     """Whether any of ``release_titles`` is the book ``identity`` describes."""
     if identity is None:
         return False
-    return any(
-        is_identity_hit(
-            title,
-            series_key=identity.series_key,
-            position=identity.position,
-            title_tokens=identity.title_tokens,
-            content_type=content_type,
-            book_is_comic=identity.book_is_comic,
+    try:
+        return any(
+            is_identity_hit(
+                title,
+                series_key=identity.series_key,
+                position=identity.position,
+                title_tokens=identity.title_tokens,
+                content_type=content_type,
+                book_is_comic=identity.book_is_comic,
+            )
+            for title in release_titles
         )
-        for title in release_titles
-    )
+    except TypeError:
+        return False
