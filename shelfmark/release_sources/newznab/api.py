@@ -21,9 +21,17 @@ _HTTP_TOO_MANY_REQUESTS = 429
 _SECRET_PARAM_RE = re.compile(r"(?i)\b(apikey|api_key|key)=([^&\s'\"]+)")
 
 
-def redact_secrets(text: object) -> str:
-    """Return ``str(text)`` with API-key query values replaced by ``REDACTED``."""
-    return _SECRET_PARAM_RE.sub(r"\1=REDACTED", str(text))
+def redact_secrets(text: object, *known_secrets: str | None) -> str:
+    """Return ``str(text)`` with API keys replaced by ``REDACTED``.
+
+    Removes ``apikey=``/``api_key=``/``key=`` query values, and every non-empty
+    ``known_secrets`` value (the configured key) wherever it appears.
+    """
+    redacted = str(text)
+    for secret in known_secrets:
+        if secret:
+            redacted = redacted.replace(secret, "REDACTED")
+    return _SECRET_PARAM_RE.sub(r"\1=REDACTED", redacted)
 
 
 def _describe_request_error(e: requests.exceptions.RequestException) -> str:
@@ -117,7 +125,7 @@ class NewznabClient:
                 return False, "Invalid API key"
             return False, f"HTTP error {status}"
         except requests.exceptions.RequestException as e:
-            return False, f"Connection failed: {redact_secrets(e)}"
+            return False, f"Connection failed: {redact_secrets(e, self.api_key)}"
         else:
             return True, f"Connected to {title}"
 
@@ -173,11 +181,9 @@ class NewznabClient:
         if not results:
             error = parse_torznab_error(text)
             if error is not None:
-                msg = (
-                    f"Newznab search failed: indexer error {error.code}: "
-                    f"{error.description or 'no description'}"
-                )
+                description = redact_secrets(error.description or "no description", self.api_key)
+                msg = f"Newznab search failed: indexer error {error.code}: {description}"
                 raise NewznabSearchError(msg, rate_limited=error.rate_limited)
             preview = text[:300].strip() or "<empty>"
-            logger.debug("Newznab empty response body: %s", preview)
+            logger.debug("Newznab empty response body: %s", redact_secrets(preview, self.api_key))
         return results

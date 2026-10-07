@@ -88,9 +88,23 @@ def _request_timeout(client: object) -> float:
     return 2 * float(timeout)
 
 
-def _redacted_traceback(e: BaseException) -> str:
-    """The exception's traceback for the log, with API-key values redacted."""
-    return redact_secrets("".join(traceback.format_exception(e)).rstrip())
+def _redact(connection: _NamedClient, text: object) -> str:
+    """``text`` without API keys: query values and this connection's own key."""
+    api_key = getattr(connection.client, "api_key", None)
+    return redact_secrets(text, api_key if isinstance(api_key, str) else None)
+
+
+def _redacted_traceback(connection: _NamedClient, e: BaseException) -> str:
+    """The exception's traceback for the log, with API keys redacted."""
+    return _redact(connection, "".join(traceback.format_exception(e)).rstrip())
+
+
+@dataclass
+class _LadderProgress:
+    """What one connection's fallback ladder has sent so far (survives an exception)."""
+
+    rungs: int = 0
+    requests: int = 0
 
 
 def _search_once(
@@ -107,7 +121,7 @@ def _search_once(
         raw = connection.client.search(query=query, categories=categories)
     except NewznabSearchError as e:
         outcome, count = ("rate-limited" if e.rate_limited else "failed"), 0
-        errors.append(f"{connection.name}: {redact_secrets(e)}")
+        errors.append(f"{connection.name}: {_redact(connection, e)}")
         raw = None
     else:
         outcome, count = ("ok" if raw else "empty"), len(raw)
@@ -506,47 +520,49 @@ class NewznabSource(ReleaseSource):
                 (r.get("title") for r in rows), plan.identity, content_type=content_type
             )
 
-        def run_fallbacks(connection: _NamedClient, found: list[dict]) -> tuple[str, int, int]:
-            """Run this connection's ladder; return (stop reason, rungs, requests)."""
-            if has_identity_hit(found):
-                return "hit", 0, 0
-            timeout = _request_timeout(connection.client)
-            requests_sent = 0
-            rungs = 0
+        def run_fallbacks(
+            connection: _NamedClient, found: list[dict], progress: _LadderProgress
+        ) -> str:
+            """Run this connection's ladder and return the stop reason.
 
-            def request(query: str, cats: list[int] | None, rung: str) -> list[dict] | str:
-                nonlocal requests_sent, cut_short
-                if requests_sent >= FALLBACK_REQUESTS_PER_CONNECTION:
+            ``progress`` counts rungs and requests as they are sent, so the summary is
+            right even when the ladder ends in an exception. A rung counts once its
+            first request is sent.
+            """
+            if has_identity_hit(found):
+                return "hit"
+            timeout = _request_timeout(connection.client)
+
+            def request(query: str, cats: list[int] | None, idx: int) -> list[dict] | str:
+                nonlocal cut_short
+                if progress.requests >= FALLBACK_REQUESTS_PER_CONNECTION:
                     return "cap"
                 if search_deadline.remaining_seconds(deadline) < timeout:
                     cut_short = True
                     return "deadline"
-                requests_sent += 1
+                progress.requests += 1
+                progress.rungs = max(progress.rungs, idx)
                 raw = _search_once(
                     connection,
                     query,
                     cats,
-                    rung=rung,
+                    rung=f"fallback {idx}",
                     errors=fallback_errors,
                     expanded=cats is None and bool(categories),
                 )
                 return "failed" if raw is None else raw
 
             for idx, query in enumerate(fallback_queries, start=1):
-                rung = f"fallback {idx}"
-                raw = request(query, categories, rung)
-                if raw in ("cap", "deadline"):
-                    return str(raw), rungs, requests_sent
-                rungs += 1
+                raw = request(query, categories, idx)
                 if isinstance(raw, str):
-                    return raw, rungs, requests_sent
+                    return raw
                 if not raw and categories and auto_expand:
-                    raw = request(query, None, rung)
+                    raw = request(query, None, idx)
                     if isinstance(raw, str):
-                        return raw, rungs, requests_sent
+                        return raw
                 if has_identity_hit(add_results(connection, raw)):
-                    return "hit", rungs, requests_sent
-            return "exhausted", rungs, requests_sent
+                    return "hit"
+            return "exhausted"
 
         # Every connection's mandatory requests run before any fallback, so one
         # connection's ladder can never spend the budget another's mandatory search needs.
@@ -612,9 +628,9 @@ class NewznabSource(ReleaseSource):
                     logger.error(  # noqa: TRY400
                         "Newznab search failed for %s:\n%s",
                         connection.name,
-                        _redacted_traceback(e),
+                        _redacted_traceback(connection, e),
                     )
-                    errors.append(f"{connection.name}: {redact_secrets(e)}")
+                    errors.append(f"{connection.name}: {_redact(connection, e)}")
                     failed = True
                 answered.append((connection, found, failed))
 
@@ -623,32 +639,33 @@ class NewznabSource(ReleaseSource):
             cut_short = True
 
         for connection, found, failed in answered:
+            progress = _LadderProgress()
             if not fallback_queries:
-                stop, rungs, sent = "not planned", 0, 0
+                stop = "not planned"
             elif failed:
                 # A failed connection gets no further fallback requests.
-                stop, rungs, sent = "failed", 0, 0
+                stop = "failed"
             else:
                 try:
-                    stop, rungs, sent = run_fallbacks(connection, found)
+                    stop = run_fallbacks(connection, found, progress)
                 except Exception as e:  # noqa: BLE001 - a fallback must not end the search
                     # Extra to a search that already completed: ends this ladder only.
                     # Not logger.exception: the raw traceback text may carry the API key.
                     logger.error(  # noqa: TRY400
                         "Newznab fallback search failed for %s:\n%s",
                         connection.name,
-                        _redacted_traceback(e),
+                        _redacted_traceback(connection, e),
                     )
-                    fallback_errors.append(f"{connection.name}: {redact_secrets(e)}")
-                    stop, rungs, sent = "failed", 0, 0
+                    fallback_errors.append(f"{connection.name}: {_redact(connection, e)}")
+                    stop = "failed"
             logger.info(
                 "Newznab [%s] fallbacks: ran=%s stop=%s rungs=%s/%s requests=%s",
                 connection.name,
-                "yes" if rungs else "no",
+                "yes" if progress.rungs else "no",
                 stop,
-                rungs,
+                progress.rungs,
                 len(fallback_queries),
-                sent,
+                progress.requests,
             )
 
         if fallback_errors:

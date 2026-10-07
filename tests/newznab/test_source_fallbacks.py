@@ -53,8 +53,9 @@ class _Clock:
 class _FakeNewznab:
     """One connection: answers per query (titles, or (title, indexer) pairs, or an error)."""
 
-    def __init__(self, answers=None, *, clock=None, seconds_per_request=0.0):
+    def __init__(self, answers=None, *, clock=None, seconds_per_request=0.0, api_key=""):
         self.answers = answers or {}
+        self.api_key = api_key
         self.timeout = 30
         self.calls: list[tuple[str, object]] = []
         self.clock = clock
@@ -256,7 +257,8 @@ class TestFailureIsNotEmpty:
 
         assert releases == []
         assert broken.queries() == [DXD5, RUNG_1]
-        assert "Newznab [broken] fallbacks: ran=no stop=failed rungs=0/5 requests=0" in lines
+        # The request that blew up was sent: the summary counts it.
+        assert "Newznab [broken] fallbacks: ran=yes stop=failed rungs=1/5 requests=1" in lines
         assert any("client bug" in line and "Traceback" in line for line in all_logs)
 
     def test_a_failure_its_expansion_answered_is_not_a_failed_search(self, monkeypatch):
@@ -292,7 +294,25 @@ class TestSecretsStayOut:
 
         assert "SECRET" not in str(excinfo.value)
         assert "apikey=REDACTED" in str(excinfo.value)
-        assert all_logs
+        # Guard: the records these checks read really were captured.
+        assert any("Traceback" in line for line in all_logs)
+        assert not any("SECRET" in line for line in all_logs)
+
+    def test_the_connections_own_api_key_is_redacted_wherever_it_appears(
+        self, monkeypatch, all_logs
+    ):
+        keyed = _FakeNewznab(
+            {DXD5: NewznabSearchError("Newznab search failed: indexer error 100: bad SECRET")},
+            api_key="SECRET",
+        )
+        broken = _FakeNewznab({DXD5: RuntimeError("token SECRET rejected")}, api_key="SECRET")
+
+        with pytest.raises(SourceUnavailableError) as excinfo:
+            _search(monkeypatch, {"keyed": keyed, "broken": broken})
+
+        assert "SECRET" not in str(excinfo.value)
+        assert "bad REDACTED" in str(excinfo.value)
+        assert any("Traceback" in line for line in all_logs)
         assert not any("SECRET" in line for line in all_logs)
 
 
@@ -375,7 +395,9 @@ class TestDeadline:
     def test_fallbacks_never_starve_another_connections_mandatory_search(self, monkeypatch):
         clock = _Clock()
         monkeypatch.setattr(newznab_source.time, "monotonic", clock)
-        slow = _FakeNewznab({DXD5: [WRONG_VOLUME]}, clock=clock, seconds_per_request=29)
+        # 59s per request: interleaved, slow's mandatory request leaves 61s - enough for
+        # one 60s fallback, which pushes middle past the deadline and last never runs.
+        slow = _FakeNewznab({DXD5: [WRONG_VOLUME]}, clock=clock, seconds_per_request=59)
         middle = _FakeNewznab(clock=clock, seconds_per_request=10)
         last = _FakeNewznab({DXD5: [HIT]}, clock=clock, seconds_per_request=1)
 

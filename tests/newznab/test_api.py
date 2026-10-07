@@ -217,7 +217,8 @@ class TestSearch:
         ):
             client.search(query="book")
         assert str(excinfo.value) == "Newznab search failed: ConnectionError"
-        assert api_logs
+        # Guard: the warning these checks read really was captured.
+        assert any("Newznab search failed: ConnectionError" in line for line in api_logs)
         assert not any("SECRET" in line for line in api_logs)
 
     def test_an_http_error_names_its_status_not_its_url(self, api_logs):
@@ -232,7 +233,40 @@ class TestSearch:
         ):
             client.search(query="book")
         assert str(excinfo.value) == "Newznab search failed: HTTPError (HTTP 429)"
+        # Guard: the warning these checks read really was captured.
+        assert any("HTTPError (HTTP 429)" in line for line in api_logs)
         assert not any("SECRET" in line for line in api_logs)
+
+    def test_an_error_document_never_echoes_the_api_key(self, monkeypatch):
+        lines: list[str] = []
+        for level in ("debug", "info", "warning", "error"):
+            monkeypatch.setattr(
+                newznab_api.logger, level, lambda message, *args: lines.append(message % args)
+            )
+        client = NewznabClient("http://nzbhydra:5076", "SECRET")
+        body = '<?xml version="1.0"?><error code="100" description="invalid key SECRET"/>'
+        with (
+            patch.object(client, "_get", return_value=_make_response(body)),
+            pytest.raises(NewznabSearchError) as excinfo,
+        ):
+            client.search(query="book")
+        assert str(excinfo.value) == (
+            "Newznab search failed: indexer error 100: invalid key REDACTED"
+        )
+        assert lines  # Guard: the client's log calls were recorded.
+        assert not any("SECRET" in line for line in lines)
+
+    def test_an_empty_body_preview_never_echoes_the_api_key(self, monkeypatch):
+        lines: list[str] = []
+        monkeypatch.setattr(
+            newznab_api.logger, "debug", lambda message, *args: lines.append(message % args)
+        )
+        client = NewznabClient("http://nzbhydra:5076", "SECRET")
+        body = "<html>unknown user SECRET</html>"
+        with patch.object(client, "_get", return_value=_make_response(body)):
+            assert client.search(query="book") == []
+        preview = [line for line in lines if line.startswith("Newznab empty response body")]
+        assert preview == ["Newznab empty response body: <html>unknown user REDACTED</html>"]
 
     def test_the_request_debug_log_shows_params_without_the_api_key(self, monkeypatch):
         # Recorded at the call (not through a handler), so a test elsewhere that
