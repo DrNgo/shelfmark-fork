@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from flask import Flask, Response, jsonify, request, session
 
+from shelfmark.audiobookshelf.destinations import authorize_destination_key
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.notifications import (
     NotificationContext,
@@ -352,6 +353,14 @@ def _prepare_request_create_arguments(
         source=source,
         release_data=release_data,
     )
+    # Routing to a specific library is an admin decision. Without this, a
+    # requester could plant a key in release_data (top level or `extra`): a
+    # download-policy submission would queue it, and a stored request would
+    # carry it to approval.
+    if isinstance(release_data, dict):
+        release_data = authorize_destination_key(
+            release_data, is_admin=bool(session.get("is_admin", False))
+        )
 
     global_settings, user_settings, effective, requests_enabled = _resolve_effective_policy(
         user_db,

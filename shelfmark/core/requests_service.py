@@ -507,6 +507,20 @@ def reject_request(
         raise RequestServiceError(str(exc), status_code=409, code="stale_transition") from exc
 
 
+def _without_destination_keys(release_data: dict[str, Any]) -> dict[str, Any]:
+    """Drop any destination key stored inside a request's release data.
+
+    The only key an approval may carry is the one the approving admin passes
+    now. A stored one (top level or in `extra`) would otherwise be revived by
+    `queue_release` when the admin left the library blank.
+    """
+    cleaned = {key: value for key, value in release_data.items() if key != "destination_key"}
+    extra = cleaned.get("extra")
+    if isinstance(extra, dict) and "destination_key" in extra:
+        cleaned["extra"] = {key: value for key, value in extra.items() if key != "destination_key"}
+    return cleaned
+
+
 def fulfil_request(
     user_db: UserDB,
     *,
@@ -597,7 +611,7 @@ def fulfil_request(
     # Identity the release lacks comes from the request's book data, so a
     # post-upload hook can tag what the requester actually asked for.
     queued_release_data = fill_identity_from_book_data(
-        selected_release_data, request_row.get("book_data")
+        _without_destination_keys(selected_release_data), request_row.get("book_data")
     )
     queued_release_data["_request_id"] = request_id
     queued_release_data["destination_key"] = normalized_destination_key
