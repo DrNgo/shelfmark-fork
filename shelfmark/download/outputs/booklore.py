@@ -25,9 +25,14 @@ from shelfmark.grimmory.client import (
     BOOKLORE_DISPLAY_NAME,
     BookloreConfig,
     BookloreError,
+    booklore_list_libraries,
     booklore_login,
     parse_destination,
     parse_int,
+)
+from shelfmark.grimmory.destinations import (
+    library_path_exists,
+    parse_grimmory_destination_key,
 )
 
 if TYPE_CHECKING:
@@ -55,11 +60,67 @@ BOOKLORE_SUPPORTED_FORMATS_LABEL = ", ".join(
 )
 
 
+def _verify_explicit_destination(
+    base_url: str,
+    username: str,
+    password: str,
+    destination_key: str,
+) -> tuple[int, int]:
+    """Resolve an admin-chosen ebook destination key, or raise.
+
+    The key is checked against a fresh `GET /api/v1/libraries` made with the
+    upload credentials, never the settings dropdown cache. There is no fallback
+    to the default library: Grimmory cannot move books between libraries on a
+    network disk, so a book filed in the wrong library stays there.
+    """
+    parsed = parse_grimmory_destination_key(destination_key)
+    if parsed is None:
+        msg = (
+            f"{BOOKLORE_DISPLAY_NAME} destination {destination_key!r} is not a valid "
+            "library choice; nothing was uploaded"
+        )
+        raise BookloreError(msg)
+
+    library_id, path_id = parsed
+    auth_config = BookloreConfig(
+        base_url=base_url,
+        username=username,
+        password=password,
+        library_id=library_id,
+        path_id=path_id,
+    )
+    try:
+        token = booklore_login(auth_config)
+        libraries = booklore_list_libraries(auth_config, token)
+    except BookloreError as exc:
+        msg = (
+            f"Could not verify {BOOKLORE_DISPLAY_NAME} destination {destination_key!r}: "
+            f"{exc}; nothing was uploaded"
+        )
+        raise BookloreError(msg) from exc
+
+    if not library_path_exists(libraries, library_id, path_id):
+        msg = (
+            f"{BOOKLORE_DISPLAY_NAME} destination {destination_key!r} no longer exists "
+            f"(library {library_id}, path {path_id}); nothing was uploaded. "
+            "Pick another library and download again."
+        )
+        raise BookloreError(msg)
+
+    return library_id, path_id
+
+
 def build_booklore_config(
     values: Mapping[str, Any],
     user_id: int | None = None,
+    destination_key: str | None = None,
 ) -> BookloreConfig:
-    """Build and validate the effective Booklore configuration."""
+    """Build and validate the effective Booklore configuration.
+
+    In library mode an explicit `destination_key` (an admin's pick) is verified
+    and used; without one, the effective default for `user_id` applies. Bookdrop
+    mode ignores both.
+    """
     base_url = str(values.get("BOOKLORE_HOST", "")).strip()
     username = str(values.get("BOOKLORE_USERNAME", "")).strip()
     password = values.get("BOOKLORE_PASSWORD", "") or ""
@@ -82,7 +143,12 @@ def build_booklore_config(
     # Resolve library/path through config so user override precedence is centralized.
     library_id = 0
     path_id = 0
-    if not upload_to_bookdrop:
+    explicit_key = (destination_key or "").strip()
+    if not upload_to_bookdrop and explicit_key:
+        library_id, path_id = _verify_explicit_destination(
+            base_url.rstrip("/"), username, password, explicit_key
+        )
+    elif not upload_to_bookdrop:
         if user_id is not None:
             library_id_val = core_config.config.get(
                 "BOOKLORE_LIBRARY_ID",
@@ -224,6 +290,7 @@ def _post_process_booklore(
         booklore_config = build_booklore_config(
             _get_booklore_settings(),
             user_id=task.user_id,
+            destination_key=task.destination_key,
         )
     except BookloreError as e:
         logger.warning("Task %s: Booklore configuration error: %s", task.task_id, e)
