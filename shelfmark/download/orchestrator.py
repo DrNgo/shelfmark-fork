@@ -29,6 +29,7 @@ from shelfmark.download.activity import parse_activity_grace
 from shelfmark.download.fs import run_blocking_io
 from shelfmark.download.postprocess.pipeline import is_torrent_source, safe_cleanup_path
 from shelfmark.download.postprocess.router import post_process_download
+from shelfmark.grimmory.destinations import GRIMMORY_KEY_PREFIX
 from shelfmark.release_sources import (
     get_handler,
     get_source,
@@ -270,7 +271,7 @@ def queue_release(
         multi_book = bool(release_data.get("multi_book") or extra.get("multi_book"))
         book_plan = _normalize_book_plan(release_data.get("book_plan") or extra.get("book_plan"))
 
-        # Explicit audiobook library chosen by an admin, on either the approve
+        # Explicit library (audiobook or Grimmory) chosen by an admin, on the approve
         # dialog or the release modal. Non-admin payloads never reach here with
         # one — the route strips it before queueing.
         destination_key = normalize_optional_text(
@@ -291,6 +292,21 @@ def queue_release(
         output_mode = "folder" if is_audiobook else books_output_mode
         output_args: dict[str, Any] = {}
         retry_resolution_fields = _build_retry_resolution_fields(release_data)
+
+        # A Grimmory pick only means something for a Grimmory upload. When this
+        # user's own ebook output is something else, the pick would be silently
+        # dropped and the book misfiled, so refuse instead.
+        if (
+            not is_audiobook
+            and output_mode != "booklore"
+            and destination_key is not None
+            and destination_key.startswith(GRIMMORY_KEY_PREFIX)
+        ):
+            return (
+                False,
+                f"A Grimmory library was chosen, but this user's ebook output is "
+                f"{output_mode}; nothing was queued",
+            )
 
         if output_mode == "email" and not is_audiobook:
             email_to, email_error = _resolve_email_destination(user_id=user_id)
