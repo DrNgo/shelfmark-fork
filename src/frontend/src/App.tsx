@@ -87,6 +87,13 @@ import { withBasePath } from './utils/basePath';
 import { emitBookTargetChange } from './utils/bookTargetEvents';
 import { bookSupportsTargets } from './utils/bookTargetLoader';
 import { buildSearchQuery } from './utils/buildSearchQuery';
+import {
+  advanceCombinedSelection,
+  combinedLegOptions,
+  type CombinedSelectionState,
+  completeCombinedSelection,
+  retreatCombinedSelection,
+} from './utils/combinedSelection';
 import { contentTypeForDiscoverDetails } from './utils/discoverRows';
 import { wasDownloadQueuedAfterResponseError } from './utils/downloadRecovery';
 import { getDynamicOptionGroup } from './utils/dynamicFieldOptions';
@@ -203,16 +210,6 @@ const getSubmissionSuccessMessage = (
 
 const CONFIRMED_DOWNLOAD_INTERRUPTED_MESSAGE =
   'Download queued, but the proxy interrupted the response. Status will refresh shortly.';
-
-type CombinedSelectionState = {
-  phase: 'ebook' | 'audiobook';
-  ebookMode: RequestPolicyMode;
-  audiobookMode: RequestPolicyMode;
-  stagedEbook?: { book: Book; release: Release };
-  stagedAudiobook?: Release;
-  // Applies to the audiobook leg only — the ebook lane has one destination.
-  destinationKey?: string;
-};
 
 type PendingOnBehalfDownload =
   | {
@@ -1382,15 +1379,25 @@ function App() {
       const requestPayloads: CreateRequestPayload[] = [];
 
       if (ebookMode === 'download' && ebookRelease) {
-        await executeReleaseDownload(book, ebookRelease, 'ebook', onBehalfOfUserId);
+        await executeReleaseDownload(
+          book,
+          ebookRelease,
+          'ebook',
+          onBehalfOfUserId,
+          combinedLegOptions(selection, 'ebook'),
+        );
       } else if (ebookMode !== 'download' && (ebookRelease || ebookMode === 'request_book')) {
         requestPayloads.push(buildRequestPayload(ebookRelease, 'ebook', ebookMode));
       }
 
       if (audiobookMode === 'download' && audiobookRelease) {
-        await executeReleaseDownload(book, audiobookRelease, 'audiobook', onBehalfOfUserId, {
-          destinationKey: selection.destinationKey,
-        });
+        await executeReleaseDownload(
+          book,
+          audiobookRelease,
+          'audiobook',
+          onBehalfOfUserId,
+          combinedLegOptions(selection, 'audiobook'),
+        );
       } else if (
         audiobookMode !== 'download' &&
         (audiobookRelease || audiobookMode === 'request_book')
@@ -1713,25 +1720,26 @@ function App() {
 
   // Combined mode callbacks
   const handleCombinedNext = useCallback(
-    (release: Release | null) => {
+    (release: Release | null, destinationKey?: string) => {
       if (!releaseBook || !combinedState) return;
       const phases = getCombinedSelectionPhases(combinedState);
       const nextPhase = phases[phases.indexOf(combinedState.phase) + 1];
 
-      setCombinedState({
-        ...combinedState,
-        phase: nextPhase,
-        stagedEbook: release ? { book: releaseBook, release } : undefined,
-      });
+      setCombinedState(
+        advanceCombinedSelection(combinedState, nextPhase, releaseBook, release, destinationKey),
+      );
     },
     [combinedState, getCombinedSelectionPhases, releaseBook],
   );
 
-  const handleCombinedBack = useCallback((audiobookRelease: Release | null) => {
-    setCombinedState((prev) =>
-      prev ? { ...prev, phase: 'ebook', stagedAudiobook: audiobookRelease ?? undefined } : null,
-    );
-  }, []);
+  const handleCombinedBack = useCallback(
+    (audiobookRelease: Release | null, destinationKey?: string) => {
+      setCombinedState((prev) =>
+        prev ? retreatCombinedSelection(prev, audiobookRelease, destinationKey) : null,
+      );
+    },
+    [],
+  );
 
   const handleCombinedClearSelection = useCallback((selectionContentType: ContentType) => {
     setCombinedState((prev) => {
@@ -1749,18 +1757,12 @@ function App() {
     async (release: Release | null, destinationKey?: string) => {
       if (!combinedState || !releaseBook) return;
 
-      const nextCombinedState: CombinedSelectionState =
-        combinedState.phase === 'ebook'
-          ? {
-              ...combinedState,
-              stagedEbook: release ? { book: releaseBook, release } : undefined,
-              destinationKey,
-            }
-          : {
-              ...combinedState,
-              stagedAudiobook: release ?? undefined,
-              destinationKey,
-            };
+      const nextCombinedState = completeCombinedSelection(
+        combinedState,
+        releaseBook,
+        release,
+        destinationKey,
+      );
 
       if (effectiveActingAsUser) {
         setPendingOnBehalfDownload({
@@ -2695,6 +2697,8 @@ function App() {
                       audiobookMode: effectiveCombinedState.audiobookMode,
                       stagedEbookRelease: effectiveCombinedState.stagedEbook?.release ?? null,
                       stagedAudiobookRelease: effectiveCombinedState.stagedAudiobook ?? null,
+                      stagedEbookDestinationKey: effectiveCombinedState.ebookDestinationKey,
+                      stagedAudiobookDestinationKey: effectiveCombinedState.audiobookDestinationKey,
                       onNext: !combinedIsFinalStep ? handleCombinedNext : undefined,
                       onBack: combinedHasPreviousStep ? handleCombinedBack : undefined,
                       onClearSelection: handleCombinedClearSelection,

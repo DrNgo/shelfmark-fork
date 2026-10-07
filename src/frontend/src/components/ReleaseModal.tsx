@@ -75,8 +75,12 @@ interface CombinedModeConfig {
   audiobookMode: RequestPolicyMode;
   stagedEbookRelease: Release | null;
   stagedAudiobookRelease: Release | null;
-  onNext?: (release: Release | null) => void;
-  onBack?: (audiobookRelease: Release | null) => void;
+  // The library each phase's picker last held, restored on Next/Back (fork-only).
+  stagedEbookDestinationKey?: string;
+  stagedAudiobookDestinationKey?: string;
+  // Each carries the library picked on the phase being left.
+  onNext?: (release: Release | null, destinationKey?: string) => void;
+  onBack?: (audiobookRelease: Release | null, destinationKey?: string) => void;
   onDownload?: (release: Release | null, destinationKey?: string) => void;
   onClearSelection?: (contentType: ContentType) => void;
 }
@@ -866,6 +870,8 @@ const ReleaseModalSession = ({
   const combinedAudiobookMode = combinedMode?.audiobookMode ?? null;
   const stagedEbookRelease = combinedMode?.stagedEbookRelease ?? null;
   const stagedAudiobookRelease = combinedMode?.stagedAudiobookRelease ?? null;
+  const stagedEbookDestinationKey = combinedMode?.stagedEbookDestinationKey ?? '';
+  const stagedAudiobookDestinationKey = combinedMode?.stagedAudiobookDestinationKey ?? '';
   let stagedReleaseForPhase: Release | null = null;
   if (combinedPhase === 'ebook') {
     stagedReleaseForPhase = stagedEbookRelease;
@@ -2467,8 +2473,10 @@ const ReleaseModalSession = ({
                       type="button"
                       onClick={() => {
                         const picked = selectedRelease;
+                        const leavingKey = chosenDestinationKey;
                         setSelectedRelease(stagedEbookRelease);
-                        onCombinedBack(picked);
+                        setDestinationKey(stagedEbookDestinationKey);
+                        onCombinedBack(picked, leavingKey);
                       }}
                       className="hover-surface rounded-lg px-3 py-1.5 text-sm font-medium text-(--text) transition-colors"
                     >
@@ -2480,13 +2488,15 @@ const ReleaseModalSession = ({
                     <button
                       type="button"
                       onClick={() => {
+                        const leavingKey = chosenDestinationKey;
+                        setDestinationKey(stagedAudiobookDestinationKey);
                         if (selectedRelease) {
                           const picked = selectedRelease;
                           setSelectedRelease(stagedAudiobookRelease);
-                          onCombinedNext(picked);
+                          onCombinedNext(picked, leavingKey);
                         } else {
                           setSelectedRelease(stagedAudiobookRelease);
-                          onCombinedNext(null);
+                          onCombinedNext(null, leavingKey);
                         }
                       }}
                       className="rounded-lg bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
