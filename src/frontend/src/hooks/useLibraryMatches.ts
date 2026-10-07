@@ -2,8 +2,12 @@ import { useState } from 'react';
 
 import { getLibraryMatches } from '../services/api';
 import type { Book } from '../types';
-import type { LibraryMatch } from '../utils/libraryMatches';
-import { booksLookupSignature, buildLibraryLookupPayload } from '../utils/libraryMatches';
+import type { BothFormatMatches, LibraryMatch } from '../utils/libraryMatches';
+import {
+  booksLookupSignature,
+  buildLibraryLookupPayload,
+  withContentType,
+} from '../utils/libraryMatches';
 import { useDependencyEffect } from './useMountEffect';
 
 /**
@@ -47,4 +51,18 @@ export const useLibraryMatches = (
   }, [signature]);
 
   return matches;
+};
+
+const NO_BOOKS: Book[] = [];
+
+/**
+ * Combined mode's lock: ask about the same books once as ebooks and once as
+ * audiobooks, so each format gets its own edition check.
+ *
+ * Disabled, both lookups see no books and make no request.
+ */
+export const useBothFormatMatches = (books: Book[], enabled: boolean): BothFormatMatches | null => {
+  const ebook = useLibraryMatches(enabled ? withContentType(books, 'ebook') : NO_BOOKS);
+  const audiobook = useLibraryMatches(enabled ? withContentType(books, 'audiobook') : NO_BOOKS);
+  return enabled ? { ebook, audiobook } : null;
 };

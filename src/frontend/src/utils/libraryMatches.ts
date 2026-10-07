@@ -46,7 +46,15 @@ export interface LibraryLookupBook {
   isbn_10?: string;
   isbn_13?: string;
   content_type?: string;
+  /** Only ever 'hardcover': no other provider's id is a work identity the index keeps. */
+  provider?: string;
+  provider_id?: string;
 }
+
+const HARDCOVER = 'hardcover';
+
+const isHardcover = (provider: string | undefined): boolean =>
+  (provider ?? '').trim().toLowerCase() === HARDCOVER;
 
 /**
  * Reduce books to the fields the matcher uses, dropping any that cannot match.
@@ -75,6 +83,7 @@ export const buildLibraryLookupPayload = (
     const isbn13 = (book.isbn_13 ?? '').trim();
     const isbn10 = (book.isbn_10 ?? '').trim();
     const contentType = (book.content_type ?? defaultContentType ?? '').trim();
+    const providerId = isHardcover(book.provider) ? (book.provider_id ?? '').trim() : '';
     if (!id || seen.has(id)) continue;
     if (!asin && !isbn13 && !isbn10 && (!title || !author)) continue;
 
@@ -86,6 +95,10 @@ export const buildLibraryLookupPayload = (
     if (isbn13) entry.isbn_13 = isbn13;
     if (isbn10) entry.isbn_10 = isbn10;
     if (contentType) entry.content_type = contentType;
+    if (providerId) {
+      entry.provider = HARDCOVER;
+      entry.provider_id = providerId;
+    }
     payload.push(entry);
   }
 
@@ -108,6 +121,9 @@ const NO_BOOKS: Book[] = [];
  *
  * Returns a shared empty array when there is no usable key, so callers can pass
  * the result straight into the lookup hook without churning its dependency.
+ *
+ * `provider`/`providerId` carry the book's Hardcover identity when it has one;
+ * the payload builder drops them for any other provider.
  */
 export const singleBookLookup = (
   id: string,
@@ -116,6 +132,8 @@ export const singleBookLookup = (
   asin?: string,
   isbn?: string,
   contentType?: string,
+  provider?: string,
+  providerId?: string,
 ): Book[] => {
   const trimmedTitle = (title ?? '').trim();
   const trimmedAuthor = (author ?? '').trim();
@@ -131,17 +149,40 @@ export const singleBookLookup = (
       asin: trimmedAsin || undefined,
       isbn_13: trimmedIsbn || undefined,
       content_type: contentType || undefined,
+      provider: provider || undefined,
+      provider_id: providerId || undefined,
     },
   ];
+};
+
+/**
+ * The Hardcover identity stored with a request's book data, if it has one.
+ *
+ * Requests keep `provider`/`provider_id` from the result they were made from,
+ * but as untyped JSON — the id may have come back as a number.
+ */
+export const hardcoverIdentity = (
+  bookData: Record<string, unknown> | null | undefined,
+): { provider?: string; providerId?: string } => {
+  const provider = typeof bookData?.provider === 'string' ? bookData.provider : undefined;
+  const rawId = bookData?.provider_id;
+  let providerId = '';
+  if (typeof rawId === 'string') providerId = rawId.trim();
+  else if (typeof rawId === 'number' && Number.isFinite(rawId)) providerId = String(rawId);
+  return isHardcover(provider) && providerId ? { provider: HARDCOVER, providerId } : {};
 };
 
 /** A stable key for a book list, so scrolling a result set refetches only once. */
 export const booksLookupSignature = (books: Book[], defaultContentType?: string): string =>
   buildLibraryLookupPayload(books, defaultContentType)
     .map((book) =>
-      [book.id, book.asin ?? '', book.isbn_13 ?? book.isbn_10 ?? '', book.content_type ?? ''].join(
-        '#',
-      ),
+      [
+        book.id,
+        book.asin ?? '',
+        book.isbn_13 ?? book.isbn_10 ?? '',
+        book.content_type ?? '',
+        book.provider_id ?? '',
+      ].join('#'),
     )
     .join(',');
 
@@ -204,6 +245,44 @@ export const applyInLibraryLock = (
 /** Whether the book is held in the very format being browsed. */
 export const isHeldInFormat = (match: LibraryMatch | undefined): boolean =>
   (match?.items.length ?? 0) > 0;
+
+/** One book's holdings in each format, from a lookup per format (combined mode). */
+export interface FormatMatches {
+  ebook?: LibraryMatch;
+  audiobook?: LibraryMatch;
+}
+
+/** A whole result set's per-format lookups, keyed like any lookup response. */
+export interface BothFormatMatches {
+  ebook: Record<string, LibraryMatch>;
+  audiobook: Record<string, LibraryMatch>;
+}
+
+/** The same books, all asked about as one format. */
+export const withContentType = (books: Book[], contentType: string): Book[] =>
+  books.map((book) => ({ ...book, content_type: contentType }));
+
+export const bothFormatsFor = (
+  both: BothFormatMatches | null,
+  id: string,
+): FormatMatches | undefined =>
+  both ? { ebook: both.ebook[id], audiobook: both.audiobook[id] } : undefined;
+
+/**
+ * Whether the acquire action should lock.
+ *
+ * Outside combined mode, holding the browsed format locks. Combined mode's
+ * action fetches both formats, so it locks only when each is held as the same
+ * edition, which is what each format's own lookup says in its `items`. One
+ * format held is still worth the badge, never the lock.
+ */
+export const isLockedInLibrary = (
+  match: LibraryMatch | undefined,
+  bothFormats?: FormatMatches,
+): boolean =>
+  bothFormats
+    ? isHeldInFormat(bothFormats.ebook) && isHeldInFormat(bothFormats.audiobook)
+    : isHeldInFormat(match);
 
 /**
  * The ownership message for the request-confirmation warning banner.

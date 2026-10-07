@@ -4,11 +4,15 @@ import type { Book, ButtonStateInfo } from '../types';
 import {
   applyInLibraryLock,
   booksLookupSignature,
+  bothFormatsFor,
   buildLibraryLookupPayload,
+  hardcoverIdentity,
   isHeldInFormat,
+  isLockedInLibrary,
   libraryMatchOwnershipMessage,
   libraryMatchTooltip,
   singleBookLookup,
+  withContentType,
 } from '../utils/libraryMatches';
 import type { LibraryMatch } from '../utils/libraryMatches';
 
@@ -723,5 +727,132 @@ describe('other editions: a different recording of the same book', () => {
     expect(isHeldInFormat(both)).toBe(true);
     expect(libraryMatchTooltip(both)).toContain('Already in your library');
     expect(libraryMatchOwnershipMessage(both)).toContain('You already have this');
+  });
+});
+
+describe('Hardcover identity in the lookup', () => {
+  it('sends the provider id for a Hardcover result', () => {
+    const payload = buildLibraryLookupPayload([
+      book({ provider: 'hardcover', provider_id: '730514' }),
+    ]);
+
+    expect(payload).toEqual([
+      {
+        id: 'bk1',
+        title: 'The Housemaid',
+        author: 'Freida McFadden',
+        provider: 'hardcover',
+        provider_id: '730514',
+      },
+    ]);
+  });
+
+  it('keeps the provider id off other providers', () => {
+    const payload = buildLibraryLookupPayload([
+      book({ provider: 'openlibrary', provider_id: 'OL123W' }),
+    ]);
+
+    expect(payload[0]).not.toHaveProperty('provider_id');
+    expect(payload[0]).not.toHaveProperty('provider');
+  });
+
+  it('does not make an otherwise unmatchable book eligible', () => {
+    const payload = buildLibraryLookupPayload([
+      book({ author: '', provider: 'hardcover', provider_id: '730514' }),
+    ]);
+
+    expect(payload).toEqual([]);
+  });
+
+  it('refetches when the provider id changes', () => {
+    const before = booksLookupSignature([book({ provider: 'hardcover', provider_id: '1' })]);
+    const after = booksLookupSignature([book({ provider: 'hardcover', provider_id: '2' })]);
+
+    expect(before).not.toEqual(after);
+  });
+
+  it('carries the identity through singleBookLookup', () => {
+    const [entry] = singleBookLookup(
+      'details-x',
+      'Overlord',
+      'Kugane Maruyama',
+      undefined,
+      undefined,
+      'ebook',
+      'hardcover',
+      '730514',
+    );
+
+    expect(buildLibraryLookupPayload([entry])[0]).toMatchObject({
+      provider: 'hardcover',
+      provider_id: '730514',
+    });
+  });
+
+  it('reads a stored request identity only when it is Hardcover', () => {
+    expect(hardcoverIdentity({ provider: 'hardcover', provider_id: 730514 })).toEqual({
+      provider: 'hardcover',
+      providerId: '730514',
+    });
+    expect(hardcoverIdentity({ provider: 'Hardcover', provider_id: ' 730514 ' })).toEqual({
+      provider: 'hardcover',
+      providerId: '730514',
+    });
+    expect(hardcoverIdentity({ provider: 'openlibrary', provider_id: 'OL1W' })).toEqual({});
+    expect(hardcoverIdentity({ provider: 'hardcover', provider_id: '' })).toEqual({});
+    expect(hardcoverIdentity(null)).toEqual({});
+  });
+});
+
+describe('isLockedInLibrary', () => {
+  const held = match();
+  // Same book, same format, but a different recording (a full-cast adaptation, say).
+  const differentEdition = match({ items: [], other_editions: match().items });
+
+  it('locks on a same-format holding outside combined mode', () => {
+    expect(isLockedInLibrary(held)).toBe(true);
+  });
+
+  it('never locks without a same-format holding', () => {
+    expect(isLockedInLibrary(differentEdition)).toBe(false);
+    expect(isLockedInLibrary(undefined)).toBe(false);
+  });
+
+  // Review Focus #5: combined mode acquires both formats, so one is not enough.
+  it('does not lock combined mode on one format', () => {
+    expect(isLockedInLibrary(held, { ebook: held, audiobook: undefined })).toBe(false);
+    expect(isLockedInLibrary(held, { ebook: undefined, audiobook: held })).toBe(false);
+  });
+
+  it('does not lock combined mode when the other format is only a different edition', () => {
+    expect(isLockedInLibrary(held, { ebook: held, audiobook: differentEdition })).toBe(false);
+  });
+
+  it('locks combined mode when both formats are held', () => {
+    expect(isLockedInLibrary(held, { ebook: held, audiobook: held })).toBe(true);
+  });
+});
+
+describe('combined-mode lookups', () => {
+  it('forces every book to one format', () => {
+    const books = withContentType(
+      [book({ content_type: 'ebook' }), book({ id: 'bk2' })],
+      'audiobook',
+    );
+
+    expect(buildLibraryLookupPayload(books).map((entry) => entry.content_type)).toEqual([
+      'audiobook',
+      'audiobook',
+    ]);
+  });
+
+  it('picks one book out of both lookups', () => {
+    const both = { ebook: { bk1: match() }, audiobook: {} };
+
+    expect(bothFormatsFor(both, 'bk1')).toEqual({ ebook: match(), audiobook: undefined });
+  });
+
+  it('has nothing outside combined mode', () => {
+    expect(bothFormatsFor(null, 'bk1')).toBeUndefined();
   });
 });
