@@ -20,6 +20,10 @@ class BookloreError(Exception):
     """Raised when Booklore integration fails."""
 
 
+class BookloreAuthError(BookloreError):
+    """Grimmory rejected the session token (HTTP 401) — a re-login may fix it."""
+
+
 @dataclass(frozen=True)
 class BookloreConfig:
     """Configuration required to upload files into Booklore."""
@@ -179,7 +183,74 @@ def list_books(
 
     books = [row for row in content if isinstance(row, dict)]
 
-    raw_total = payload.get("totalPages")
-    total_pages = raw_total if isinstance(raw_total, int) and raw_total > 0 else 1
+    # Grimmory returns Spring's PagedModel, which nests the count under "page";
+    # older Booklore builds put it at the top level. A non-empty page with no
+    # usable count is malformed: guessing "one page" would silently drop every
+    # later page from the index.
+    paging = payload.get("page")
+    raw_total = paging.get("totalPages") if isinstance(paging, dict) else None
+    if raw_total is None:
+        raw_total = payload.get("totalPages")
+    if isinstance(raw_total, int) and not isinstance(raw_total, bool) and raw_total > 0:
+        return books, raw_total
+    # Only a literally empty `content` is an empty library. Rows filtered out
+    # above as non-objects are a broken page, and reading that as "empty" would
+    # let the sync replace the whole index with nothing.
+    if not content:
+        return books, 1
+    msg = f"Unexpected {BOOKLORE_DISPLAY_NAME} book listing payload: missing page count"
+    raise BookloreError(msg)
 
-    return books, total_pages
+
+def get_book(
+    booklore_config: BookloreConfig,
+    token: str,
+    book_id: object,
+    *,
+    session: requests.Session | None = None,
+) -> dict[str, Any]:
+    """Fetch one book in full — the only endpoint that returns provider IDs.
+
+    The listing endpoints omit ``hardcoverBookId`` and the other provider IDs,
+    so the library index reads each book individually. Every failure raises:
+    a skipped book would silently lose its badge. A payload for a different
+    book, or without a metadata object, is malformed rather than skippable.
+    """
+    url = f"{booklore_config.base_url}/api/v1/books/{book_id}"
+    headers = {"Authorization": f"Bearer {token}"}
+    http = session if session is not None else requests
+
+    try:
+        response = http.get(url, headers=headers, timeout=30, verify=booklore_config.verify_tls)
+    except requests.exceptions.ConnectionError as exc:
+        msg = f"Could not connect to {BOOKLORE_DISPLAY_NAME}"
+        raise BookloreError(msg) from exc
+    except requests.exceptions.Timeout as exc:
+        msg = f"{BOOKLORE_DISPLAY_NAME} book {book_id} read timed out"
+        raise BookloreError(msg) from exc
+    except requests.exceptions.RequestException as exc:
+        msg = f"Failed to fetch {BOOKLORE_DISPLAY_NAME} book {book_id}: {exc}"
+        raise BookloreError(msg) from exc
+
+    if response.status_code == 401:
+        msg = f"{BOOKLORE_DISPLAY_NAME} session expired"
+        raise BookloreAuthError(msg)
+    try:
+        response.raise_for_status()
+    except requests.exceptions.HTTPError as exc:
+        msg = f"{BOOKLORE_DISPLAY_NAME} book {book_id} read failed ({response.status_code})"
+        raise BookloreError(msg) from exc
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        msg = f"Invalid {BOOKLORE_DISPLAY_NAME} book {book_id} response"
+        raise BookloreError(msg) from exc
+
+    if not isinstance(payload, dict) or not isinstance(payload.get("metadata"), dict):
+        msg = f"{BOOKLORE_DISPLAY_NAME} book {book_id} response is malformed"
+        raise BookloreError(msg)
+    if str(payload.get("id")) != str(book_id):
+        msg = f"{BOOKLORE_DISPLAY_NAME} returned book {payload.get('id')} when asked for {book_id}"
+        raise BookloreError(msg)
+    return payload

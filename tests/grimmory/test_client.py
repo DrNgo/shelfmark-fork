@@ -3,7 +3,13 @@
 import pytest
 import requests
 
-from shelfmark.grimmory.client import BookloreConfig, BookloreError, list_books
+from shelfmark.grimmory.client import (
+    BookloreAuthError,
+    BookloreConfig,
+    BookloreError,
+    get_book,
+    list_books,
+)
 
 CONFIG = BookloreConfig(
     base_url="http://grimmory:6060",
@@ -168,3 +174,92 @@ class TestConnectionMessage:
         assert result["success"] is True
         assert "1 book)" in result["message"]
         assert "1 books" not in result["message"]
+
+
+class TestListBooksPaging:
+    """Grimmory returns Spring's PagedModel: {content, links, page: {totalPages, ...}}."""
+
+    def test_reads_the_nested_page_count(self, monkeypatch):
+        payload = {"content": [{"id": 1}], "page": {"totalPages": 2, "number": 0}}
+        monkeypatch.setattr(requests, "get", lambda url, **kw: _Response(payload))
+
+        assert list_books(CONFIG, "token", page=0, size=500) == ([{"id": 1}], 2)
+
+    def test_a_non_empty_page_without_a_count_is_malformed(self, monkeypatch):
+        payload = {"content": [{"id": 1}], "page": {"number": 0}}
+        monkeypatch.setattr(requests, "get", lambda url, **kw: _Response(payload))
+
+        with pytest.raises(BookloreError, match="page count"):
+            list_books(CONFIG, "token", page=0, size=500)
+
+    def test_junk_rows_without_a_count_are_malformed_not_empty(self, monkeypatch):
+        payload = {"content": [None], "page": {"number": 0}}
+        monkeypatch.setattr(requests, "get", lambda url, **kw: _Response(payload))
+
+        with pytest.raises(BookloreError, match="page count"):
+            list_books(CONFIG, "token", page=0, size=500)
+
+    def test_an_empty_library_is_one_empty_page(self, monkeypatch):
+        payload = {"content": [], "page": {"number": 0}}
+        monkeypatch.setattr(requests, "get", lambda url, **kw: _Response(payload))
+
+        assert list_books(CONFIG, "token", page=0, size=500) == ([], 1)
+
+    def test_an_invalid_count_on_a_non_empty_page_is_malformed(self, monkeypatch):
+        payload = {"content": [{"id": 1}], "page": {"totalPages": 0}}
+        monkeypatch.setattr(requests, "get", lambda url, **kw: _Response(payload))
+
+        with pytest.raises(BookloreError):
+            list_books(CONFIG, "token", page=0, size=500)
+
+
+class _Session:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append(url)
+        return self.response
+
+
+DETAIL = {"id": 165, "metadata": {"title": "Overlord Volume 3", "hardcoverBookId": "885682"}}
+
+
+class TestGetBook:
+    def test_returns_the_full_book_through_the_given_session(self):
+        session = _Session(_Response(DETAIL))
+
+        assert get_book(CONFIG, "token", 165, session=session) == DETAIL
+        assert session.calls == ["http://grimmory:6060/api/v1/books/165"]
+
+    def test_uses_requests_when_no_session_is_given(self, monkeypatch):
+        monkeypatch.setattr(requests, "get", lambda url, **kw: _Response(DETAIL))
+
+        assert get_book(CONFIG, "token", "165")["id"] == 165
+
+    def test_a_401_is_an_auth_error(self):
+        with pytest.raises(BookloreAuthError):
+            get_book(CONFIG, "token", 165, session=_Session(_Response({}, status_code=401)))
+
+    def test_a_404_is_a_failure_not_a_skip(self):
+        with pytest.raises(BookloreError) as raised:
+            get_book(CONFIG, "token", 165, session=_Session(_Response({}, status_code=404)))
+        assert not isinstance(raised.value, BookloreAuthError)
+
+    def test_an_empty_payload_is_malformed(self):
+        with pytest.raises(BookloreError, match="malformed"):
+            get_book(CONFIG, "token", 165, session=_Session(_Response({})))
+
+    def test_a_payload_for_another_book_is_malformed(self):
+        other = {"id": 999, "metadata": {"title": "x"}}
+        with pytest.raises(BookloreError, match="999"):
+            get_book(CONFIG, "token", 165, session=_Session(_Response(other)))
+
+    def test_transport_failure_is_a_booklore_error(self):
+        class Broken:
+            def get(self, url, **kwargs):
+                raise requests.exceptions.ConnectionError
+
+        with pytest.raises(BookloreError, match="Grimmory"):
+            get_book(CONFIG, "token", 165, session=Broken())
