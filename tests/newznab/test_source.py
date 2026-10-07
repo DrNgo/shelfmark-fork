@@ -581,10 +581,12 @@ class TestSearch:
 
         assert [release.indexer for release in results] == ["Working"]
 
-    def test_exception_in_client_returns_empty(self, monkeypatch):
+    def test_exception_in_client_is_reported_not_returned_as_empty(self, monkeypatch):
+        from shelfmark.release_sources import SourceUnavailableError
+
         client = MagicMock()
         client.search.side_effect = RuntimeError("boom")
         src = self._patched_source(monkeypatch, client)
         book = _make_book()
-        results = src.search(book, _make_plan(book))
-        assert results == []
+        with pytest.raises(SourceUnavailableError, match="boom"):
+            src.search(book, _make_plan(book))

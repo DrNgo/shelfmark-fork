@@ -2,9 +2,10 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 import requests
 
-from shelfmark.release_sources.newznab.api import NewznabClient
+from shelfmark.release_sources.newznab.api import NewznabClient, NewznabSearchError
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -162,15 +163,75 @@ class TestSearch:
 
         assert "cat" not in captured[0]
 
-    def test_returns_empty_on_request_error(self):
+    def test_a_request_error_is_a_failure_not_an_empty_result(self):
         client = NewznabClient("http://nzbhydra:5076", "key")
-        with patch.object(
-            client,
-            "_get",
-            side_effect=requests.exceptions.ConnectionError("down"),
+        with (
+            patch.object(
+                client,
+                "_get",
+                side_effect=requests.exceptions.ConnectionError("down"),
+            ),
+            pytest.raises(NewznabSearchError, match="down") as excinfo,
         ):
-            results = client.search(query="book")
-        assert results == []
+            client.search(query="book")
+        assert excinfo.value.rate_limited is False
+
+    def test_http_429_is_a_rate_limited_failure(self):
+        client = NewznabClient("http://nzbhydra:5076", "key")
+        error = requests.exceptions.HTTPError(response=_make_response("", status=429))
+        with (
+            patch.object(client, "_get", side_effect=error),
+            pytest.raises(NewznabSearchError) as excinfo,
+        ):
+            client.search(query="book")
+        assert excinfo.value.rate_limited is True
+
+    @pytest.mark.parametrize(
+        ("code", "rate_limited"),
+        [("500", True), ("501", True), ("100", False), ("900", False)],
+    )
+    def test_a_newznab_error_document_is_a_failure(self, code, rate_limited):
+        client = NewznabClient("http://nzbhydra:5076", "key")
+        body = f'<?xml version="1.0"?><error code="{code}" description="nope"/>'
+        with (
+            patch.object(client, "_get", return_value=_make_response(body)),
+            pytest.raises(NewznabSearchError, match=f"indexer error {code}") as excinfo,
+        ):
+            client.search(query="book")
+        assert excinfo.value.rate_limited is rate_limited
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "<error code='500' description='Request limit reached'/>",
+            '<error\n  code = "500"\n  description = "Request limit reached" />',
+            '<nn:error xmlns:nn="http://www.newznab.com/DTD/2010/feeds/attributes/" '
+            'code="500" description="Request limit reached"/>',
+        ],
+    )
+    def test_error_documents_are_parsed_not_pattern_matched(self, body):
+        client = NewznabClient("http://nzbhydra:5076", "key")
+        with (
+            patch.object(client, "_get", return_value=_make_response(body)),
+            pytest.raises(NewznabSearchError, match="indexer error 500") as excinfo,
+        ):
+            client.search(query="book")
+        assert excinfo.value.rate_limited is True
+
+    def test_a_feed_that_mentions_error_is_not_one(self):
+        client = NewznabClient("http://nzbhydra:5076", "key")
+        body = (
+            '<?xml version="1.0"?><rss><channel><description>&lt;error code="500"&gt;'
+            "</description></channel></rss>"
+        )
+        with patch.object(client, "_get", return_value=_make_response(body)):
+            assert client.search(query="book") == []
+
+    def test_an_empty_feed_is_still_an_empty_success(self):
+        client = NewznabClient("http://nzbhydra:5076", "key")
+        empty = '<?xml version="1.0"?><rss version="2.0"><channel></channel></rss>'
+        with patch.object(client, "_get", return_value=_make_response(empty)):
+            assert client.search(query="book") == []
 
     def test_returns_empty_on_malformed_xml(self):
         client = NewznabClient("http://nzbhydra:5076", "key")

@@ -10,9 +10,22 @@ import requests
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.utils import normalize_http_url
 from shelfmark.download.network import get_ssl_verify
-from shelfmark.release_sources.prowlarr.torznab import parse_torznab_xml
+from shelfmark.release_sources.prowlarr.torznab import parse_torznab_error, parse_torznab_xml
 
 logger = setup_logger(__name__)
+
+_HTTP_TOO_MANY_REQUESTS = 429
+
+
+class NewznabSearchError(RuntimeError):
+    """A Newznab search could not be completed - never the same as "no results".
+
+    ``rate_limited`` marks an HTTP 429 or a Newznab request/download-limit error.
+    """
+
+    def __init__(self, message: str, *, rate_limited: bool = False) -> None:
+        super().__init__(message)
+        self.rate_limited = rate_limited
 
 
 class NewznabClient:
@@ -109,6 +122,11 @@ class NewznabClient:
         Returns:
             List of result dicts shaped like Prowlarr JSON search results so that
             the shared ``_prowlarr_result_to_release`` converter can process them.
+            An empty list strictly means the indexer answered with no matches.
+
+        Raises:
+            NewznabSearchError: The request failed, or the indexer answered with a
+                Newznab ``<error>`` instead of a result feed.
         """
         if not query:
             return []
@@ -124,16 +142,23 @@ class NewznabClient:
 
         try:
             response = self._get(params, accept_xml=True)
-            results = parse_torznab_xml(response.text)
-            logger.debug("Newznab search '%s': %d results", query, len(results))
-            if not results:
-                preview = response.text[:300].strip() if response.text else "<empty>"
-                logger.debug("Newznab empty response body: %s", preview)
-        except requests.exceptions.RequestException:
-            logger.exception("Newznab search request failed")
-            return []
-        except Exception:
-            logger.exception("Newznab search failed")
-            return []
-        else:
-            return results
+        except requests.exceptions.RequestException as e:
+            logger.warning("Newznab search request failed: %s", e)
+            status = getattr(e.response, "status_code", None)
+            msg = f"Newznab search failed: {e}"
+            raise NewznabSearchError(msg, rate_limited=status == _HTTP_TOO_MANY_REQUESTS) from e
+
+        text = response.text or ""
+        results = parse_torznab_xml(text)
+        logger.debug("Newznab search '%s': %d results", query, len(results))
+        if not results:
+            error = parse_torznab_error(text)
+            if error is not None:
+                msg = (
+                    f"Newznab search failed: indexer error {error.code}: "
+                    f"{error.description or 'no description'}"
+                )
+                raise NewznabSearchError(msg, rate_limited=error.rate_limited)
+            preview = text[:300].strip() or "<empty>"
+            logger.debug("Newznab empty response body: %s", preview)
+        return results

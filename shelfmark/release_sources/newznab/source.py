@@ -13,8 +13,10 @@ if TYPE_CHECKING:
     from shelfmark.core.search_plan import ReleaseSearchPlan
     from shelfmark.metadata_providers import BookMetadata
 
+from shelfmark.core import search_deadline
 from shelfmark.core.config import config
 from shelfmark.core.logger import setup_logger
+from shelfmark.core.search_queries import any_identity_hit
 from shelfmark.core.utils import normalize_http_url
 from shelfmark.release_sources import (
     ColumnAlign,
@@ -27,9 +29,10 @@ from shelfmark.release_sources import (
     ReleaseColumnConfig,
     ReleaseProtocol,
     ReleaseSource,
+    SourceUnavailableError,
     register_source,
 )
-from shelfmark.release_sources.newznab.api import NewznabClient
+from shelfmark.release_sources.newznab.api import NewznabClient, NewznabSearchError
 from shelfmark.release_sources.newznab.cache import cache_release
 from shelfmark.release_sources.prowlarr.source import (
     PROWLARR_SEARCH_TIMEOUT_SECONDS as _SEARCH_TIMEOUT,
@@ -50,6 +53,13 @@ _DEFAULT_BOOK_CATS = [7000]
 # Reuse the same timeout constant as Prowlarr.
 NEWZNAB_SEARCH_TIMEOUT_SECONDS = _SEARCH_TIMEOUT
 
+# Fallback queries (shelfmark.core.search_queries) may send each connection at most
+# this many requests per search, auto-expanded retries included.
+FALLBACK_REQUESTS_PER_CONNECTION = 4
+
+# What a fallback request is assumed to need when a client reports no usable timeout.
+_DEFAULT_REQUEST_TIMEOUT_SECONDS = 30.0
+
 
 @dataclass(frozen=True)
 class _NamedClient:
@@ -58,6 +68,46 @@ class _NamedClient:
     name: str
     connection_id: str
     client: NewznabClient
+
+
+def _request_timeout(client: object) -> float:
+    """The read timeout one request on ``client`` may take."""
+    timeout = getattr(client, "timeout", None)
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        return _DEFAULT_REQUEST_TIMEOUT_SECONDS
+    return float(timeout)
+
+
+def _search_once(
+    connection: _NamedClient,
+    query: str,
+    categories: list[int] | None,
+    *,
+    rung: str,
+    errors: list[str],
+    expanded: bool = False,
+) -> list[dict] | None:
+    """Send one search and log it at INFO; None means it failed (recorded in ``errors``)."""
+    try:
+        raw = connection.client.search(query=query, categories=categories)
+    except NewznabSearchError as e:
+        outcome, count = ("rate-limited" if e.rate_limited else "failed"), 0
+        errors.append(f"{connection.name}: {e}")
+        raw = None
+    else:
+        outcome, count = ("ok" if raw else "empty"), len(raw)
+    logger.info(
+        "Newznab request: query='%s' connection=%s categories=%s rung=%s expanded=%s "
+        "outcome=%s results=%s",
+        query,
+        connection.name,
+        ",".join(str(c) for c in categories) if categories else "all",
+        rung,
+        "yes" if expanded else "no",
+        outcome,
+        count,
+    )
+    return raw
 
 
 def _parse_indexer_rows(raw: object) -> list[tuple[str, str, str]]:
@@ -282,6 +332,11 @@ class NewznabSource(ReleaseSource):
     display_name = "Newznab"
     supported_content_types: ClassVar[list[str]] = ["ebook", "audiobook"]
 
+    def __init__(self) -> None:
+        """Initialize per-instance search state for Newznab."""
+        # The last search was cut short by its deadline (results, if any, are partial).
+        self.last_search_incomplete = False
+
     def get_column_config(self) -> ReleaseColumnConfig:
         return ReleaseColumnConfig(
             columns=[
@@ -366,13 +421,15 @@ class NewznabSource(ReleaseSource):
         content_type: str = "ebook",
     ) -> list[Release]:
         """Search the Newznab indexer for releases matching the book."""
+        self.last_search_incomplete = False
         clients = self._get_clients()
         if not clients:
             logger.warning("Newznab not configured - skipping search")
             return []
 
-        queries = [v.title for v in plan.title_variants if v.title]
-        queries = [q for q in queries if q]
+        variants = [v for v in plan.title_variants if v.title]
+        queries = [v.title for v in variants if not v.fallback]
+        fallback_queries = [v.title for v in variants if v.fallback]
 
         if not queries and plan.isbn_candidates:
             queries = list(plan.isbn_candidates)
@@ -386,6 +443,7 @@ class NewznabSource(ReleaseSource):
 
         auto_expand = config.get("NEWZNAB_AUTO_EXPAND", False)
         deadline = time.monotonic() + NEWZNAB_SEARCH_TIMEOUT_SECONDS
+        selected_indexers = set(plan.indexers) if plan.indexers else None
 
         def _check_timeout() -> None:
             if time.monotonic() > deadline:
@@ -395,9 +453,86 @@ class NewznabSource(ReleaseSource):
 
         seen_keys: set = set()
         all_results: list[dict] = []
+        cut_short = False
+        errors: list[str] = []
+
+        def add_results(connection: _NamedClient, raw: list[dict]) -> list[dict]:
+            """Label and keep one response; return the rows it newly kept that are shown.
+
+            Only those can stop the ladder: a repeated GUID was already judged, and a
+            row the plan.indexers filter drops is never shown.
+            """
+            retained: list[dict] = []
+            for raw_result in raw:
+                r = dict(raw_result)
+                # Aggregators can identify the underlying indexer. Plain feeds
+                # generally cannot, so use the user-configured connection name.
+                r["indexer"] = r.get("indexer") or connection.name
+                r["_newznab_connection_id"] = connection.connection_id
+                key = (
+                    connection.connection_id,
+                    r.get("guid") or r.get("downloadUrl") or f"{r.get('indexer')}:{r.get('title')}",
+                )
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                all_results.append(r)
+                if selected_indexers is None or r["indexer"] in selected_indexers:
+                    retained.append(r)
+            return retained
+
+        def has_identity_hit(rows: list[dict]) -> bool:
+            # Only rows that survive the plan.indexers filter can stop the ladder.
+            return any_identity_hit(
+                (r.get("title") for r in rows), plan.identity, content_type=content_type
+            )
+
+        def run_fallbacks(connection: _NamedClient, found: list[dict]) -> tuple[str, int, int]:
+            """Run this connection's ladder; return (stop reason, rungs, requests)."""
+            if has_identity_hit(found):
+                return "hit", 0, 0
+            timeout = _request_timeout(connection.client)
+            requests_sent = 0
+            rungs = 0
+
+            def request(query: str, cats: list[int] | None, rung: str) -> list[dict] | str:
+                nonlocal requests_sent, cut_short
+                if requests_sent >= FALLBACK_REQUESTS_PER_CONNECTION:
+                    return "cap"
+                if search_deadline.remaining_seconds(deadline) < timeout:
+                    cut_short = True
+                    return "deadline"
+                requests_sent += 1
+                raw = _search_once(
+                    connection,
+                    query,
+                    cats,
+                    rung=rung,
+                    errors=errors,
+                    expanded=cats is None and bool(categories),
+                )
+                return "failed" if raw is None else raw
+
+            for idx, query in enumerate(fallback_queries, start=1):
+                rung = f"fallback {idx}"
+                raw = request(query, categories, rung)
+                if raw in ("cap", "deadline"):
+                    return str(raw), rungs, requests_sent
+                rungs += 1
+                if isinstance(raw, str):
+                    return raw, rungs, requests_sent
+                if not raw and categories and auto_expand:
+                    raw = request(query, None, rung)
+                    if isinstance(raw, str):
+                        return raw, rungs, requests_sent
+                if has_identity_hit(add_results(connection, raw)):
+                    return "hit", rungs, requests_sent
+            return "exhausted", rungs, requests_sent
 
         try:
             for connection in clients:
+                found: list[dict] = []
+                failed = False
                 try:
                     for idx, query in enumerate(queries, start=1):
                         _check_timeout()
@@ -410,7 +545,12 @@ class NewznabSource(ReleaseSource):
                                 query,
                             )
 
-                        raw = connection.client.search(query=query, categories=categories)
+                        rung = f"mandatory {idx}"
+                        raw = _search_once(connection, query, categories, rung=rung, errors=errors)
+                        if raw is None:
+                            # The connection gets no fallbacks; the mandatory retry below
+                            # still happens, as it always has for an empty answer.
+                            failed = True
 
                         # Auto-expand: retry without category filter if no results
                         if not raw and categories and auto_expand:
@@ -421,35 +561,42 @@ class NewznabSource(ReleaseSource):
                                 connection.name,
                                 query,
                             )
-                            raw = connection.client.search(query=query, categories=None)
-
-                        for raw_result in raw:
-                            r = dict(raw_result)
-                            # Aggregators can identify the underlying indexer. Plain feeds
-                            # generally cannot, so use the user-configured connection name.
-                            r["indexer"] = r.get("indexer") or connection.name
-                            r["_newznab_connection_id"] = connection.connection_id
-                            key = (
-                                connection.connection_id,
-                                r.get("guid")
-                                or r.get("downloadUrl")
-                                or f"{r.get('indexer')}:{r.get('title')}",
+                            raw = _search_once(
+                                connection, query, None, rung=rung, errors=errors, expanded=True
                             )
-                            if key in seen_keys:
-                                continue
-                            seen_keys.add(key)
-                            all_results.append(r)
+                            if raw is None:
+                                failed = True
+
+                        found.extend(add_results(connection, raw or []))
+
+                    if not fallback_queries:
+                        stop, rungs, sent = "not planned", 0, 0
+                    elif failed:
+                        # A failed connection gets no further fallback requests.
+                        stop, rungs, sent = "failed", 0, 0
+                    else:
+                        stop, rungs, sent = run_fallbacks(connection, found)
+                    logger.info(
+                        "Newznab [%s] fallbacks: ran=%s stop=%s rungs=%s/%s requests=%s",
+                        connection.name,
+                        "yes" if rungs else "no",
+                        stop,
+                        rungs,
+                        len(fallback_queries),
+                        sent,
+                    )
                 except TimeoutError:
                     raise
-                except Exception:
+                except Exception as e:
                     logger.exception("Newznab search failed for %s", connection.name)
+                    errors.append(f"{connection.name}: {e}")
 
         except TimeoutError as e:
             logger.warning("Newznab search timed out: %s", e)
+            cut_short = True
 
         results = [_newznab_result_to_release(r, content_type, categories) for r in all_results]
-        if plan.indexers:
-            selected_indexers = set(plan.indexers)
+        if selected_indexers is not None:
             results = [r for r in results if r.indexer in selected_indexers]
 
         if results:
@@ -464,9 +611,27 @@ class NewznabSource(ReleaseSource):
                 torrent_count,
                 indexer_str,
             )
+            if errors:
+                logger.warning(
+                    "Newznab: %d search(es) failed, returning what the others found (%s)",
+                    len(errors),
+                    errors[-1],
+                )
         else:
             logger.debug("Newznab: no results found")
+            if errors:
+                # Not "no releases": some of the indexers never answered.
+                msg = f"{len(errors)} Newznab search(es) failed ({'; '.join(errors[-3:])})"
+                raise SourceUnavailableError(msg)
+            if cut_short:
+                # Ran out of time before every query ran: not a completed "no releases".
+                msg = (
+                    "Newznab search incomplete: ran out of time "
+                    f"({int(NEWZNAB_SEARCH_TIMEOUT_SECONDS)}s budget)"
+                )
+                raise SourceUnavailableError(msg)
 
+        self.last_search_incomplete = cut_short
         return results
 
     def is_available(self) -> bool:
