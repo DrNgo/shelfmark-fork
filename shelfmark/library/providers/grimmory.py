@@ -209,6 +209,18 @@ class GrimmoryProvider:
                     relogged = True
                     token = booklore_login(booklore_config)
                     detail = get_book(booklore_config, token, book_id, session=session)
-                details.append(detail)
+                # Only the detail's metadata is new (provider IDs). The file,
+                # format and library fields stay the listing's, which the
+                # index has always been built from.
+                listed_metadata = row.get("metadata")
+                details.append(
+                    {
+                        **row,
+                        "metadata": {
+                            **(listed_metadata if isinstance(listed_metadata, dict) else {}),
+                            **detail["metadata"],
+                        },
+                    }
+                )
 
         return extract_library_items(details)

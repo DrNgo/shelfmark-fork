@@ -290,14 +290,16 @@ class LibraryIndexDB:
                                i.media_type, i.title, i.author, i.asin, i.isbn13,
                                (SELECT h.match_key FROM library_item_keys h
                                  WHERE h.source = i.source AND h.item_id = i.item_id
-                                   AND h.match_key LIKE ?
+                                   AND h.match_key GLOB ?
                                  LIMIT 1) AS hardcover_key
                         FROM library_items i
                         JOIN library_item_keys k
                           ON k.item_id = i.item_id AND k.source = i.source
                         WHERE k.match_key IN ({placeholders}){source_filter}
                         """,  # noqa: S608 - placeholders only, keys/sources are bound
-                        [f"{HARDCOVER_KEY_PREFIX}%", *params],
+                        # GLOB, not LIKE: LIKE is case-insensitive, so it cannot use the
+                        # key index and would scan every key once per matched row.
+                        [f"{HARDCOVER_KEY_PREFIX}*", *params],
                     )
                     for row in cursor.fetchall():
                         hardcover_key = str(row["hardcover_key"] or "")

@@ -1,5 +1,7 @@
 """Tests for the shared, multi-source library index."""
 
+import sqlite3
+
 import pytest
 
 from shelfmark.library.index import (
@@ -292,6 +294,26 @@ class TestHardcoverKey:
 
         assert [m.item_id for m in matches] == ["li_1"]
         assert matches[0].hardcover_id == "730514"
+
+    def test_reading_the_hardcover_key_uses_the_key_index(self, index, monkeypatch):
+        # Scanning every key once per matched row made each lookup cost
+        # (matches x all keys); the read-back must be an index range search.
+        index.replace_items(SOURCE_AUDIOBOOKSHELF, [_item()])
+        statements = []
+        connect = index._connect
+
+        def tracing():
+            conn = connect()
+            conn.set_trace_callback(statements.append)
+            return conn
+
+        monkeypatch.setattr(index, "_connect", tracing)
+        index.find_matches(build_match_keys("The Housemaid", "Freida McFadden"))
+
+        select = next(s for s in statements if "hardcover_key" in s)
+        with sqlite3.connect(index._db_path) as conn:
+            plan = [row[-1] for row in conn.execute(f"EXPLAIN QUERY PLAN {select}")]
+        assert not any(step.startswith("SCAN h") for step in plan), plan
 
     def test_an_item_without_a_hardcover_id_reports_none(self, index):
         index.replace_items(SOURCE_AUDIOBOOKSHELF, [_item()])

@@ -171,6 +171,25 @@ class TestFullBookReads:
 
         assert items[0].hardcover_id == "885682"
 
+    def test_file_and_library_fields_come_from_the_listing(self, monkeypatch):
+        # Only the detail's metadata is taken: an audiobook must stay an
+        # audiobook even when the single-book payload omits the file fields.
+        listed = _book(book_id=9, file_type="AUDIOBOOK")
+        detail = {"id": 9, "metadata": {**listed["metadata"], "hardcoverBookId": "42"}}
+        provider_module = _patch_sync(
+            monkeypatch,
+            {0: ([listed], 1)},
+            get_book=lambda cfg, token, book_id, *, session=None: detail,
+        )
+
+        [item] = provider_module.GrimmoryProvider().fetch_items()
+
+        assert (item.media_type, item.library_name, item.hardcover_id) == (
+            MEDIA_TYPE_AUDIOBOOK,
+            "Ebooks",
+            "42",
+        )
+
     def test_a_non_digit_hardcover_id_is_dropped(self):
         assert extract_library_items([_book(hardcoverBookId="hc-1")])[0].hardcover_id == ""
 
