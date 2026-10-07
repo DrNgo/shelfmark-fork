@@ -1,9 +1,14 @@
 """Tests for the book identity carried onto a download task (fork-only)."""
 
-from shelfmark.core.book_identity import BookIdentity, normalize_book_identity
+from shelfmark.core.book_identity import (
+    BookIdentity,
+    fill_identity_from_book_data,
+    normalize_book_identity,
+)
 
 ISBN_13 = "9780316005142"  # check digit valid
 ISBN_10 = "0316005142"  # the same book as ISBN-10
+OTHER_ISBN_13 = "9780593135204"  # a different, valid book
 
 
 class TestNormalizeBookIdentity:
@@ -89,3 +94,90 @@ class TestNormalizeBookIdentity:
             "isbn_13": None,
             "asin": None,
         }
+
+
+class TestFillIdentityFromBookData:
+    """An approved request fills identity the release lacks from its stored book data."""
+
+    BOOK_DATA = {
+        "title": "Overlord",
+        "author": "Kugane Maruyama",
+        "provider": "hardcover",
+        "provider_id": "886465",
+        "isbn_13": ISBN_13,
+        "asin": "B0BSHZ1234",
+    }
+
+    def test_fills_every_field_a_bare_release_lacks(self):
+        filled = fill_identity_from_book_data({"source": "prowlarr"}, self.BOOK_DATA)
+
+        assert filled == {
+            "source": "prowlarr",
+            "provider": "hardcover",
+            "provider_id": "886465",
+            "isbn_13": ISBN_13,
+            "asin": "B0BSHZ1234",
+        }
+
+    def test_the_release_keeps_its_own_values(self):
+        release = {"provider": "hardcover", "provider_id": "886465", "isbn_13": ISBN_10}
+
+        filled = fill_identity_from_book_data(release, self.BOOK_DATA)
+
+        assert filled["isbn_13"] == ISBN_10
+        assert filled["asin"] == "B0BSHZ1234"
+
+    def test_a_release_for_a_different_book_takes_nothing(self):
+        release = {"provider": "openlibrary", "provider_id": "OL1W"}
+
+        filled = fill_identity_from_book_data(release, self.BOOK_DATA)
+
+        assert filled == release
+
+    def test_provider_names_compare_case_insensitively(self):
+        release = {"provider": "Hardcover", "provider_id": "886465"}
+
+        assert fill_identity_from_book_data(release, self.BOOK_DATA)["asin"] == "B0BSHZ1234"
+
+    def test_a_same_provider_half_pair_is_replaced_as_a_pair(self):
+        release = {"provider": "Hardcover"}
+
+        filled = fill_identity_from_book_data(release, self.BOOK_DATA)
+
+        assert (filled["provider"], filled["provider_id"]) == ("hardcover", "886465")
+        assert filled["asin"] == "B0BSHZ1234"
+
+    def test_a_half_pair_naming_another_provider_imports_nothing(self):
+        """The release says Open Library but lost its id; the request is Hardcover.
+
+        Adopting the request's pair would pin this release's ISBN to another
+        book's Hardcover id, so the half pair is dropped and nothing is imported.
+        """
+        release = {"provider": "openlibrary", "isbn_13": OTHER_ISBN_13}
+
+        filled = fill_identity_from_book_data(release, self.BOOK_DATA)
+
+        assert filled["provider"] is None
+        assert filled["provider_id"] is None
+        assert filled["isbn_13"] == OTHER_ISBN_13
+        assert "asin" not in filled
+
+    def test_an_isbn_10_in_book_data_is_used(self):
+        book_data = {**self.BOOK_DATA, "isbn_13": None, "isbn_10": ISBN_10}
+
+        assert fill_identity_from_book_data({}, book_data)["isbn_13"] == ISBN_13
+
+    def test_book_data_without_identity_changes_nothing(self):
+        release = {"source": "prowlarr", "provider": "hardcover"}
+
+        assert fill_identity_from_book_data(release, {"title": "x"}) == release
+
+    def test_non_dict_book_data_changes_nothing(self):
+        assert fill_identity_from_book_data({"source": "x"}, None) == {"source": "x"}
+
+    def test_the_input_is_not_mutated(self):
+        release = {"source": "prowlarr"}
+
+        fill_identity_from_book_data(release, self.BOOK_DATA)
+
+        assert release == {"source": "prowlarr"}

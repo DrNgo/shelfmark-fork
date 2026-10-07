@@ -6,6 +6,7 @@ import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from shelfmark.core.book_identity import fill_identity_from_book_data
 from shelfmark.core.models import QueueStatus
 from shelfmark.core.request_helpers import (
     extract_release_source_id,
@@ -593,7 +594,11 @@ def fulfil_request(
     except ValueError as exc:
         raise RequestServiceError(str(exc), status_code=409, code="stale_transition") from exc
 
-    queued_release_data = dict(selected_release_data)
+    # Identity the release lacks comes from the request's book data, so a
+    # post-upload hook can tag what the requester actually asked for.
+    queued_release_data = fill_identity_from_book_data(
+        selected_release_data, request_row.get("book_data")
+    )
     queued_release_data["_request_id"] = request_id
     queued_release_data["destination_key"] = normalized_destination_key
 
