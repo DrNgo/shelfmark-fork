@@ -280,10 +280,13 @@ _INCOMPLETE_VOLUME_RE = re.compile(
 # range or list ("The Expanse 1-3", "Books 1 & 2"). Bounded to three digits so a year
 # range is not read as volumes.
 _MULTI_VOLUME_RE = re.compile(
-    r"\b(?:omnibus|collected|box(?:ed)?[\s._-]*set|bundle|complete[\s._-]+series)\b"
+    r"\b(?:omnibus|collected|collection|box(?:ed)?[\s._-]*set|bundle|complete[\s._-]+series"
+    r"|trilogy|duology|quartet|books)\b|\s[/&+]\s"
     r"|(?<![\d.])\d{1,3}\s*(?:-|–|—|~|&|\+|\bto\b|\band\b)\s*\d{1,3}(?![\d.])",
     re.IGNORECASE,
 )
+# Any standalone 1-3 digit number ("2", "#2", "Book 2"); four-digit years are not volumes.
+_ANY_NUMBER_RE = re.compile(r"(?<![\d.])\d{1,3}(?![\d.])")
 
 
 @dataclass(frozen=True)
@@ -410,8 +413,16 @@ def is_identity_hit(
             return True
         if title_names_volume is not False:
             return False
-        # Named by title: only if it names no other volume and is not a set.
+        # Named by title: only if the title has words of its own beyond the series name
+        # ("The Hunger Games" 1 would match "The Hunger Games 2"), the release names no
+        # other number (volume, "#2", "Book 2") and it is not a set.
         if volumes is None or not volumes <= {position} or _MULTI_VOLUME_RE.search(text):
+            return False
+        series_words = set(key_tokens)
+        own = [t for t in title_tokens if isinstance(t, str) and t.casefold() not in series_words]
+        if not own:
+            return False
+        if any(int(n) != position for n in _ANY_NUMBER_RE.findall(text)):
             return False
 
     wanted = [token.casefold() for token in title_tokens if isinstance(token, str) and token]

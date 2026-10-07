@@ -648,6 +648,45 @@ class TestIdentityPredicate:
     def test_a_multi_volume_or_other_volume_release_is_not(self, title):
         assert not self._hit(title, self._leviathan())
 
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "Leviathan Wakes & Caliban's War (epub)",
+            "The Expanse Trilogy: Leviathan Wakes, Caliban's War",
+            "Leviathan Wakes Expanse Books One through Three",
+            "The Expanse Book 2 Caliban's War (Leviathan Wakes sequel)",
+            "The Expanse #2 Calibans War - Leviathan Wakes sequel",
+            "Leviathan Wakes Collection (epub)",
+        ],
+    )
+    def test_a_set_or_another_numbered_book_naming_the_title_is_not(self, title):
+        assert not self._hit(title, self._leviathan())
+
+    def test_its_own_number_does_not_block_the_title(self):
+        assert self._hit("Leviathan Wakes (The Expanse #1) epub", self._leviathan())
+        assert self._hit("Leviathan Wakes - The Expanse Book 1 (epub)", self._leviathan())
+
+    @pytest.mark.parametrize(
+        ("title", "series"),
+        [("The Hunger Games", "The Hunger Games"), ("Red Rising", "Red Rising Saga")],
+    )
+    @pytest.mark.parametrize(
+        "release",
+        [
+            "{title} 2",
+            "{title} 3 Mockingjay",
+            "{title} - Catching Fire",
+            "{title}: The Ballad of Songbirds and Snakes",
+            "{series} 2 Golden Son",
+        ],
+    )
+    def test_a_title_made_of_series_words_never_stops_by_title(self, title, series, release):
+        identity = build_search_identity(
+            title=title, current_query=title, series_name=series, series_position=1
+        )
+
+        assert not self._hit(release.format(title=title, series=series), identity)
+
     def test_a_wrong_title_from_the_same_series_is_not(self):
         assert not self._hit("The Expanse Calibans War (epub)", self._leviathan())
         assert not self._hit("Calibans War - James S.A. Corey EPUB", self._leviathan())
