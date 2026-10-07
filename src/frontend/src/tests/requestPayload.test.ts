@@ -131,6 +131,51 @@ describe('requestPayload utilities', () => {
     expect(releaseData.isbn_13).toBeUndefined();
   });
 
+  it('puts the book identity on direct-source release data', () => {
+    const releaseData = buildReleaseDataFromDirectBook({
+      ...baseBook,
+      provider: 'hardcover',
+      provider_id: '886465',
+      isbn_13: '9780316005142',
+      asin: 'B0X',
+    });
+
+    expect(releaseData).toMatchObject({
+      provider: 'hardcover',
+      provider_id: '886465',
+      isbn_13: '9780316005142',
+      asin: 'B0X',
+    });
+  });
+
+  it('puts no identity on direct-source release data for a manual book', () => {
+    const releaseData = buildReleaseDataFromDirectBook({
+      ...baseBook,
+      provider: 'manual',
+      provider_id: 'manual-1',
+      isbn_13: '9780316005142',
+    });
+
+    expect(releaseData.provider).toBeUndefined();
+    expect(releaseData.provider_id).toBeUndefined();
+    expect(releaseData.isbn_13).toBeUndefined();
+  });
+
+  it('keeps the ISBNs and ASIN in direct request book data', () => {
+    const payload = buildDirectRequestPayload({
+      ...baseBook,
+      isbn_13: '9780316005142',
+      isbn_10: '0316005142',
+      asin: 'B0X',
+    });
+
+    expect(payload.book_data).toMatchObject({
+      isbn_13: '9780316005142',
+      isbn_10: '0316005142',
+      asin: 'B0X',
+    });
+  });
+
   it('resolves browse source from source-backed or provider-backed books', () => {
     expect(getBrowseSource(baseBook)).toBe('direct_download');
     expect(

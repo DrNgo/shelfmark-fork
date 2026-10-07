@@ -60,6 +60,11 @@ const buildDirectBookRequestData = (book: Book) => {
     content_type: 'ebook' as const,
     provider: source,
     provider_id: book.provider_id || book.id,
+    // Fork-only: kept so an approved request can still tell the tagging hook
+    // which edition was asked for.
+    isbn_13: book.isbn_13,
+    isbn_10: book.isbn_10,
+    asin: book.asin,
     year: book.year,
     format: book.format,
     size: book.size,
@@ -122,6 +127,7 @@ export const buildReleaseDataFromDirectBook = (book: Book) => {
     content_type: 'ebook' as const,
     // Browsing a source directly means the book record IS the release record.
     language: book.language,
+    ...bookIdentityFields(book),
     search_mode: 'direct' as const,
   };
 };
