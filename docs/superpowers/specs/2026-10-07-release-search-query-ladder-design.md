@@ -125,7 +125,8 @@ stays out of scope.
 - **Fallback variants:** run in order, but only while no result so far (from any variant)
   passes `is_identity_hit`. They stop at the first that yields one.
 - **Failed indexers:** an indexer that failed during this search, by error or timeout, gets no
-  further fallback or expansion requests. Healthy indexers that answered empty stay eligible.
+  further fallback requests, nor expansion of fallback requests. Mandatory variants and their
+  auto-expansion still run exactly as today. Healthy indexers that answered empty stay eligible.
   Failure accounting and the existing unavailable-error behaviour stay as they are.
 - **Request cap:** fallbacks are capped at **4 requests per indexer per search, auto-expanded
   calls included**. A rate-limit response counts as a failure for that indexer.
@@ -136,7 +137,8 @@ stays out of scope.
 - **What counts:** only results kept after `plan.indexers` filtering count as hits.
 - **Failures:** `NewznabClient.search` must report failure separately from an empty success,
   through an exception or an explicit outcome; today a failure returns `[]`. A failed connection
-  gets no further fallback or expansion requests during this search, and the same 4-request
+  gets no further fallback requests, nor expansion of fallback requests, during this search
+  (mandatory queries and their auto-expansion run exactly as today), and the same 4-request
   fallback cap applies per connection.
 
 **Deadlines:**
@@ -237,3 +239,4 @@ All 14 findings were adopted. The main changes:
 | 13 | Acceptance runs the production path |
 | 14 | Manual and logging claims corrected |
 | 15 | (plan review) `Part` in the book name no longer suppresses series rungs; manga/comic releases are not identity hits for a light novel — live data showed `Overlord Vol. 5` returning only manga |
+| 16 | (plan review) Failure exclusion covers fallback requests and their expansion only; mandatory variants, including their auto-expansion, run exactly as today |
