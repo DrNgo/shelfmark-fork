@@ -1,11 +1,34 @@
 """Unit tests for the Newznab API client."""
 
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
 
+import shelfmark.release_sources.newznab.api as newznab_api
 from shelfmark.release_sources.newznab.api import NewznabClient, NewznabSearchError
+
+SECRET_URL = "http://nzbhydra:5076/api?t=search&q=book&apikey=SECRET&cat=7000"
+
+
+@pytest.fixture
+def api_logs():
+    """Every record the Newznab API logger emits (DEBUG and up, tracebacks included)."""
+    records: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(logging.Formatter().format(record))
+
+    handler = _Capture(level=logging.DEBUG)
+    previous = newznab_api.logger.level
+    newznab_api.logger.setLevel(logging.DEBUG)
+    newznab_api.logger.addHandler(handler)
+    yield records
+    newznab_api.logger.removeHandler(handler)
+    newznab_api.logger.setLevel(previous)
+
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -107,6 +130,15 @@ class TestTestConnection:
         assert ok is False
         assert "oops" in msg.lower()
 
+    def test_a_connection_failure_message_hides_the_api_key(self):
+        client = NewznabClient("http://nzbhydra:5076", "SECRET")
+        error = requests.exceptions.Timeout(f"Read timed out for url: {SECRET_URL}")
+        with patch.object(client, "_get", side_effect=error):
+            ok, msg = client.test_connection()
+        assert ok is False
+        assert "SECRET" not in msg
+        assert "apikey=REDACTED" in msg
+
     def test_caps_without_title_still_succeeds(self):
         client = NewznabClient("http://nzbhydra:5076", "key")
         caps_no_title = "<?xml version='1.0'?><caps/>"
@@ -171,10 +203,46 @@ class TestSearch:
                 "_get",
                 side_effect=requests.exceptions.ConnectionError("down"),
             ),
-            pytest.raises(NewznabSearchError, match="down") as excinfo,
+            pytest.raises(NewznabSearchError, match="ConnectionError") as excinfo,
         ):
             client.search(query="book")
         assert excinfo.value.rate_limited is False
+
+    def test_a_request_error_never_carries_the_api_key(self, api_logs):
+        client = NewznabClient("http://nzbhydra:5076", "SECRET")
+        error = requests.exceptions.ConnectionError(f"Max retries exceeded with url: {SECRET_URL}")
+        with (
+            patch.object(client, "_get", side_effect=error),
+            pytest.raises(NewznabSearchError) as excinfo,
+        ):
+            client.search(query="book")
+        assert str(excinfo.value) == "Newznab search failed: ConnectionError"
+        assert api_logs
+        assert not any("SECRET" in line for line in api_logs)
+
+    def test_an_http_error_names_its_status_not_its_url(self, api_logs):
+        client = NewznabClient("http://nzbhydra:5076", "SECRET")
+        error = requests.exceptions.HTTPError(
+            f"429 Client Error: Too Many Requests for url: {SECRET_URL}",
+            response=_make_response("", status=429),
+        )
+        with (
+            patch.object(client, "_get", side_effect=error),
+            pytest.raises(NewznabSearchError) as excinfo,
+        ):
+            client.search(query="book")
+        assert str(excinfo.value) == "Newznab search failed: HTTPError (HTTP 429)"
+        assert not any("SECRET" in line for line in api_logs)
+
+    def test_the_request_debug_log_shows_params_without_the_api_key(self, api_logs):
+        client = NewznabClient("http://nzbhydra:5076", "SECRET")
+        with patch.object(client._session, "get", return_value=_make_response(NZB_XML)):
+            client.search(query="book")
+        get_lines = [line for line in api_logs if line.startswith("Newznab API: GET")]
+        assert len(get_lines) == 1
+        assert "'q': 'book'" in get_lines[0]
+        assert "'apikey': 'REDACTED'" in get_lines[0]
+        assert not any("SECRET" in line for line in api_logs)
 
     def test_http_429_is_a_rate_limited_failure(self):
         client = NewznabClient("http://nzbhydra:5076", "key")

@@ -16,6 +16,21 @@ logger = setup_logger(__name__)
 
 _HTTP_TOO_MANY_REQUESTS = 429
 
+# ``apikey=…``, ``api_key=…`` or ``key=…`` in a URL or message (requests puts the
+# full request URL, query string included, in its exception text).
+_SECRET_PARAM_RE = re.compile(r"(?i)\b(apikey|api_key|key)=([^&\s'\"]+)")
+
+
+def redact_secrets(text: object) -> str:
+    """Return ``str(text)`` with API-key query values replaced by ``REDACTED``."""
+    return _SECRET_PARAM_RE.sub(r"\1=REDACTED", str(text))
+
+
+def _describe_request_error(e: requests.exceptions.RequestException) -> str:
+    """Name a failed request without its text, which carries the URL and API key."""
+    status = getattr(e.response, "status_code", None)
+    return type(e).__name__ + (f" (HTTP {status})" if status is not None else "")
+
 
 class NewznabSearchError(RuntimeError):
     """A Newznab search could not be completed - never the same as "no results".
@@ -58,7 +73,11 @@ class NewznabClient:
             params["apikey"] = self.api_key
 
         url = self._api_url()
-        logger.debug("Newznab API: GET %s params=%s", url, *params)
+        logger.debug(
+            "Newznab API: GET %s params=%s",
+            url,
+            {k: ("REDACTED" if k == "apikey" else v) for k, v in params.items()},
+        )
 
         headers = {}
         if accept_xml:
@@ -98,7 +117,7 @@ class NewznabClient:
                 return False, "Invalid API key"
             return False, f"HTTP error {status}"
         except requests.exceptions.RequestException as e:
-            return False, f"Connection failed: {e!s}"
+            return False, f"Connection failed: {redact_secrets(e)}"
         else:
             return True, f"Connected to {title}"
 
@@ -143,9 +162,9 @@ class NewznabClient:
         try:
             response = self._get(params, accept_xml=True)
         except requests.exceptions.RequestException as e:
-            logger.warning("Newznab search request failed: %s", e)
             status = getattr(e.response, "status_code", None)
-            msg = f"Newznab search failed: {e}"
+            msg = f"Newznab search failed: {_describe_request_error(e)}"
+            logger.warning("%s", msg)
             raise NewznabSearchError(msg, rate_limited=status == _HTTP_TOO_MANY_REQUESTS) from e
 
         text = response.text or ""

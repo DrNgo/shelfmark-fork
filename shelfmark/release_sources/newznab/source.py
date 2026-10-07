@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import time
+import traceback
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import TYPE_CHECKING, ClassVar
@@ -32,7 +33,11 @@ from shelfmark.release_sources import (
     SourceUnavailableError,
     register_source,
 )
-from shelfmark.release_sources.newznab.api import NewznabClient, NewznabSearchError
+from shelfmark.release_sources.newznab.api import (
+    NewznabClient,
+    NewznabSearchError,
+    redact_secrets,
+)
 from shelfmark.release_sources.newznab.cache import cache_release
 from shelfmark.release_sources.prowlarr.source import (
     PROWLARR_SEARCH_TIMEOUT_SECONDS as _SEARCH_TIMEOUT,
@@ -57,7 +62,7 @@ NEWZNAB_SEARCH_TIMEOUT_SECONDS = _SEARCH_TIMEOUT
 # this many requests per search, auto-expanded retries included.
 FALLBACK_REQUESTS_PER_CONNECTION = 4
 
-# What a fallback request is assumed to need when a client reports no usable timeout.
+# The client timeout assumed when a client reports no usable one.
 _DEFAULT_REQUEST_TIMEOUT_SECONDS = 30.0
 
 
@@ -71,11 +76,21 @@ class _NamedClient:
 
 
 def _request_timeout(client: object) -> float:
-    """The read timeout one request on ``client`` may take."""
+    """The longest one request on ``client`` may take: connect plus read.
+
+    ``NewznabClient`` passes its single ``timeout`` to requests as a scalar, which
+    requests applies to the connect and to the read separately - so a request can
+    take up to twice that value.
+    """
     timeout = getattr(client, "timeout", None)
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
-        return _DEFAULT_REQUEST_TIMEOUT_SECONDS
-    return float(timeout)
+        timeout = _DEFAULT_REQUEST_TIMEOUT_SECONDS
+    return 2 * float(timeout)
+
+
+def _redacted_traceback(e: BaseException) -> str:
+    """The exception's traceback for the log, with API-key values redacted."""
+    return redact_secrets("".join(traceback.format_exception(e)).rstrip())
 
 
 def _search_once(
@@ -92,7 +107,7 @@ def _search_once(
         raw = connection.client.search(query=query, categories=categories)
     except NewznabSearchError as e:
         outcome, count = ("rate-limited" if e.rate_limited else "failed"), 0
-        errors.append(f"{connection.name}: {e}")
+        errors.append(f"{connection.name}: {redact_secrets(e)}")
         raw = None
     else:
         outcome, count = ("ok" if raw else "empty"), len(raw)
@@ -533,6 +548,9 @@ class NewznabSource(ReleaseSource):
                     return "hit", rungs, requests_sent
             return "exhausted", rungs, requests_sent
 
+        # Every connection's mandatory requests run before any fallback, so one
+        # connection's ladder can never spend the budget another's mandatory search needs.
+        answered: list[tuple[_NamedClient, list[dict], bool]] = []
         try:
             for connection in clients:
                 found: list[dict] = []
@@ -550,54 +568,88 @@ class NewznabSource(ReleaseSource):
                             )
 
                         rung = f"mandatory {idx}"
-                        raw = _search_once(connection, query, categories, rung=rung, errors=errors)
-                        if raw is None:
-                            # The connection gets no fallbacks; the mandatory retry below
-                            # still happens, as it always has for an empty answer.
-                            failed = True
-
-                        # Auto-expand: retry without category filter if no results
-                        if not raw and categories and auto_expand:
-                            _check_timeout()
-                            logger.info(
-                                "Newznab [%s]: no results for '%s' with category filter, "
-                                "auto-expanding",
-                                connection.name,
-                                query,
-                            )
+                        query_errors: list[str] = []
+                        try:
                             raw = _search_once(
-                                connection, query, None, rung=rung, errors=errors, expanded=True
+                                connection, query, categories, rung=rung, errors=query_errors
                             )
                             if raw is None:
+                                # The connection gets no fallbacks; the mandatory retry
+                                # below still happens, as it always has for an empty answer.
                                 failed = True
 
-                        found.extend(add_results(connection, raw or []))
+                            # Auto-expand: retry without category filter if no results
+                            if not raw and categories and auto_expand:
+                                _check_timeout()
+                                logger.info(
+                                    "Newznab [%s]: no results for '%s' with category filter, "
+                                    "auto-expanding",
+                                    connection.name,
+                                    query,
+                                )
+                                raw = _search_once(
+                                    connection,
+                                    query,
+                                    None,
+                                    rung=rung,
+                                    errors=query_errors,
+                                    expanded=True,
+                                )
+                                if raw is None:
+                                    failed = True
+                                else:
+                                    # The uncategorized retry answered, so this query did
+                                    # not fail (the connection still sits out fallbacks).
+                                    query_errors.clear()
+                        finally:
+                            errors.extend(query_errors)
 
-                    if not fallback_queries:
-                        stop, rungs, sent = "not planned", 0, 0
-                    elif failed:
-                        # A failed connection gets no further fallback requests.
-                        stop, rungs, sent = "failed", 0, 0
-                    else:
-                        stop, rungs, sent = run_fallbacks(connection, found)
-                    logger.info(
-                        "Newznab [%s] fallbacks: ran=%s stop=%s rungs=%s/%s requests=%s",
-                        connection.name,
-                        "yes" if rungs else "no",
-                        stop,
-                        rungs,
-                        len(fallback_queries),
-                        sent,
-                    )
+                        found.extend(add_results(connection, raw or []))
                 except TimeoutError:
                     raise
-                except Exception as e:
-                    logger.exception("Newznab search failed for %s", connection.name)
-                    errors.append(f"{connection.name}: {e}")
+                except Exception as e:  # noqa: BLE001 - one connection must not end the search
+                    # Not logger.exception: the raw traceback text may carry the API key.
+                    logger.error(  # noqa: TRY400
+                        "Newznab search failed for %s:\n%s",
+                        connection.name,
+                        _redacted_traceback(e),
+                    )
+                    errors.append(f"{connection.name}: {redact_secrets(e)}")
+                    failed = True
+                answered.append((connection, found, failed))
 
         except TimeoutError as e:
             logger.warning("Newznab search timed out: %s", e)
             cut_short = True
+
+        for connection, found, failed in answered:
+            if not fallback_queries:
+                stop, rungs, sent = "not planned", 0, 0
+            elif failed:
+                # A failed connection gets no further fallback requests.
+                stop, rungs, sent = "failed", 0, 0
+            else:
+                try:
+                    stop, rungs, sent = run_fallbacks(connection, found)
+                except Exception as e:  # noqa: BLE001 - a fallback must not end the search
+                    # Extra to a search that already completed: ends this ladder only.
+                    # Not logger.exception: the raw traceback text may carry the API key.
+                    logger.error(  # noqa: TRY400
+                        "Newznab fallback search failed for %s:\n%s",
+                        connection.name,
+                        _redacted_traceback(e),
+                    )
+                    fallback_errors.append(f"{connection.name}: {redact_secrets(e)}")
+                    stop, rungs, sent = "failed", 0, 0
+            logger.info(
+                "Newznab [%s] fallbacks: ran=%s stop=%s rungs=%s/%s requests=%s",
+                connection.name,
+                "yes" if rungs else "no",
+                stop,
+                rungs,
+                len(fallback_queries),
+                sent,
+            )
 
         if fallback_errors:
             logger.warning(

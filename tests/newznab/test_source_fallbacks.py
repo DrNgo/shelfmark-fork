@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 import shelfmark.release_sources.newznab.source as newznab_source
@@ -63,7 +65,9 @@ class _FakeNewznab:
         self.calls.append((query, categories))
         if self.clock is not None:
             self.clock.now += self.seconds_per_request
-        answer = self.answers.get(query, [])
+        # A (query, categories) key answers that exact request; a bare query answers any.
+        cats_key = tuple(categories) if categories else None
+        answer = self.answers.get((query, cats_key), self.answers.get(query, []))
         if isinstance(answer, Exception):
             raise answer
         rows = []
@@ -128,6 +132,29 @@ def _info_lines(monkeypatch) -> list[str]:
         newznab_source.logger, "info", lambda message, *args: lines.append(message % args)
     )
     return lines
+
+
+@pytest.fixture
+def all_logs():
+    """Every record the Newznab source and API loggers emit, tracebacks included."""
+    import shelfmark.release_sources.newznab.api as newznab_api
+
+    records: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(logging.Formatter().format(record))
+
+    handler = _Capture(level=logging.DEBUG)
+    loggers = [newznab_source.logger, newznab_api.logger]
+    previous = [lg.level for lg in loggers]
+    for lg in loggers:
+        lg.setLevel(logging.DEBUG)
+        lg.addHandler(handler)
+    yield records
+    for lg, level in zip(loggers, previous, strict=True):
+        lg.removeHandler(handler)
+        lg.setLevel(level)
 
 
 class TestPerConnectionLadder:
@@ -221,6 +248,53 @@ class TestFailureIsNotEmpty:
         assert "down" in str(excinfo.value)
         assert "indexer error 900" not in str(excinfo.value)
 
+    def test_an_unexpected_fallback_exception_is_not_a_failed_search(self, monkeypatch, all_logs):
+        broken = _FakeNewznab({RUNG_1: RuntimeError("client bug")})
+        lines = _info_lines(monkeypatch)
+
+        releases = _search(monkeypatch, {"broken": broken})
+
+        assert releases == []
+        assert broken.queries() == [DXD5, RUNG_1]
+        assert "Newznab [broken] fallbacks: ran=no stop=failed rungs=0/5 requests=0" in lines
+        assert any("client bug" in line and "Traceback" in line for line in all_logs)
+
+    def test_a_failure_its_expansion_answered_is_not_a_failed_search(self, monkeypatch):
+        # The categorized request failed but the uncategorized retry answered (empty):
+        # the connection did answer. It still sits out the fallbacks.
+        flaky = _FakeNewznab(
+            {(DXD5, (7000,)): NewznabSearchError("Newznab search failed: HTTPError (HTTP 502)")}
+        )
+
+        releases = _search(monkeypatch, {"flaky": flaky}, auto_expand=True)
+
+        assert releases == []
+        assert flaky.calls == [(DXD5, [7000]), (DXD5, None)]
+
+    def test_a_failure_whose_expansion_also_fails_is_still_one(self, monkeypatch):
+        down = _FakeNewznab({DXD5: NewznabSearchError("Newznab search failed: ConnectionError")})
+
+        with pytest.raises(SourceUnavailableError, match=r"Newznab search\(es\) failed"):
+            _search(monkeypatch, {"down": down}, auto_expand=True)
+
+
+class TestSecretsStayOut:
+    SECRET_URL = "https://geek.example/api?t=search&q=x&apikey=SECRET&cat=7000"
+
+    def test_failure_text_with_an_api_key_is_redacted(self, monkeypatch, all_logs):
+        searched = _FakeNewznab(
+            {DXD5: NewznabSearchError(f"Newznab search failed: {self.SECRET_URL}")}
+        )
+        broken = _FakeNewznab({DXD5: RuntimeError(f"GET {self.SECRET_URL} api_key=SECRET")})
+
+        with pytest.raises(SourceUnavailableError) as excinfo:
+            _search(monkeypatch, {"searched": searched, "broken": broken})
+
+        assert "SECRET" not in str(excinfo.value)
+        assert "apikey=REDACTED" in str(excinfo.value)
+        assert all_logs
+        assert not any("SECRET" in line for line in all_logs)
+
 
 class TestOnlyFilteredResultsCount:
     def test_a_hit_from_an_unselected_indexer_does_not_stop_the_ladder(self, monkeypatch):
@@ -278,11 +352,37 @@ class TestDeadline:
 
         releases = _search(monkeypatch, {"geek": geek}, source=source)
 
-        # Budget 120s, one 100s request spent: 20s left cannot cover a 30s request.
+        # Budget 120s, one 100s request spent: 20s left cannot cover a 60s (connect + read) request.
         assert geek.queries() == [DXD5]
         assert [r.title for r in releases] == [WRONG_VOLUME]
         assert "Newznab [geek] fallbacks: ran=no stop=deadline rungs=0/5 requests=0" in lines
         assert source.last_search_incomplete is True
+
+    def test_a_fallback_needs_connect_plus_read_time(self, monkeypatch):
+        # requests applies the 30s scalar timeout to connect and to read: 60s per
+        # request. After 70s, 50s is left - enough for one timeout, not for both.
+        clock = _Clock()
+        monkeypatch.setattr(newznab_source.time, "monotonic", clock)
+        geek = _FakeNewznab(clock=clock, seconds_per_request=70)
+        lines = _info_lines(monkeypatch)
+
+        with pytest.raises(SourceUnavailableError, match="Newznab search incomplete"):
+            _search(monkeypatch, {"geek": geek})
+
+        assert geek.queries() == [DXD5]
+        assert "Newznab [geek] fallbacks: ran=no stop=deadline rungs=0/5 requests=0" in lines
+
+    def test_fallbacks_never_starve_another_connections_mandatory_search(self, monkeypatch):
+        clock = _Clock()
+        monkeypatch.setattr(newznab_source.time, "monotonic", clock)
+        slow = _FakeNewznab({DXD5: [WRONG_VOLUME]}, clock=clock, seconds_per_request=29)
+        middle = _FakeNewznab(clock=clock, seconds_per_request=10)
+        last = _FakeNewznab({DXD5: [HIT]}, clock=clock, seconds_per_request=1)
+
+        releases = _search(monkeypatch, {"slow": slow, "middle": middle, "last": last})
+
+        assert last.queries()[0] == DXD5
+        assert HIT in {r.title for r in releases}
 
     def test_a_mandatory_timeout_keeps_what_was_found(self, monkeypatch):
         clock = _Clock()
