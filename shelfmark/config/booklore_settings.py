@@ -9,12 +9,15 @@ from typing import Any
 from shelfmark.core.config import config
 from shelfmark.core.logger import setup_logger
 from shelfmark.grimmory.client import (
+    BOOKLORE_DESTINATION_BOOKDROP,
+    BOOKLORE_DESTINATION_LIBRARY,
     BOOKLORE_DISPLAY_NAME,
     BookloreConfig,
     BookloreError,
     booklore_list_libraries,
     booklore_login,
     list_books,
+    parse_destination,
 )
 from shelfmark.grimmory.destinations import build_destination_options
 
@@ -185,9 +188,16 @@ def get_booklore_destination_options() -> list[dict[str, str]]:
 
     Served from the same credential-keyed cache as the settings dropdowns, so
     it never costs a Grimmory call per modal. An empty list (not booklore mode,
-    missing credentials, Grimmory unreachable) hides the picker.
+    bookdrop uploads, missing credentials, Grimmory unreachable) hides the picker.
     """
     if config.get("BOOKS_OUTPUT_MODE", "folder") != "booklore":
+        return []
+
+    # Bookdrop uploads ignore the pick; offering it would mislead the admin.
+    destination = parse_destination(
+        config.get("BOOKLORE_DESTINATION", BOOKLORE_DESTINATION_LIBRARY)
+    )
+    if destination == BOOKLORE_DESTINATION_BOOKDROP:
         return []
 
     base_url = str(config.get("BOOKLORE_HOST", "") or "").strip().rstrip("/")

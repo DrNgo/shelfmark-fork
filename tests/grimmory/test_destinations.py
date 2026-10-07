@@ -211,3 +211,16 @@ class TestDisplayOptions:
         )
 
         assert booklore_settings.get_booklore_destination_options() == []
+
+    @pytest.mark.parametrize("destination", ["bookdrop", " Bookdrop "])
+    def test_bookdrop_mode_gives_no_options(self, settings, monkeypatch, destination):
+        """Bookdrop uploads ignore the pick, so the picker must not be offered."""
+        booklore_settings, values = settings
+        values["BOOKLORE_DESTINATION"] = destination
+        monkeypatch.setattr(
+            booklore_settings,
+            "booklore_login",
+            lambda cfg: pytest.fail("must not contact Grimmory"),
+        )
+
+        assert booklore_settings.get_booklore_destination_options() == []
