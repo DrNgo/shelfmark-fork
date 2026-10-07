@@ -31,7 +31,7 @@ IDENTITY = {
 }
 
 
-def _run(tmp_path, *, files, responses, destination_key=None, identity=None):
+def _run(tmp_path, *, files, responses, destination_key=None, identity=None, task_fields=None):
     """Run the pipeline on a folder of files and return (result, payload, events)."""
     from shelfmark.download.postprocess.router import post_process_download
 
@@ -50,6 +50,7 @@ def _run(tmp_path, *, files, responses, destination_key=None, identity=None):
         search_mode=SearchMode.DIRECT,
         destination_key=destination_key,
         **(identity or {}),
+        **(task_fields or {}),
     )
     events: list[str] = []
 
@@ -96,6 +97,19 @@ def test_the_task_carries_the_book_identity(tmp_path):
 
 def test_identity_fields_are_null_when_unknown(tmp_path):
     _, payload, _ = _run(tmp_path, files={"a.epub": b"1234"}, responses={})
+
+    assert {k: payload["task"][k] for k in IDENTITY} == dict.fromkeys(IDENTITY)
+
+
+def test_a_multi_book_task_carries_no_identity(tmp_path):
+    """One identity cannot be tied to each book of a pack, so none is sent."""
+    _, payload, _ = _run(
+        tmp_path,
+        files={"a.epub": b"1234", "b.epub": b"5678"},
+        responses={},
+        identity=IDENTITY,
+        task_fields={"multi_book": True},
+    )
 
     assert {k: payload["task"][k] for k in IDENTITY} == dict.fromkeys(IDENTITY)
 
