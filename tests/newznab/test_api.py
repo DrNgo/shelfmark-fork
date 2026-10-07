@@ -234,15 +234,21 @@ class TestSearch:
         assert str(excinfo.value) == "Newznab search failed: HTTPError (HTTP 429)"
         assert not any("SECRET" in line for line in api_logs)
 
-    def test_the_request_debug_log_shows_params_without_the_api_key(self, api_logs):
+    def test_the_request_debug_log_shows_params_without_the_api_key(self, monkeypatch):
+        # Recorded at the call (not through a handler), so a test elsewhere that
+        # disables DEBUG logging process-wide cannot hide it.
+        lines: list[str] = []
+        monkeypatch.setattr(
+            newznab_api.logger, "debug", lambda message, *args: lines.append(message % args)
+        )
         client = NewznabClient("http://nzbhydra:5076", "SECRET")
         with patch.object(client._session, "get", return_value=_make_response(NZB_XML)):
             client.search(query="book")
-        get_lines = [line for line in api_logs if line.startswith("Newznab API: GET")]
+        get_lines = [line for line in lines if line.startswith("Newznab API: GET")]
         assert len(get_lines) == 1
         assert "'q': 'book'" in get_lines[0]
         assert "'apikey': 'REDACTED'" in get_lines[0]
-        assert not any("SECRET" in line for line in api_logs)
+        assert not any("SECRET" in line for line in lines)
 
     def test_http_429_is_a_rate_limited_failure(self):
         client = NewznabClient("http://nzbhydra:5076", "key")
