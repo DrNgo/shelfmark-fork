@@ -387,6 +387,10 @@ class TestPositions:
             "9" * 5000,
             # Exact parsing: as a float this would round to 3.0.
             "3.0000000000000001",
+            "1e3",
+            "1_0",
+            "\u0663",
+            "+-3",
         ],
     )
     def test_unusable_positions(self, value):
@@ -509,6 +513,24 @@ class TestDistinguishingIdentities:
             f"Overlord Volume {volume:02d}",
             f"Overlord Vol. {volume} {name}",
         ]
+
+    def test_a_collected_word_in_the_book_name_keeps_the_series_rungs(self):
+        ladder = build_fallback_queries(
+            title="Death March, Vol. 5: The Collected Heroes",
+            current_query="The Collected Heroes",
+            series_name="Death March",
+            series_position=5,
+        )
+        assert ladder[:2] == ["Death March Vol. 5", "Death March v05"]
+        assert "Death March Volume 05" in ladder
+
+    def test_an_omnibus_before_the_volume_marker_still_suppresses(self):
+        assert build_fallback_queries(
+            title="Spice Omnibus, Vol. 2",
+            current_query="nothing alike",
+            series_name="Spice",
+            series_position=2,
+        ) == ["Spice Omnibus Vol. 2"]
 
     def test_roman_numeral_volumes_only_get_the_cleaned_title(self):
         assert build_fallback_queries(

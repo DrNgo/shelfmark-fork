@@ -35,6 +35,7 @@ _VOLUME_MARKER_RE = re.compile(r"\bvol(?:ume)?s?\b", re.IGNORECASE)
 # suppressed by it: in "Overlord, Vol. 5: The Men of the Kingdom Part I" the part is the
 # book's name and Vol. 5 is still a distinct volume, while "Spice, Vol. 2 Part 1" never
 # parses (its volume token is not alone) and "Spice Part II" carries no volume at all.
+_POSITION_STRING_RE = re.compile(r"\+?[0-9]+(?:\.[0-9]+)?", re.ASCII)
 _PART_RE = re.compile(r"\bpart\s+(?:[ivx]+|\d+|one|two|three|four|five)\b", re.IGNORECASE)
 
 # Titles naming more than one volume: "Overlord Vol. 5" would be a different book (or
@@ -100,7 +101,9 @@ def normalize_position(value: object) -> int | None:
     elif isinstance(value, str):
         text = value.strip()
         digits = text.split(".", 1)[0].lstrip("+")
-        if not text or len(text) > 2 * _MAX_POSITION_DIGITS or len(digits) > _MAX_POSITION_DIGITS:
+        if _POSITION_STRING_RE.fullmatch(text) is None:
+            return None
+        if len(text) > 2 * _MAX_POSITION_DIGITS or len(digits) > _MAX_POSITION_DIGITS:
             return None
         try:
             number = Decimal(text)
@@ -169,7 +172,9 @@ def _resolve(title: str, series_name: object, series_position: object) -> _Resol
         and not (parsed is not None and parsed.volume != position)
         # The title names a volume we could not parse ("Vol. III", "Vol. 1.5").
         and not (has_marker and parsed is None)
-        and not _DISTINGUISHING_RE.search(title)
+        # With a parsed single volume, only the text before the volume marker can make
+        # this a collection: a book *name* like "The Collected Heroes" must not.
+        and not _DISTINGUISHING_RE.search(parsed.series if parsed is not None else title)
         and not (parsed is None and _PART_RE.search(title))
     )
     if not usable:
