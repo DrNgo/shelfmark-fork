@@ -117,18 +117,28 @@ untagged until someone runs `backfill`.
 ### 2. Picker (Shelfmark frontend)
 
 - `useAudiobookDestinations` becomes `useDownloadDestinations(contentType)`. It keeps the
-  same module-level cache, now per content type, and still yields `[]` on error.
+  same module-level cache, now per content type, and still yields `[]` on error. Neither an
+  error nor an empty list is cached: the server answers `200 []` while Grimmory is down, and
+  the next picker must retry rather than stay hidden until a page reload.
 - The helpers in `utils/audiobookDestinations.ts` become generic, in
   `utils/downloadDestinations.ts`:
   - `shouldShowDestinationPicker(contentType, destinations)`: show when there is more than
-    one destination, for either format.
-  - `resolveDefaultDestinationKey`: unchanged behaviour.
+    one destination, for either format, and always while an ebook pick is selected.
+  - `resolveDefaultDestinationKey`: unchanged behaviour, for audiobooks.
+  - **An explicit ebook pick is never blanked in the browser** — not by display-list
+    membership, a list that is still loading, or a hidden picker. It is sent unchanged, and
+    the server's fresh check (§3) decides and fails closed. A pick missing from the list is
+    shown as its own option so the admin can see and clear it. Audiobooks keep today's
+    fallback: a key the list no longer has, or a hidden picker, sends nothing.
   - Default-option label: `Default (<default_name>)` when the name is known, else
     `Default <format> destination` (ebooks always use the latter; see §1).
   - `withDestinationKey`: unchanged.
 - **Release window:** `ReleaseModal.tsx` shows the picker for ebook releases too, under the
   same `canChooseDestination` gate (admin, not browse-fulfil mode).
-- **Approval panel:** `ActivityCard.tsx` shows it for ebook requests.
+- **Approval panel:** `ActivityCard.tsx` shows it for ebook requests. Every action that ends
+  in a download carries the pick — Approve, browse-before-approve, and Browse Alternatives
+  (whose release window hides its own picker); only manual approval, which downloads
+  nothing, carries none.
 - **Combined mode:** each leg keeps its own key. Today the ebook→audiobook step passes only
   a release (`ReleaseModal` `onNext` has no destination argument), and the final download
   writes either phase's selection into one field. So:
@@ -158,8 +168,14 @@ path_id) | None` accepts only `grimmory:<digits>:<digits>`.
     a book silently filed in Fiction, which cannot be moved afterwards.
 - Bookdrop mode ignores the key.
 
-**Protecting the key.** Authorization is unchanged:
+**Protecting the key.**
 - Authenticated non-admin keys are stripped (`authorize_destination_key()`, `main.py:1101`).
+- The same guard runs on request submissions (`/api/requests` and `/api/requests/batch`),
+  on `release_data` at the top level and in `extra`, before a request is stored or a
+  download-policy submission is queued. Before this, a requester could plant a key there.
+- Fulfilment ignores any key stored inside a request's `release_data` (top level or
+  `extra`) and attaches only the approving admin's explicit key; a blank approval can no
+  longer revive a stored nested key through `queue_release`.
 - In auth mode `none`, direct-download callers keep their key, as today, and request
   workflows stay disabled in that mode.
 - Ebook keys are never emitted on audiobook legs (§2). If one ever reaches Audiobookshelf
@@ -182,12 +198,14 @@ Every producer is extended:
 | Book requests | `buildMetadataBookRequestData` also stores `isbn_13`/`isbn_10` (it already stores provider, provider_id and ASIN). |
 | Release requests and the metadata release builder | `requestPayload.ts`'s release builder emits the four fields. |
 | Browse-before-approve | `requestFulfil.ts` keeps ASIN and ISBNs when rebuilding the `Book` from a request. |
-| Approved request | `fulfil_request` fills the four from the request's stored `book_data` when the release data lacks them (as a pair, per the rule above). |
+| Approved request | `fulfil_request` fills the four from the request's stored `book_data` when the release data lacks them (as a pair, per the rule above). A release that names a different provider but lost its id drops that half pair and imports nothing from the request, so one book's ISBN is never paired with another book's provider id. |
 | Combined and on-behalf downloads | Same builders, so they inherit the fields. A test covers each. |
 | Retry and restart | Retries keep the fields in the retry payload and restore them, like `destination_key`. |
 
 `queue_release` normalizes them: trimmed strings or `None`, and the ISBN canonicalized to
-ISBN-13 or dropped.
+ISBN-13 or dropped. A 13-digit value must carry the `978`/`979` prefix: other EANs can pass
+the same check digit. This rule lives in the shared `normalize_isbn`, so library matching
+gains it too.
 
 **Hook payload.** The payload stays version 1; fields are only added.
 
@@ -198,6 +216,13 @@ ISBN-13 or dropped.
     it is JSON, else `null`; today it is discarded.
   - `upload_started_at`: an ISO-8601 UTC timestamp taken just before the first upload.
   - `upload_finished_at`: taken after the last upload and refresh.
+
+**The post-upload hook never fails an upload.** For the Grimmory output only, once the
+upload has succeeded, a missing or non-executable custom script, a timeout, a non-zero
+exit, or an exception while building the payload is logged as a warning, and the task
+still completes as uploaded. Failing it would invite a retry that uploads the book again
+into a library where it cannot be moved or deduplicated. Folder and email outputs keep
+today's policy (a script failure fails the task).
 
 **Durability boundary (stated, not over-promised).** The tag queue records a book only
 once the hook runs. Some books are uploaded but not queued:
@@ -228,24 +253,33 @@ library, and the next one picks them up. This project does not add upload receip
     particular, the ABS hook still skips audiobooks whose destination is outside its
     library root; that existing constraint is documented, not changed.
 - **Timeout:** the child starts in its own process group (`start_new_session=True`) with a
-  280 s deadline.
+  292 s deadline, so the ABS hook keeps essentially the budget it had as the custom script
+  itself (Shelfmark kills the script at 300 s; the ABS hook itself is unchanged).
   - On timeout, the dispatcher sends SIGTERM to the group, waits 5 s, sends SIGKILL to the
-    group, and reaps.
+    group, and reaps — done by 297 s.
+  - If any exception escapes after the launch, the group is killed and reaped too.
   - Stdout and stderr go to files rather than pipes, so a descendant holding them open
-    cannot hang the dispatcher.
+    cannot hang the dispatcher; it reads at most a fixed tail of each.
 - **Exit:**
-  - It logs the child's exit code and the tail of its stderr.
+  - It logs the child's exit code and the tails of its stdout and stderr, to its own
+    stdout: Shelfmark discards a successful script's stderr but logs its stdout.
+  - Logging never raises: a broken or closed stdout is swapped for `/dev/null` (otherwise
+    Python's exit-time flush would turn the exit code into 120).
   - Every launch, validation and output-handling exception is caught.
   - It **always exits 0**.
-- **Shelfmark is unchanged.** A missing or non-executable dispatcher still fails a
-  download, as any custom script does. That is a deployment error, and the rollout guards
-  it (§5) rather than adding a special case to Shelfmark.
+- **Shelfmark side.** For Grimmory uploads, a missing or non-executable dispatcher no
+  longer fails the download: it is logged, and the book stays uploaded but untagged until
+  the next full `backfill` (§3). It is still a deployment error, and the rollout guards it
+  (§5). Other outputs keep failing on a custom-script error, as today.
 
 **Hook deadline.** The tagger hook works to one monotonic deadline (250 s from start,
-inside the dispatcher's 280 s). It clamps every network timeout, retry backoff, poll wait
+inside the dispatcher's 292 s). It clamps every network timeout, retry backoff, poll wait
 and lock wait to the remaining time, keeping 20 s in reserve to save its report and
 notify. Notifications use a 10 s timeout. The P1 HTTP helpers gain an optional deadline
-parameter; their existing callers are unchanged.
+parameter; their existing callers are unchanged. A socket timeout applies per read, so a
+trickling response or an endless event stream would never trip it: the work therefore
+also runs under a wall-clock hard limit (SIGALRM, main thread), whose exception ends the
+blocking call; the notifications run under their own hard limit inside the reserve.
 
 **Tagger hook.** `grimmory_tagger.py hook [TARGET]` reads the payload from stdin, or from
 `--payload FILE` for tests.
@@ -257,19 +291,29 @@ parameter; their existing callers are unchanged.
    integrity" below), add one `QueueEntry` per uploaded file before any network call. Each
    entry carries `task_id`, `library_id`, `path_id`, `filename`, `size`, title, author,
    series, language, `provider`, `provider_id`, `isbn_13`, `asin` and reason `"hook"`.
+   The queue lock is awaited only until the deadline; a busy or unwritable queue is
+   treated as unqueued: "Needs attention — could not queue", and the next full
+   `backfill` covers the book.
 3. **Bind each file to its Grimmory book.** A binding must be *verified*; there is no
    guessing.
    - **Verified by the upload response:** the binding comes from the book or file id in
      `uploaded_files[].response`, if the probe (Rollout) shows Grimmory returns one. The
      book must exist in `library_id`.
-   - **Verified by an exact file match:** otherwise the binding is the only book with all
-     of:
-     - in `library_id`, with `primaryFile.filePath` under the chosen path
+   - **Verified by an exact file match:** otherwise, all of:
+     - the uploaded name and size (`fileSizeKb` = floor or ceiling of `size_bytes`/1024)
+       are unique across the **whole** library, of any age — an older copy or a second
+       upload makes the match ambiguous
      - `fileName` equal to the uploaded name (or to the name Grimmory's naming pattern
        produces, if the probe shows uploads are renamed and the pattern is
        deterministic)
-     - `fileSizeKb` matching `size_bytes`
-     - `addedOn` within [`upload_started_at` − 120 s, `upload_finished_at` + poll time]
+     - that book's `primaryFile.filePath` is under the chosen path
+     - its `addedOn` is within [`upload_started_at` − 120 s, `upload_finished_at` + poll
+       window]
+     - the same single result is seen on two consecutive polls (settling), so a duplicate
+       that lands a moment later is caught
+   - **Hydration:** a listing row missing any file identity field (`id`, `fileName`,
+     `fileSizeKb`, `filePath`, `addedOn`) is completed from the full book before any
+     filtering.
    - **Waiting:** poll every 5 s until bound or until 60 s pass (clamped to the deadline).
    - **No verified binding:** the entry stays unresolved. There is no write and no
      suggestion acted on.
@@ -283,6 +327,8 @@ parameter; their existing callers are unchanged.
      given entries as hints. It never adds other queued books, unlike `run_backfill`'s
      `wanted |= set(queued)`.
    - **Report:** the hook saves a one-book report marked `kind: "hook"`.
+   - **Bound file:** if the scored book's primary file is no longer the bound file, that
+     row is not written (entry kept, retried by the next `backfill`).
 5. **Write, under the same lock.** Only when the scoring outcome is `accepted`:
    - Apply through the same function `apply` uses, then **read the book back**.
    - **Success** means the final `ApplyResult` is `applied`, the book now carries a valid
@@ -292,13 +338,17 @@ parameter; their existing callers are unchanged.
      values counts as success, with the notice `Already tagged: <title>`.
    - **Anything else** keeps the entry: `stale`, `write-failed`, `lock-failed`, a missing
      goal value, or an accepted plan with no ISBN.
+   - **The same bar for `apply`:** `apply` removes a queue entry whose reason is `"hook"`
+     only when this read-back finds both values complete, matching and locked, so a later
+     `apply` of an incomplete book never drops its entry.
 6. **Recovery instructions.** Everything that is not a success keeps its queue entry and
    sends `Needs attention: <title> — <reason>`. The notification names the right next step
    for the case:
 
    | Case | Next step |
    |---|---|
-   | `review` or `conflict` row with a bound book | `apply --report <id> --decisions FILE`, as in P1 |
+   | `review` row with a bound book | `apply --report <id> --decisions FILE`, as in P1 |
+   | `conflict` row (decisions cannot choose one), or a collision found under the lock | Fix the conflicting metadata or binding in Grimmory, re-run `backfill --book <id>`, then apply the new report |
    | Unbound (not found, or no verified match) | The next full `backfill` retries the binding, using the filename rule and `book_id`. If it still cannot bind, run `backfill --book <id>` after finding the book in Grimmory. |
    | Dependency failure or timeout | The next `backfill` retries it automatically, since queued entries are always included. |
 
@@ -307,16 +357,24 @@ parameter; their existing callers are unchanged.
 **Writer lock and revalidation (P1 change).** One lock file,
 `/config/grimmory-tagger/writer.lock` (flock), serializes every commit, whether made by
 `apply` or by the hook.
-- Under the lock, just before writing, the writer re-reads the target book. It refuses if
-  the snapshot changed (the existing stale checks). It also re-checks inventory-wide
-  collisions: if any other book now carries the same ISBN-13 or the same Hardcover ID in
-  the same format, it refuses.
+- Under the lock, just before writing each row, the writer re-reads the target book. It
+  refuses if the snapshot changed (the existing stale checks), and also if any scoring
+  evidence changed: `backfill` snapshots the title, subtitle, language, publisher,
+  library and primary-file identity (id, name, size) besides the planned fields (authors
+  and series are already among them).
+- Before each row that writes, it re-reads the inventory (keeping every value claimed
+  earlier in the run) and re-checks collisions: if any other book now carries the same
+  ISBN-13 or the same Hardcover ID, it refuses — unless the two books are duplicate
+  holdings (one volume in two file formats), P1's existing rule.
 - If the lock cannot be taken within the remaining deadline, the hook leaves its entry
   queued and reports a timeout.
 
 **Queue integrity (P1 change).**
-- Every reader and writer of `grimmory-tag-queue.jsonl` takes a shared lock on a stable
-  sibling file, `grimmory-tag-queue.lock`.
+- Every reader and writer of `grimmory-tag-queue.jsonl` locks a stable sibling file,
+  `grimmory-tag-queue.lock` — shared to read, exclusive to write. A reader checks whether
+  the queue exists only once it holds the lock.
+- The hook's queue operations wait for the lock only until its deadline (non-blocking
+  polls); other callers wait as long as it takes.
 - Writers read the current contents under the lock, build the new contents, write a temp
   file, flush and `fsync` it, `os.replace` it into place, `fsync` the directory, and only
   then release the lock.
@@ -329,13 +387,15 @@ parameter; their existing callers are unchanged.
   `YYYYMMDDTHHMMSS.ffffffZ-xxxx`. Existing ids still load.
 - A report is written to a temp file and published with `os.replace`.
 - `latest_report` (the coverage baseline) considers only full-inventory backfill reports,
-  never `kind: "hook"` reports.
+  never `kind: "hook"` reports. Each report records its `scope` (`full`, or `filtered` for
+  `--library`/`--book` runs and hook reports), and the newest is chosen by its parsed
+  creation time, never by file name (old and new id formats do not sort by time).
 
 **P1 `resolve_entry`.** It keeps resolving by `book_id` or by library + exact filename.
 When it resolves by `book_id`, it also checks that the book is still in the entry's
 library; otherwise the entry is unresolved. There is **no** size-only fallback.
 
-### 5. Manifest (fleet-infra, one commit, after the image is released)
+### 5. Manifest (fleet-infra, two commits, after the image is released)
 
 `media.shelfmark.yaml`:
 - bump the image
@@ -346,9 +406,13 @@ library; otherwise the entry is unresolved. There is **no** size-only fallback.
 - keep `CUSTOM_SCRIPT_JSON_PAYLOAD=true`
 - add the `shelfmark-hook-dispatch` volume and mount
 
-The **same commit** regenerates the tagger ConfigMap, which carries the `hook` subcommand
-and the P1 changes. A dispatcher that calls a tagger without `hook` would swallow a CLI
-error on every ebook.
+Two commits, each pushed with the user's OK, so the pre-enable checks below can run against
+the live pod: **A** bumps the image and adds the dispatcher volume and mount (inert:
+BookDrop and the ABS `CUSTOM_SCRIPT` unchanged); **B** sets the destination, the library
+and path ids, `CUSTOM_SCRIPT`, and the notes. The tagger ConfigMap with the `hook`
+subcommand and the P1 changes ships before A (it is regenerated with each tagger change),
+so the dispatcher is never the custom script before the hook-capable tagger is mounted: a
+dispatcher that calls a tagger without `hook` would swallow a CLI error on every ebook.
 
 `media/CLAUDE.md`, through `bin/nuance_bundle.md`:
 - the "ONE global upload destination / BookDrop" note becomes the picker plus direct
@@ -375,10 +439,12 @@ tagged-ingest acceptance.
 | Explicit ebook key is malformed, missing, or can't be verified | The task fails before upload, with an error naming the key; never re-routed |
 | No key | Effective default for the task's user |
 | Upload fails | Task fails (as today) |
+| Custom script missing, failing, timed out, or its payload can't be built, after a successful Grimmory upload | Logged as a warning; the task completes as uploaded (book untagged until the next `backfill`) |
+| A requester puts a destination key in a request's `release_data` | Stripped before the request is stored or queued |
 | Hook: no verified binding | Entry kept, unbound; "Needs attention" names the backfill route; exit 0 |
 | Hook: scoring isn't `accepted`, or the apply/read-back isn't a full success | Entry kept; "Needs attention" with the matching next step; exit 0 |
 | Hook: Hardcover or Grimmory error, lock wait, or deadline | Entry kept; next `backfill` retries; exit 0 |
-| Hook exceeds 280 s | Dispatcher kills its process group; the queue entries already exist |
+| Hook exceeds 292 s | Dispatcher kills its process group; the queue entries already exist (the hook stops itself at 250 s, even inside a stalled read) |
 | Dispatcher receives a malformed payload, or a launch fails | Logged; exit 0 |
 | Pushover fails or hangs | 10 s timeout; logged |
 | Uploaded but never queued (partial upload, crash before the hook) | Untagged until the next full `backfill` (stated durability boundary) |
@@ -397,9 +463,17 @@ tagged-ingest acceptance.
     and restart restore. Plus the provider/provider_id pair rule.
   - **Payload:** `uploaded_files` (with `response`), and the upload start and finish times.
   - **Keys:** a non-admin key is still stripped, a no-auth key is kept, and a
-    cross-format key never resolves for ABS.
+    cross-format key never resolves for ABS. Request submissions strip a non-admin's key
+    on both endpoints, both policy paths and both locations; fulfilment sends only the
+    approval's key.
+  - **Hook failure after upload:** a missing or non-executable script, a timeout, a
+    non-zero exit and a payload exception each leave the task completed, with a warning.
+  - **ISBN:** a checksum-valid EAN without the `978`/`979` prefix is dropped.
 - **Frontend (vitest):**
   - generic picker helpers for both formats and the neutral ebook default label
+  - an ebook pick survives a loading or empty list; audiobook fallback unchanged
+  - an empty list is not cached, so it recovers on the next lookup
+  - Browse Alternatives carries the approve panel's pick to the fulfil payload
   - every payload builder carries identity, and the ebook key when present
   - combined mode keeps per-phase keys through Next → Back → Next → Download, including
     skipped legs
@@ -407,24 +481,36 @@ tagged-ingest acceptance.
   - **Dispatcher:**
     - routing by type, including mixed-case content type and the ABS out-of-root skip
     - stdin bytes and a spaced target path passed through
-    - process-group kill on timeout, with a descendant keeping stdout open
+    - process-group kill on timeout, with a descendant keeping stdout open; group cleanup
+      when an exception escapes after the launch
     - missing or non-executable hook, malformed JSON
+    - a broken or closed stdout through the real executable; a bounded output tail
     - always exits 0
   - **Hook:**
     - the guard
     - the whole batch queued before any network call (multiple files)
-    - binding: from the upload response; from an exact file match; never found; two
-      books with the same size and no name match stay unbound
+    - binding: from the upload response; from an exact file match, only once settled;
+      never found; two books with the same size and no name match stay unbound; a second
+      copy appearing on a later poll, or an older copy of the same name and size, makes it
+      ambiguous; rows missing `primaryFile`, `fileName` or the file id are hydrated
     - an accepted result that writes and verifies, a stale result, a write failure, a
       missing ISBN, and `unchanged`-already-complete
-    - the deadline: a slow call, retries, a hanging notifier
+    - the deadline: a slow call, retries, a hanging notifier, a held queue lock, and real
+      loopback servers that trickle a JSON body or stream endless SSE heartbeats
+    - a conflict names the fix-then-rescore route, never `--decisions`; a bound file
+      replaced before scoring is not written; `apply` keeps an incomplete hook entry
   - **P1:**
     - queue: concurrent appends, removals and readers across processes, and an
       interrupted rewrite
     - the writer lock serializes apply and the hook, and collision revalidation refuses a
-      duplicate Hardcover ID written in between
+      duplicate Hardcover ID written in between, including one written by someone else
+      after the run's first row
+    - evidence revalidation refuses a title, language or primary-file change since scoring
+    - the queue: a deadline-bounded wait on a held lock, and a queue created while a reader
+      waited
     - report ids are unique for simultaneous writers
-    - `latest_report` ignores hook reports
+    - `latest_report` ignores hook reports and filtered runs, and orders by creation time
+      (same-second mixed id formats)
     - `resolve_entry` checks the library on `book_id`
     - `score_books` scores exactly the given books
   - ConfigMap drift tests for both ConfigMaps.
@@ -446,12 +532,22 @@ The first plan task is a **probe**, run before any hook code is written. As the
 The binding rule in §4.3 is finalized from these findings and recorded in this spec
 before the hook is written. The test book is then removed.
 
+The probe must survive an interruption: before the first upload it persists and fsyncs a
+receipt (tag, EPUB UUID, destination, file name), and it checkpoints every response and
+every discovered book into it. Discovery validates each HTTP status and page shape and
+follows Spring paging (`page.totalPages`); a probe book is one in the destination library
+carrying an exact marker (the probe title or file name). Cleanup is complete only after a
+successful full enumeration finds nothing and the NFS library root holds no file with the
+probe tag.
+
 Then, each push needing the user's OK:
 
 1. Shelfmark: release the image (`scripts/release-local.sh`).
-2. fleet-infra: the §5 commit (image bump, destination, dispatcher, regenerated tagger
-   ConfigMap, mount, notes, drift link). Verify the pod's image and scripts, then push
-   and reconcile Flux.
+2. fleet-infra, on `main` in the main checkout (the repo does not branch): §5 commit A
+   (image bump, dispatcher volume and mount), push, reconcile, and verify the pod's image
+   and scripts; then commit B (destination, ids, `CUSTOM_SCRIPT`, notes, drift link),
+   push and reconcile. Each commit stages only its own files; the bundle note change is
+   staged on top of `HEAD`, never with another session's pending bundle edits.
 3. Unpushed P3 bump `6525248` can be pushed on its own first, or be superseded by step 2.
 
 ## Acceptance
@@ -473,7 +569,8 @@ Then, each push needing the user's OK:
 - Moving already-misfiled books (Grimmory cannot; still a manual NFS `mv`).
 - Upload receipts for partial uploads or a crash before the hook (covered by the next
   full `backfill`).
-- Changing Shelfmark's custom-script failure policy.
+- Changing Shelfmark's custom-script failure policy for folder and email outputs (the
+  Grimmory post-upload hook is best-effort, §3).
 - Per-user default libraries beyond the existing user-overridable settings.
 
 ## Revisions after Codex review (2026-10-06)
@@ -503,7 +600,22 @@ Then, each push needing the user's OK:
 **Declined:**
 - **#11, the Shelfmark-side half:** a best-effort custom-script policy in Shelfmark. The
   dispatcher catches everything, and a missing dispatcher is a deployment error guarded by
-  §5's pre-enable check.
+  §5's pre-enable check. *(Reversed for the Grimmory `post_upload` path on 2026-10-07; see
+  below.)*
 - **#14, the receipts half:** incremental upload receipts. Books outside the queue are
   untagged, not lost, and the next full `backfill` covers them. The spec now states this
   durability boundary instead of "never loses a book".
+
+## Revisions after Codex review of the Shelfmark plan (2026-10-07)
+
+All adopted:
+
+| # | Finding | Change |
+|---|---|---|
+| 1 | A requester could plant a destination key in a request's `release_data` (top level or `extra`); download-policy submissions queued it, and a blank approval revived the nested copy | Request submissions run `authorize_destination_key`; fulfilment strips stored keys and sends only the approval's (§3) |
+| 2 | Browse Alternatives in the approve panel dropped the chosen library | Every download action carries the pick (§2) |
+| 3 | Frontend validation could blank an explicit ebook pick while the list loaded or the picker was hidden | A nonblank ebook pick is never blanked in the browser; the server decides (§2) |
+| 4 | A post-upload hook failure failed an uploaded task, inviting a duplicate upload on retry | The Grimmory post-upload hook is best-effort (§3); this reverses the Shelfmark-side half of the earlier declined #11 for that path only |
+| 5 | The fulfil fill could pair one book's ISBN with another book's provider id | A release naming a different provider without an id imports nothing (§3) |
+| 6 | The frontend cached a successful empty list forever | Empty lists are never cached (§2) |
+| 7 | A checksum-valid non-ISBN EAN passed ISBN normalization | 13-digit ISBNs need a `978`/`979` prefix, in the shared `normalize_isbn` (§3) |
