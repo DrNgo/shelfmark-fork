@@ -77,8 +77,10 @@ Rules:
   - When only one of name and position is present, the missing one comes from the title parse,
     and only a complete, consistent pair produces series rungs.
 - **Distinguishing identities:** fractional positions (1.5), ranges (`Vol. 1–3`), omnibus or
-  collected editions, and titles carrying `Part I`/`Part II` produce no single-volume series
-  rungs. Their cleaned full title (rung 5) keeps the distinguishing text. Roman-numeral volumes
+  collected editions, and `Part I`/`Part II` attached to the volume token (`Vol. 5 Part 1`) or
+  in a title with no volume number produce no single-volume series rungs. A `Part` in the book
+  name after a single integral volume (`Overlord, Vol. 5: The Men of the Kingdom Part I`) does
+  not suppress them, since the volume number already identifies the book. Their cleaned full title (rung 5) keeps the distinguishing text. Roman-numeral volumes
   are not parsed, and produce only rung 5.
 - **Standalone books** (no usable series and no volume in the title) get no fallbacks.
 
@@ -107,6 +109,8 @@ lives in the same module.
 - names no other volume number
 - contains the series key tokens
 - is not video (1080p, 720p, x264, BD, mkv, episode markers and the like)
+- is not a manga or comic edition (`manga`, `comic(s)`, `graphic novel`) unless the book's
+  own title or series names it as manga or comic
 
 **For other books,** it is true when the release title contains the book's significant title
 tokens and is not video.
@@ -232,3 +236,4 @@ All 14 findings were adopted. The main changes:
 | 12 | Deadline semantics |
 | 13 | Acceptance runs the production path |
 | 14 | Manual and logging claims corrected |
+| 15 | (plan review) `Part` in the book name no longer suppresses series rungs; manga/comic releases are not identity hits for a light novel — live data showed `Overlord Vol. 5` returning only manga |
