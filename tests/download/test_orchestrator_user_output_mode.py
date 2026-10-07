@@ -442,3 +442,72 @@ def test_queue_release_without_language_leaves_it_unset(monkeypatch):
     )
 
     assert task.language is None
+
+
+def _queue_with_grimmory_key(monkeypatch, *, user_mode: str, content_type: str):
+    import shelfmark.download.orchestrator as orchestrator
+
+    added: list[DownloadTask] = []
+
+    def fake_config_get(key, default=None, user_id=None):
+        if key == "BOOKS_OUTPUT_MODE":
+            return user_mode if user_id == 42 else "booklore"
+        if key == "EMAIL_RECIPIENT":
+            return "alice@example.com"
+        return default
+
+    def fake_add(task):
+        added.append(task)
+        return True
+
+    monkeypatch.setattr(orchestrator.config, "get", fake_config_get)
+    monkeypatch.setattr(orchestrator.book_queue, "add", fake_add)
+    monkeypatch.setattr(orchestrator, "ws_manager", None)
+
+    success, error = orchestrator.queue_release(
+        {
+            "source": "direct_download",
+            "source_id": "release-grimmory",
+            "title": "Release Title",
+            "content_type": content_type,
+            "destination_key": "grimmory:5:8",
+        },
+        user_id=42,
+        username="alice",
+    )
+    return success, error, added
+
+
+@pytest.mark.parametrize("user_mode", ["folder", "email"])
+def test_queue_release_rejects_a_grimmory_pick_for_a_non_booklore_user(monkeypatch, user_mode):
+    success, error, added = _queue_with_grimmory_key(
+        monkeypatch, user_mode=user_mode, content_type="ebook"
+    )
+
+    assert success is False
+    assert error == (
+        f"A Grimmory library was chosen, but this user's ebook output is {user_mode}; "
+        "nothing was queued"
+    )
+    assert added == []
+
+
+def test_queue_release_keeps_a_grimmory_pick_for_a_booklore_user(monkeypatch):
+    success, error, added = _queue_with_grimmory_key(
+        monkeypatch, user_mode="booklore", content_type="ebook"
+    )
+
+    assert success is True
+    assert error is None
+    assert added[0].output_mode == "booklore"
+    assert added[0].destination_key == "grimmory:5:8"
+
+
+def test_queue_release_grimmory_guard_ignores_audiobooks(monkeypatch):
+    success, error, added = _queue_with_grimmory_key(
+        monkeypatch, user_mode="folder", content_type="audiobook"
+    )
+
+    assert success is True
+    assert error is None
+    assert added[0].output_mode == "folder"

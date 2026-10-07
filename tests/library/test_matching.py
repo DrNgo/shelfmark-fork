@@ -238,6 +238,12 @@ class TestNormalizeIsbn:
         assert normalize_isbn("0000000000") == ""
         assert normalize_isbn("0000000000000") == ""
 
+    def test_rejects_a_checksum_valid_ean_that_is_not_an_isbn(self):
+        # Only the 978/979 "Bookland" prefixes are ISBNs. Any other 13-digit EAN
+        # can pass the same check digit, and an exact match on it is a false yes.
+        assert normalize_isbn("1234567890128") == ""
+        assert isbn_match_key("1234567890128") == ""
+
 
 class TestIsbnMatchKey:
     def test_namespaces_the_key(self):

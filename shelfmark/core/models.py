@@ -142,6 +142,14 @@ class DownloadTask:
     # later cannot redirect a download that is already in flight.
     destination_key: str | None = None
 
+    # Book identity from the metadata provider (fork-only), for post-upload hooks
+    # that tag the book. Normalized by `normalize_book_identity` at queue time:
+    # provider/provider_id travel as a pair, the ISBN is a canonical ISBN-13.
+    provider: str | None = None
+    provider_id: str | None = None
+    isbn_13: str | None = None
+    asin: str | None = None
+
     # Multi-book packs: one release holding several books. `book_plan` is the split the
     # user approved before download (list of {title, series_position, year, files});
     # `multi_book` asks post-processing to split heuristically when no plan exists.

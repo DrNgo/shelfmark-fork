@@ -214,6 +214,10 @@ def _choose_custom_script_target(
 def _build_custom_script_payload(
     context: CustomScriptContext, *, target_path: Path
 ) -> dict[str, Any]:
+    # A pack holds several books: one identity cannot be tied to each file, so
+    # a hook that tags books gets none rather than the wrong one.
+    task = context.task
+    identity_known = not (task.multi_book or task.book_plan)
     payload: dict[str, Any] = {
         "version": 1,
         "phase": context.phase,
@@ -231,6 +235,11 @@ def _build_custom_script_payload(
             "subtitle": context.task.subtitle,
             "language": context.task.language,
             "original_download_path": context.task.original_download_path,
+            # Fork-only book identity, for hooks that tag the book.
+            "provider": task.provider if identity_known else None,
+            "provider_id": task.provider_id if identity_known else None,
+            "isbn_13": task.isbn_13 if identity_known else None,
+            "asin": task.asin if identity_known else None,
         },
         "output": {
             "mode": context.output_mode,

@@ -1111,3 +1111,84 @@ class TestQueueManagementEndpointGuardrails:
 
         assert resp.status_code == 200
         assert resp.get_json() == {"active_downloads": ["reader-active-1"]}
+
+
+class TestEbookKeyAndIdentityPassThrough:
+    """Fork-only: the ebook library key and book identity reach the queue unchanged."""
+
+    IDENTITY = {
+        "provider": "hardcover",
+        "provider_id": "886465",
+        "isbn_13": "9780316005142",
+        "asin": "B0BSHZ1234",
+    }
+
+    def _queue(self, main_module, client, payload, *, auth_mode="builtin"):
+        captured: dict[str, object] = {}
+
+        def fake_queue_release(release_data, priority, user_id=None, username=None):
+            captured.update({"release_data": release_data, "user_id": user_id})
+            return True, None
+
+        with patch.object(main_module, "get_auth_mode", return_value=auth_mode):
+            with patch.object(main_module.backend, "queue_release", side_effect=fake_queue_release):
+                resp = client.post("/api/releases/download", json=payload)
+
+        assert resp.status_code == 200
+        return captured
+
+    def _payload(self, **extra):
+        return {
+            "source": "prowlarr",
+            "source_id": f"release-{uuid.uuid4().hex[:8]}",
+            "title": "Overlord",
+            "content_type": "ebook",
+            **self.IDENTITY,
+            **extra,
+        }
+
+    def test_an_admin_direct_download_keeps_key_and_identity(self, main_module, client):
+        admin_user = _create_user(main_module, prefix="admin", role="admin")
+        _set_authenticated_session(
+            client, user_id=admin_user["username"], db_user_id=admin_user["id"], is_admin=True
+        )
+
+        captured = self._queue(main_module, client, self._payload(destination_key="grimmory:5:8"))
+
+        release_data = captured["release_data"]
+        assert release_data["destination_key"] == "grimmory:5:8"
+        assert {k: release_data[k] for k in self.IDENTITY} == self.IDENTITY
+
+    def test_a_non_admin_loses_the_ebook_key_but_keeps_identity(self, main_module, client):
+        _set_authenticated_session(client, user_id="ada", db_user_id=23, is_admin=False)
+
+        captured = self._queue(main_module, client, self._payload(destination_key="grimmory:5:8"))
+
+        release_data = captured["release_data"]
+        assert "destination_key" not in release_data
+        assert {k: release_data[k] for k in self.IDENTITY} == self.IDENTITY
+
+    def test_no_auth_mode_keeps_the_ebook_key(self, main_module, client):
+        captured = self._queue(
+            main_module, client, self._payload(destination_key="grimmory:5:8"), auth_mode="none"
+        )
+
+        assert captured["release_data"]["destination_key"] == "grimmory:5:8"
+
+    def test_an_on_behalf_download_keeps_key_and_identity(self, main_module, client):
+        target_user = _create_user(main_module, prefix="target")
+        admin_user = _create_user(main_module, prefix="admin", role="admin")
+        _set_authenticated_session(
+            client, user_id=admin_user["username"], db_user_id=admin_user["id"], is_admin=True
+        )
+
+        captured = self._queue(
+            main_module,
+            client,
+            self._payload(destination_key="grimmory:5:8", on_behalf_of_user_id=target_user["id"]),
+        )
+
+        release_data = captured["release_data"]
+        assert captured["user_id"] == target_user["id"]
+        assert release_data["destination_key"] == "grimmory:5:8"
+        assert {k: release_data[k] for k in self.IDENTITY} == self.IDENTITY

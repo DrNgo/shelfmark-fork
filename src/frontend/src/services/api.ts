@@ -1,5 +1,6 @@
 import type {
   Book,
+  ContentType,
   StatusData,
   AppConfig,
   LoginCredentials,
@@ -22,7 +23,6 @@ import type {
   SettingsTab,
   UpdateResult,
 } from '../types/settings';
-import type { AudiobookDestination } from '../utils/audiobookDestinations';
 import { getApiBase, withBasePath } from '../utils/basePath';
 import type { MetadataBookData, SourceRecordData } from '../utils/bookTransformers';
 import {
@@ -30,6 +30,7 @@ import {
   transformReleaseToDirectBook,
   transformSourceRecordToBook,
 } from '../utils/bookTransformers';
+import type { DownloadDestination, DownloadDestinationList } from '../utils/downloadDestinations';
 import type { LibraryLookupBook, LibraryMatchesResponse } from '../utils/libraryMatches';
 import { isRecord, toStringValue } from '../utils/objectHelpers';
 import type { FulfilAdminRequestBody, RejectAdminRequestBody } from './requestApiHelpers';
@@ -588,8 +589,14 @@ export type DownloadReleasePayload = {
   language?: string; // Release language code, for the {Language} naming variable
   search_author?: string;
   search_mode?: 'direct' | 'universal';
-  // Audiobook library chosen by an admin in the release modal. Absent unless
-  // one was picked, and stripped server-side from a non-admin's payload.
+  // Metadata identity of the book (fork-only), for the post-upload tagging hook.
+  provider?: string;
+  provider_id?: string;
+  isbn_13?: string;
+  asin?: string;
+  // Library chosen by an admin in the release modal: an Audiobookshelf key for
+  // an audiobook, `grimmory:<lib>:<path>` for an ebook. Absent unless one was
+  // picked, and stripped server-side from a non-admin's payload.
   destination_key?: string;
   multi_book?: boolean; // Split a multi-book pack into one book per subfolder/file
   book_plan?: PackBook[]; // The split the user approved before download
@@ -729,11 +736,14 @@ export const fulfilAdminRequest = async (
   });
 };
 
-export const getAudiobookDestinations = async (): Promise<AudiobookDestination[]> => {
-  const response = await fetchJSON<{ destinations?: AudiobookDestination[] }>(
-    `${API_BASE}/audiobook-destinations`,
-  );
-  return response.destinations ?? [];
+export const getDownloadDestinations = async (
+  contentType: ContentType,
+): Promise<DownloadDestinationList> => {
+  const response = await fetchJSON<{
+    destinations?: DownloadDestination[];
+    default_name?: string;
+  }>(`${API_BASE}/download-destinations?content_type=${encodeURIComponent(contentType)}`);
+  return { destinations: response.destinations ?? [], defaultName: response.default_name ?? '' };
 };
 
 export const getLibraryMatches = async (

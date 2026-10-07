@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 
+import type { Book, Release } from '../types';
 import { bookFromRequestData } from '../utils/requestFulfil';
+import {
+  buildMetadataBookRequestData,
+  buildReleaseDataFromMetadataRelease,
+} from '../utils/requestPayload';
 
 describe('requestFulfil.bookFromRequestData', () => {
   it('maps request book data into a ReleaseModal-compatible Book object', () => {
@@ -41,5 +46,43 @@ describe('requestFulfil.bookFromRequestData', () => {
     expect(book.provider).toBe(undefined);
     expect(book.provider_id).toBe(undefined);
     expect(book.series_position).toBe(undefined);
+  });
+
+  // Fork-only: browse-before-approve rebuilds the Book from the request, and the
+  // release it then builds must still carry the identity the requester saw.
+  it('keeps the ASIN and both ISBNs', () => {
+    const book = bookFromRequestData({
+      title: 'Overlord',
+      asin: 'B0BSHZ1234',
+      isbn_13: '9780316005142',
+      isbn_10: '0316005142',
+    });
+
+    expect(book.asin).toBe('B0BSHZ1234');
+    expect(book.isbn_13).toBe('9780316005142');
+    expect(book.isbn_10).toBe('0316005142');
+  });
+
+  it('round-trips identity from request to approved release', () => {
+    const requested: Book = {
+      id: '886465',
+      title: 'Overlord',
+      author: 'Kugane Maruyama',
+      provider: 'hardcover',
+      provider_id: '886465',
+      isbn_13: '9780316005142',
+      asin: 'B0BSHZ1234',
+    };
+    const release: Release = { source: 'prowlarr', source_id: 'r-1', title: 'Overlord.epub' };
+
+    const rebuilt = bookFromRequestData(buildMetadataBookRequestData(requested, 'ebook'));
+    const releaseData = buildReleaseDataFromMetadataRelease(rebuilt, release, 'ebook');
+
+    expect(releaseData).toMatchObject({
+      provider: 'hardcover',
+      provider_id: '886465',
+      isbn_13: '9780316005142',
+      asin: 'B0BSHZ1234',
+    });
   });
 });

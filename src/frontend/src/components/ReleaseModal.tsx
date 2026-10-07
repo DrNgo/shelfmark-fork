@@ -5,8 +5,8 @@ import { useDescriptionOverflow } from '../hooks/releaseModal/useDescriptionOver
 import { useHeaderThumbOnScroll } from '../hooks/releaseModal/useHeaderThumbOnScroll';
 import { useReleaseSearchSession } from '../hooks/releaseModal/useReleaseSearchSession';
 import { useTabIndicator } from '../hooks/ui/useTabIndicator';
-import { useAudiobookDestinations } from '../hooks/useAudiobookDestinations';
 import { useBodyScrollLock } from '../hooks/useBodyScrollLock';
+import { useDownloadDestinations } from '../hooks/useDownloadDestinations';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 import { inspectRelease } from '../services/api';
 import type {
@@ -24,14 +24,17 @@ import type {
   PackPlan,
 } from '../types';
 import { isMetadataBook } from '../types';
-import {
-  resolveDefaultDestinationKey,
-  shouldShowDestinationPicker,
-} from '../utils/audiobookDestinations';
 import { bookSupportsTargets } from '../utils/bookTargetLoader';
 import { getColorStyleFromHint } from '../utils/colorMaps';
 import type { CoverAspect } from '../utils/coverAspect';
 import { coverObjectPositionClass, isSquareCover } from '../utils/coverAspect';
+import {
+  destinationDefaultLabel,
+  destinationKeyToSend,
+  pickerDestinations,
+  resolveSelectedDestinationKey,
+  shouldShowDestinationPicker,
+} from '../utils/downloadDestinations';
 import {
   LANGUAGE_OPTION_DEFAULT,
   getLanguageFilterValues,
@@ -75,8 +78,12 @@ interface CombinedModeConfig {
   audiobookMode: RequestPolicyMode;
   stagedEbookRelease: Release | null;
   stagedAudiobookRelease: Release | null;
-  onNext?: (release: Release | null) => void;
-  onBack?: (audiobookRelease: Release | null) => void;
+  // The library each phase's picker last held, restored on Next/Back (fork-only).
+  stagedEbookDestinationKey?: string;
+  stagedAudiobookDestinationKey?: string;
+  // Each carries the library picked on the phase being left.
+  onNext?: (release: Release | null, destinationKey?: string) => void;
+  onBack?: (audiobookRelease: Release | null, destinationKey?: string) => void;
   onDownload?: (release: Release | null, destinationKey?: string) => void;
   onClearSelection?: (contentType: ContentType) => void;
 }
@@ -177,8 +184,9 @@ interface ReleaseModalProps {
   isRequestMode?: boolean;
   showReleaseSourceLinks?: boolean;
   onShowToast?: (message: string, type: 'success' | 'error' | 'info') => void;
-  // Whether this viewer may route an audiobook to a specific library. Admin-only
-  // — the server strips the key from anyone else's download payload.
+  // Whether this viewer may route a download to a specific library (Grimmory for
+  // ebooks, Audiobookshelf for audiobooks). Admin-only — the server strips the
+  // key from anyone else's download payload.
   canChooseDestination?: boolean;
   // Combined mode (ebook + audiobook in one transaction)
   combinedMode?: CombinedModeConfig | null;
@@ -866,6 +874,8 @@ const ReleaseModalSession = ({
   const combinedAudiobookMode = combinedMode?.audiobookMode ?? null;
   const stagedEbookRelease = combinedMode?.stagedEbookRelease ?? null;
   const stagedAudiobookRelease = combinedMode?.stagedAudiobookRelease ?? null;
+  const stagedEbookDestinationKey = combinedMode?.stagedEbookDestinationKey ?? '';
+  const stagedAudiobookDestinationKey = combinedMode?.stagedAudiobookDestinationKey ?? '';
   let stagedReleaseForPhase: Release | null = null;
   if (combinedPhase === 'ebook') {
     stagedReleaseForPhase = stagedEbookRelease;
@@ -918,20 +928,26 @@ const ReleaseModalSession = ({
   const bookSummaryRef = useRef<HTMLDivElement>(null);
   const showHeaderThumb = useHeaderThumbOnScroll({ scrollContainerRef, bookSummaryRef });
 
-  // In combined mode `contentType` tracks the current phase, so the picker
-  // appears on the audiobook step and stays out of the way on the ebook one.
-  const destinations = useAudiobookDestinations(
-    canChooseDestination && contentType === 'audiobook',
+  // In combined mode `contentType` tracks the current phase, so each step lists
+  // the libraries for its own format.
+  const { destinations, defaultName: destinationDefaultName } = useDownloadDestinations(
+    canChooseDestination ? contentType : null,
   );
   const showDestinationPicker =
-    canChooseDestination && shouldShowDestinationPicker(contentType, destinations);
-  // Drop a selection whose library disappeared from settings while the modal
-  // was open, so a download can never carry a key that routes nowhere.
-  const selectedDestinationKey = resolveDefaultDestinationKey(destinationKey, destinations);
+    canChooseDestination && shouldShowDestinationPicker(contentType, destinations, destinationKey);
+  // An audiobook selection whose library disappeared while the modal was open is
+  // dropped. An ebook pick is kept even while the list loads or lacks it: the
+  // server verifies it fresh and fails closed rather than re-routing.
+  const selectedDestinationKey = resolveSelectedDestinationKey(
+    contentType,
+    destinationKey,
+    destinations,
+  );
+  const destinationOptions = pickerDestinations(contentType, selectedDestinationKey, destinations);
   // Only a download consumes it; a release the admin can merely request goes
   // through the normal approve flow, which asks for the library separately.
-  const chosenDestinationKey = showDestinationPicker
-    ? selectedDestinationKey || undefined
+  const chosenDestinationKey = canChooseDestination
+    ? destinationKeyToSend(contentType, destinationKey, destinations)
     : undefined;
 
   // Sort state - keyed by source name, persisted to localStorage
@@ -2243,7 +2259,7 @@ const ReleaseModalSession = ({
               )}
             </div>
 
-            {/* Library picker — where this audiobook lands once downloaded */}
+            {/* Library picker — where this download lands */}
             {showDestinationPicker && (
               <div className="flex items-center gap-3 border-b border-(--border-muted) bg-(--bg) px-5 py-2.5 sm:bg-(--bg-soft)">
                 <label
@@ -2258,8 +2274,10 @@ const ReleaseModalSession = ({
                   onChange={(e) => setDestinationKey(e.target.value)}
                   className="min-w-0 flex-1 rounded-lg border border-(--border-muted) bg-(--bg) px-2 py-1.5 text-sm text-(--text) sm:max-w-xs"
                 >
-                  <option value="">Default audiobook destination</option>
-                  {destinations.map((destination) => (
+                  <option value="">
+                    {destinationDefaultLabel(contentType, destinationDefaultName)}
+                  </option>
+                  {destinationOptions.map((destination) => (
                     <option key={destination.key} value={destination.key}>
                       {destination.name}
                     </option>
@@ -2467,8 +2485,10 @@ const ReleaseModalSession = ({
                       type="button"
                       onClick={() => {
                         const picked = selectedRelease;
+                        const leavingKey = chosenDestinationKey;
                         setSelectedRelease(stagedEbookRelease);
-                        onCombinedBack(picked);
+                        setDestinationKey(stagedEbookDestinationKey);
+                        onCombinedBack(picked, leavingKey);
                       }}
                       className="hover-surface rounded-lg px-3 py-1.5 text-sm font-medium text-(--text) transition-colors"
                     >
@@ -2480,13 +2500,15 @@ const ReleaseModalSession = ({
                     <button
                       type="button"
                       onClick={() => {
+                        const leavingKey = chosenDestinationKey;
+                        setDestinationKey(stagedAudiobookDestinationKey);
                         if (selectedRelease) {
                           const picked = selectedRelease;
                           setSelectedRelease(stagedAudiobookRelease);
-                          onCombinedNext(picked);
+                          onCombinedNext(picked, leavingKey);
                         } else {
                           setSelectedRelease(stagedAudiobookRelease);
-                          onCombinedNext(null);
+                          onCombinedNext(null, leavingKey);
                         }
                       }}
                       className="rounded-lg bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"

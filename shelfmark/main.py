@@ -532,12 +532,12 @@ def _queue_status_for_routes(user_id: int | None = None) -> dict[str, dict[str, 
 
 if user_db is not None:
     try:
-        from shelfmark.audiobookshelf.routes import register_audiobookshelf_routes
         from shelfmark.core.activity_routes import register_activity_routes
+        from shelfmark.core.destination_routes import register_destination_routes
         from shelfmark.core.request_routes import register_request_routes
         from shelfmark.library.routes import register_library_routes
 
-        register_audiobookshelf_routes(app, resolve_auth_mode=_resolve_auth_mode_for_routes)
+        register_destination_routes(app, resolve_auth_mode=_resolve_auth_mode_for_routes)
         register_library_routes(app, resolve_auth_mode=_resolve_auth_mode_for_routes)
         register_request_routes(
             app,

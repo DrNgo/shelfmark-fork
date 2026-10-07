@@ -1,6 +1,7 @@
 import type { DownloadReleasePayload } from '../services/api';
 import type { Book, ContentType, PackBook, Release } from '../types';
-import { withDestinationKey } from './audiobookDestinations';
+import { bookIdentityFields } from './bookIdentity';
+import { withDestinationKey } from './downloadDestinations';
 
 export interface ReleaseDownloadOptions {
   /** Ask post-processing to split the release into one book per subfolder/file. */
@@ -8,8 +9,9 @@ export interface ReleaseDownloadOptions {
   /** The split the user approved in the pack review panel. */
   bookPlan?: PackBook[];
   /**
-   * Audiobookshelf library an admin picked for this download (fork-only). Omitted
-   * from the payload entirely when blank, so the server keeps its own default.
+   * Library an admin picked for this download (fork-only): Audiobookshelf for an
+   * audiobook, Grimmory for an ebook. Omitted from the payload entirely when
+   * blank, so the server keeps its own default.
    */
   destinationKey?: string;
 }
@@ -51,6 +53,7 @@ export function buildReleaseDownloadPayload(
       // From the release, never the book: book.language is the provider's
       // canonical edition, which would mislabel a translated release.
       language: release.language ?? undefined,
+      ...bookIdentityFields(book),
     },
     options.destinationKey,
   );

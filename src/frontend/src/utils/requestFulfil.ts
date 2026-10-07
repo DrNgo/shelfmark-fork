@@ -42,6 +42,10 @@ export const bookFromRequestData = (bookData: Record<string, unknown> | null | u
     source: toOptionalText(row.source),
     provider: toOptionalText(row.provider),
     provider_id: providerId,
+    // Fork-only: the identity the release built from this book carries on.
+    isbn_13: toOptionalText(row.isbn_13),
+    isbn_10: toOptionalText(row.isbn_10),
+    asin: toOptionalText(row.asin),
     preview: toOptionalText(row.preview),
     year: toOptionalText(row.year),
     series_name: toOptionalText(row.series_name),

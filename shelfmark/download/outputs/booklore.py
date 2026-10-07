@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -25,9 +26,14 @@ from shelfmark.grimmory.client import (
     BOOKLORE_DISPLAY_NAME,
     BookloreConfig,
     BookloreError,
+    booklore_list_libraries,
     booklore_login,
     parse_destination,
     parse_int,
+)
+from shelfmark.grimmory.destinations import (
+    library_path_exists,
+    parse_grimmory_destination_key,
 )
 
 if TYPE_CHECKING:
@@ -35,6 +41,7 @@ if TYPE_CHECKING:
     from threading import Event
 
     from shelfmark.core.models import DownloadTask
+    from shelfmark.download.postprocess.custom_script import CustomScriptContext
 
 logger = setup_logger(__name__)
 
@@ -55,11 +62,67 @@ BOOKLORE_SUPPORTED_FORMATS_LABEL = ", ".join(
 )
 
 
+def _verify_explicit_destination(
+    base_url: str,
+    username: str,
+    password: str,
+    destination_key: str,
+) -> tuple[int, int]:
+    """Resolve an admin-chosen ebook destination key, or raise.
+
+    The key is checked against a fresh `GET /api/v1/libraries` made with the
+    upload credentials, never the settings dropdown cache. There is no fallback
+    to the default library: Grimmory cannot move books between libraries on a
+    network disk, so a book filed in the wrong library stays there.
+    """
+    parsed = parse_grimmory_destination_key(destination_key)
+    if parsed is None:
+        msg = (
+            f"{BOOKLORE_DISPLAY_NAME} destination {destination_key!r} is not a valid "
+            "library choice; nothing was uploaded"
+        )
+        raise BookloreError(msg)
+
+    library_id, path_id = parsed
+    auth_config = BookloreConfig(
+        base_url=base_url,
+        username=username,
+        password=password,
+        library_id=library_id,
+        path_id=path_id,
+    )
+    try:
+        token = booklore_login(auth_config)
+        libraries = booklore_list_libraries(auth_config, token)
+    except BookloreError as exc:
+        msg = (
+            f"Could not verify {BOOKLORE_DISPLAY_NAME} destination {destination_key!r}: "
+            f"{exc}; nothing was uploaded"
+        )
+        raise BookloreError(msg) from exc
+
+    if not library_path_exists(libraries, library_id, path_id):
+        msg = (
+            f"{BOOKLORE_DISPLAY_NAME} destination {destination_key!r} no longer exists "
+            f"(library {library_id}, path {path_id}); nothing was uploaded. "
+            "Pick another library and download again."
+        )
+        raise BookloreError(msg)
+
+    return library_id, path_id
+
+
 def build_booklore_config(
     values: Mapping[str, Any],
     user_id: int | None = None,
+    destination_key: str | None = None,
 ) -> BookloreConfig:
-    """Build and validate the effective Booklore configuration."""
+    """Build and validate the effective Booklore configuration.
+
+    In library mode an explicit `destination_key` (an admin's pick) is verified
+    and used; without one, the effective default for `user_id` applies. Bookdrop
+    mode ignores both.
+    """
     base_url = str(values.get("BOOKLORE_HOST", "")).strip()
     username = str(values.get("BOOKLORE_USERNAME", "")).strip()
     password = values.get("BOOKLORE_PASSWORD", "") or ""
@@ -82,7 +145,12 @@ def build_booklore_config(
     # Resolve library/path through config so user override precedence is centralized.
     library_id = 0
     path_id = 0
-    if not upload_to_bookdrop:
+    explicit_key = (destination_key or "").strip()
+    if not upload_to_bookdrop and explicit_key:
+        library_id, path_id = _verify_explicit_destination(
+            base_url.rstrip("/"), username, password, explicit_key
+        )
+    elif not upload_to_bookdrop:
         if user_id is not None:
             library_id_val = core_config.config.get(
                 "BOOKLORE_LIBRARY_ID",
@@ -113,8 +181,19 @@ def build_booklore_config(
     )
 
 
-def booklore_upload_file(booklore_config: BookloreConfig, token: str, file_path: Path) -> None:
-    """Upload a completed file into Booklore."""
+def _utc_now() -> str:
+    """Return the current UTC time as an ISO-8601 string (for the hook payload)."""
+    return datetime.now(UTC).isoformat()
+
+
+def booklore_upload_file(
+    booklore_config: BookloreConfig, token: str, file_path: Path
+) -> dict[str, Any] | None:
+    """Upload a completed file into Booklore.
+
+    Returns Grimmory's response body when it is a JSON object, else None. It is
+    passed on to the custom script, which may use it to find the new book.
+    """
     if booklore_config.upload_to_bookdrop:
         url = f"{booklore_config.base_url}/api/v1/files/upload/bookdrop"
         params = None
@@ -157,6 +236,12 @@ def booklore_upload_file(booklore_config: BookloreConfig, token: str, file_path:
         msg = f"{BOOKLORE_DISPLAY_NAME} upload failed: {exc}"
         raise BookloreError(msg) from exc
 
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    return body if isinstance(body, dict) else None
+
 
 def booklore_refresh_library(booklore_config: BookloreConfig, token: str) -> None:
     """Trigger a Booklore library refresh after upload."""
@@ -198,6 +283,44 @@ def _booklore_format_error(rejected_files: list[Path]) -> str:
     )
 
 
+def _run_post_upload_hook(
+    script_context: CustomScriptContext,
+    task: DownloadTask,
+    status_callback: StatusCallback,
+) -> None:
+    """Run the custom script after a Grimmory upload without failing the task.
+
+    The book is already in Grimmory, which cannot move or dedupe it: failing
+    the task here would invite a retry that uploads it a second time. So a
+    missing or non-executable script, a timeout, a non-zero exit, or an error
+    while building its payload is logged, and the upload still counts (fork-only;
+    folder and email outputs keep failing the task as before).
+    """
+    from shelfmark.download.postprocess.pipeline import maybe_run_custom_script
+
+    failures: list[str] = []
+
+    def hook_status(status: str, message: str | None) -> None:
+        if status == "error":
+            failures.append(message or "custom script failed")
+        else:
+            status_callback(status, message)
+
+    try:
+        succeeded = maybe_run_custom_script(script_context, status_callback=hook_status)
+    except Exception:
+        logger.exception(
+            "Task %s: post-upload custom script crashed; the upload stands", task.task_id
+        )
+        return
+    if not succeeded:
+        logger.warning(
+            "Task %s: post-upload custom script failed; the upload stands: %s",
+            task.task_id,
+            "; ".join(failures) or "unknown error",
+        )
+
+
 def _post_process_booklore(
     temp_file: Path,
     task: DownloadTask,
@@ -211,7 +334,6 @@ def _post_process_booklore(
         OutputPlan,
         cleanup_output_staging,
         is_managed_workspace_path,
-        maybe_run_custom_script,
         prepare_output_files,
         safe_cleanup_path,
     )
@@ -224,6 +346,7 @@ def _post_process_booklore(
         booklore_config = build_booklore_config(
             _get_booklore_settings(),
             user_id=task.user_id,
+            destination_key=task.destination_key,
         )
     except BookloreError as e:
         logger.warning("Task %s: Booklore configuration error: %s", task.task_id, e)
@@ -285,6 +408,8 @@ def _post_process_booklore(
             len(prepared.files),
         )
 
+        uploaded_files: list[dict[str, Any]] = []
+        upload_started_at = _utc_now()
         for index, file_path in enumerate(prepared.files, start=1):
             if cancel_flag.is_set():
                 logger.info("Task %s: cancelled during Booklore upload", task.task_id)
@@ -293,13 +418,18 @@ def _post_process_booklore(
                 "resolving",
                 f"Uploading to {BOOKLORE_DISPLAY_NAME} ({index}/{len(prepared.files)})",
             )
-            booklore_upload_file(booklore_config, token, file_path)
+            size_bytes = file_path.stat().st_size
+            upload_response = booklore_upload_file(booklore_config, token, file_path)
+            uploaded_files.append(
+                {"name": file_path.name, "size_bytes": size_bytes, "response": upload_response}
+            )
 
         if booklore_config.refresh_after_upload:
             try:
                 booklore_refresh_library(booklore_config, token)
             except BookloreError as e:
                 logger.warning("Task %s: Booklore refresh failed: %s", task.task_id, e)
+        upload_finished_at = _utc_now()
 
         logger.info(
             "Task %s: uploaded %d file(s) to Booklore",
@@ -337,11 +467,14 @@ def _post_process_booklore(
                     if booklore_config.upload_to_bookdrop
                     else booklore_config.path_id,
                     "refresh_after_upload": bool(booklore_config.refresh_after_upload),
+                    # Fork-only: what a tagging hook needs to find the new book.
+                    "uploaded_files": uploaded_files,
+                    "upload_started_at": upload_started_at,
+                    "upload_finished_at": upload_finished_at,
                 }
             },
         )
-        if not maybe_run_custom_script(script_context, status_callback=status_callback):
-            return None
+        _run_post_upload_hook(script_context, task, status_callback)
 
         message = f"Uploaded to {BOOKLORE_DISPLAY_NAME}"
         if len(prepared.files) > 1:

@@ -959,7 +959,7 @@ class TestCustomScriptExecution:
             patch("shelfmark.core.config.config") as mock_config,
             patch("shelfmark.config.env.TMP_DIR", temp_dirs["staging"]),
             patch("shelfmark.download.outputs.booklore.booklore_login", return_value="token"),
-            patch("shelfmark.download.outputs.booklore.booklore_upload_file"),
+            patch("shelfmark.download.outputs.booklore.booklore_upload_file", return_value=None),
             patch("shelfmark.download.outputs.booklore.booklore_refresh_library"),
             patch("subprocess.run") as mock_run,
         ):

@@ -174,3 +174,13 @@ class TestDestinationKeySurvivesRetry:
 
         assert restored is not None
         assert restored.destination_key is None
+
+
+class TestCrossFormatKeys:
+    """An ebook key never routes an audiobook (fork-only)."""
+
+    def test_a_grimmory_key_on_an_audiobook_falls_back_to_the_default(self):
+        with patch_config(DESTINATION_CONFIG):
+            resolved = get_final_destination(audiobook_task(destination_key="grimmory:5:8"))
+
+        assert resolved == Path("/audiobooks")

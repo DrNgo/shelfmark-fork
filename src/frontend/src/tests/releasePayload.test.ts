@@ -1,6 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 
+import { downloadRelease } from '../services/api';
 import type { Book, Release } from '../types';
+import { combinedLegOptions, completeCombinedSelection } from '../utils/combinedSelection';
 import { buildReleaseDownloadPayload } from '../utils/releasePayload';
 
 const book: Book = {
@@ -107,5 +109,99 @@ describe('buildReleaseDownloadPayload', () => {
     });
     expect(payload.destination_key).toBe('lib-kids');
     expect(payload.multi_book).toBe(true);
+  });
+});
+
+// Fork-only: the book identity a post-upload hook tags the book with.
+describe('buildReleaseDownloadPayload book identity', () => {
+  const identified: Book = {
+    ...book,
+    provider: 'hardcover',
+    provider_id: '886465',
+    isbn_13: '9780316005142',
+    isbn_10: '0316005142',
+    asin: 'B0BSHZ1234',
+  };
+  const ebookRelease: Release = { source: 'prowlarr', source_id: 'ebook-1', title: 'Drive.epub' };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('carries provider, provider id, ISBN and ASIN from the book', () => {
+    expect(buildReleaseDownloadPayload(identified, ebookRelease, 'ebook')).toMatchObject({
+      provider: 'hardcover',
+      provider_id: '886465',
+      isbn_13: '9780316005142',
+      asin: 'B0BSHZ1234',
+    });
+  });
+
+  it('sends the ISBN-10 when the book has no ISBN-13', () => {
+    const isbn10Only: Book = { ...identified, isbn_13: undefined };
+
+    expect(buildReleaseDownloadPayload(isbn10Only, ebookRelease, 'ebook').isbn_13).toBe(
+      '0316005142',
+    );
+  });
+
+  it('sends no identity for a manual book', () => {
+    const manual: Book = { ...identified, provider: 'manual' };
+    const payload = buildReleaseDownloadPayload(manual, ebookRelease, 'ebook');
+
+    for (const field of ['provider', 'provider_id', 'isbn_13', 'asin'] as const) {
+      expect(payload[field]).toBeUndefined();
+    }
+  });
+
+  it('carries identity and the ebook library on a combined-mode leg', () => {
+    const state = completeCombinedSelection(
+      { phase: 'ebook', ebookMode: 'download', audiobookMode: 'request_book' },
+      identified,
+      ebookRelease,
+      'grimmory:5:8',
+    );
+
+    const payload = buildReleaseDownloadPayload(
+      identified,
+      ebookRelease,
+      'ebook',
+      combinedLegOptions(state, 'ebook'),
+    );
+
+    expect(payload).toMatchObject({
+      provider: 'hardcover',
+      provider_id: '886465',
+      destination_key: 'grimmory:5:8',
+    });
+  });
+
+  it('keeps identity and the library on an on-behalf download', async () => {
+    const fetchMock = vi.fn(
+      async (_url: string, _init?: RequestInit) =>
+        new Response('{"status":"queued"}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await downloadRelease(
+      buildReleaseDownloadPayload(identified, ebookRelease, 'ebook', {
+        destinationKey: 'grimmory:5:8',
+      }),
+      42,
+    );
+
+    const sent = fetchMock.mock.calls[0][1]?.body;
+    const body: unknown = typeof sent === 'string' ? JSON.parse(sent) : null;
+    expect(body).toMatchObject({
+      on_behalf_of_user_id: 42,
+      provider: 'hardcover',
+      provider_id: '886465',
+      isbn_13: '9780316005142',
+      asin: 'B0BSHZ1234',
+      destination_key: 'grimmory:5:8',
+    });
   });
 });
