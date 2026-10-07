@@ -1,6 +1,12 @@
 """Tests for Torznab XML parsing helpers."""
 
-from shelfmark.release_sources.prowlarr.torznab import parse_torznab_xml
+import pytest
+
+from shelfmark.release_sources.prowlarr.torznab import (
+    TorznabError,
+    parse_torznab_error,
+    parse_torznab_xml,
+)
 
 
 def test_parse_torznab_xml_parses_basic_item():
@@ -49,3 +55,43 @@ def test_parse_torznab_xml_rejects_entity_expansion_payload():
 </rss>
 """
     assert parse_torznab_xml(xml_text) == []
+
+
+class TestParseTorznabError:
+    @pytest.mark.parametrize(
+        "body",
+        [
+            '<?xml version="1.0"?><error code="500" description="Request limit reached"/>',
+            "<error code='500' description='Request limit reached'/>",
+            '<error\n    code = "500"\n    description = "Request limit reached" />',
+            '<nn:error xmlns:nn="http://www.newznab.com/DTD/2010/feeds/attributes/" '
+            'code="500" description="Request limit reached"/>',
+        ],
+    )
+    def test_quotes_whitespace_and_namespaces(self, body):
+        assert parse_torznab_error(body) == TorznabError("500", "Request limit reached")
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "",
+            "not xml",
+            '<?xml version="1.0"?><rss><channel></channel></rss>',
+            '<rss><channel><item><title>About &lt;error code="500"&gt;</title></item></channel></rss>',
+        ],
+    )
+    def test_anything_else_is_not_an_error(self, body):
+        assert parse_torznab_error(body) is None
+
+    @pytest.mark.parametrize(
+        ("code", "description", "rate_limited"),
+        [
+            ("500", "", True),
+            ("501", "", True),
+            ("429", "", True),
+            ("900", "API limit exceeded", True),
+            ("100", "Incorrect user credentials", False),
+        ],
+    )
+    def test_rate_limits(self, code, description, rate_limited):
+        assert TorznabError(code, description).rate_limited is rate_limited

@@ -98,6 +98,48 @@ class TestTorznabSearchFailures:
         with pytest.raises(ProwlarrSearchError, match="indexer 1 search failed"):
             client.torznab_search(indexer_id=1, query="Dune")
 
+    def test_a_429_is_marked_rate_limited(self, monkeypatch):
+        client, _ = self._client(monkeypatch, _Response("", status_code=429, reason="Too Many"))
+
+        with pytest.raises(ProwlarrSearchError) as excinfo:
+            client.torznab_search(indexer_id=1, query="Dune")
+
+        assert excinfo.value.rate_limited is True
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            requests.exceptions.ReadTimeout("read timeout=90"),
+            _Response("", status_code=500, reason="Server Error"),
+        ],
+    )
+    def test_other_failures_are_not_rate_limited(self, monkeypatch, failure):
+        client, _ = self._client(monkeypatch, failure)
+
+        with pytest.raises(ProwlarrSearchError) as excinfo:
+            client.torznab_search(indexer_id=1, query="Dune")
+
+        assert excinfo.value.rate_limited is False
+
+    @pytest.mark.parametrize(
+        ("body", "rate_limited"),
+        [
+            (
+                '<?xml version="1.0"?><error code="100" description="Incorrect user credentials"/>',
+                False,
+            ),
+            ('<?xml version="1.0"?><error code="500" description="Request limit reached"/>', True),
+            ("<error code='900' description='Daily API limit exceeded' />", True),
+        ],
+    )
+    def test_an_error_document_is_a_failed_search(self, monkeypatch, body, rate_limited):
+        client, _ = self._client(monkeypatch, _Response(body))
+
+        with pytest.raises(ProwlarrSearchError, match="indexer 1 returned error") as excinfo:
+            client.torznab_search(indexer_id=1, query="Dune")
+
+        assert excinfo.value.rate_limited is rate_limited
+
     def test_an_indexer_with_nothing_still_returns_empty(self, monkeypatch):
         client, _ = self._client(monkeypatch, _Response(_TORZNAB_EMPTY))
 

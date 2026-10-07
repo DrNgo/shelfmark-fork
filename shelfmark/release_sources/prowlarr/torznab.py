@@ -6,10 +6,49 @@ isn't available via Prowlarr's JSON search endpoint.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from defusedxml import ElementTree as DefusedElementTree
 from defusedxml.common import DefusedXmlException
+
+# Newznab/Torznab error codes that mean "slow down": 500 request limit, 501 download
+# limit (and an HTTP-style 429 some indexers put in the document).
+_RATE_LIMIT_ERROR_CODES = frozenset({"429", "500", "501"})
+
+
+@dataclass(frozen=True)
+class TorznabError:
+    """An ``<error code=... description=.../>`` document sent instead of a feed."""
+
+    code: str
+    description: str
+
+    @property
+    def rate_limited(self) -> bool:
+        return self.code in _RATE_LIMIT_ERROR_CODES or "limit" in self.description.lower()
+
+
+def parse_torznab_error(xml_text: str) -> TorznabError | None:
+    """The error an indexer answered with, or None when the document is not an error.
+
+    Parsed as XML (single or double quotes, any whitespace, a namespace prefix), never
+    pattern-matched, so a feed that merely mentions "<error" in an item is not one.
+    """
+    if not xml_text or not xml_text.strip():
+        return None
+    try:
+        root = DefusedElementTree.fromstring(xml_text)
+    except DefusedElementTree.ParseError, DefusedXmlException:
+        return None
+    if _local_name(root.tag).lower() != "error":
+        return None
+    attributes = {
+        _local_name(key).lower(): (value or "").strip() for key, value in root.attrib.items()
+    }
+    return TorznabError(
+        code=attributes.get("code", ""), description=attributes.get("description", "")
+    )
 
 
 def _local_name(tag: str) -> str:
