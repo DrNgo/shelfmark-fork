@@ -30,7 +30,7 @@ MIN_INDEXER_TIMEOUT_SECONDS = 5
 MAX_INDEXER_TIMEOUT_SECONDS = 300
 
 # Connecting to Prowlarr itself is a LAN hop; only the read is allowed to be slow.
-_CONNECT_TIMEOUT_SECONDS = 10.0
+CONNECT_TIMEOUT_SECONDS = 10.0
 
 _PROWLARR_CLIENT_ERRORS = (
     requests.exceptions.RequestException,
@@ -405,7 +405,7 @@ class ProwlarrClient:
             response = self._session.get(
                 url=url,
                 params=params,
-                timeout=(_CONNECT_TIMEOUT_SECONDS, self.indexer_timeout),
+                timeout=(CONNECT_TIMEOUT_SECONDS, self.indexer_timeout),
                 headers={
                     # Override the session default JSON accept header.
                     "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8"

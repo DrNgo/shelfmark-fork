@@ -37,6 +37,7 @@ from shelfmark.release_sources import (
     register_source,
 )
 from shelfmark.release_sources.prowlarr.api import (
+    CONNECT_TIMEOUT_SECONDS,
     IndexerSeedSettings,
     ProwlarrClient,
     ProwlarrSearchError,
@@ -64,10 +65,6 @@ _UNRANKED_INDEXER_RANK = 51
 # client raises requests exceptions (subclasses of OSError via IOError lineage
 # is not guaranteed), so include RequestException explicitly.
 _PROWLARR_REQUEST_ERRORS = (*_PROWLARR_SOURCE_ERRORS, requests.exceptions.RequestException)
-
-
-def _raise_timeout_error(message: str) -> NoReturn:
-    raise TimeoutError(message)
 
 
 def _raise_invalid_indexer_id(item: object) -> NoReturn:
@@ -331,6 +328,8 @@ class _IndexerSearchOutcome:
     last_error: str | None = None
     # A fallback pass stopped because the budget left could not cover another request.
     deadline_reached: bool = False
+    # A mandatory pass ran past the search deadline; results so far are still in here.
+    timed_out: bool = False
 
 
 def _extract_format(title: str) -> str | None:
@@ -1042,9 +1041,10 @@ class ProwlarrSource(ReleaseSource):
                 else {}
             )
 
-            def _check_timeout() -> None:
-                if time.monotonic() > deadline:
-                    _raise_timeout_error(f"Prowlarr search timed out after {int(search_budget)}s")
+            timeout_message = f"Prowlarr search timed out after {int(search_budget)}s"
+
+            def _timed_out() -> bool:
+                return time.monotonic() > deadline
 
             indexer_names = {
                 parsed_id: str(indexer.get("name") or parsed_id)
@@ -1053,6 +1053,8 @@ class ProwlarrSource(ReleaseSource):
             }
             failed_indexers: set[int] = set()
             fallback_requests: dict[int, int] = {}
+            # A fallback request is only started when it can finish: connect + read.
+            request_seconds = CONNECT_TIMEOUT_SECONDS + client.indexer_timeout
 
             def fallback_targets(cats: list[int] | None) -> list[int]:
                 """Indexers a fallback request may go to, from the snapshot taken above.
@@ -1096,8 +1098,11 @@ class ProwlarrSource(ReleaseSource):
 
                 ``targets`` marks a fallback pass: those indexers only, each request
                 counted against the indexer's cap and sent only while the remaining
-                budget still covers a whole indexer timeout - past that it is skipped,
-                never raised, so what was already found is kept.
+                budget still covers a whole request (connect plus indexer timeout) -
+                past that it is skipped, never raised, so what was already found is kept.
+
+                A mandatory pass that runs past the deadline stops with ``timed_out``
+                set instead of raising, so results from indexers already asked survive.
                 """
                 outcome = _IndexerSearchOutcome(results=[])
                 fallback = targets is not None
@@ -1111,12 +1116,13 @@ class ProwlarrSource(ReleaseSource):
 
                 for indexer_id in target_indexer_ids:
                     if fallback:
-                        if search_deadline.remaining_seconds(deadline) < client.indexer_timeout:
+                        if search_deadline.remaining_seconds(deadline) < request_seconds:
                             outcome.deadline_reached = True
                             break
                         fallback_requests[indexer_id] = fallback_requests.get(indexer_id, 0) + 1
-                    else:
-                        _check_timeout()
+                    elif _timed_out():
+                        outcome.timed_out = True
+                        break
                     outcome.attempted += 1
                     request = _RequestLog(
                         query=query,
@@ -1153,12 +1159,20 @@ class ProwlarrSource(ReleaseSource):
             failed_searches = 0
             last_search_error: str | None = None
 
-            def add_results(outcome: _IndexerSearchOutcome) -> list[dict]:
-                """Fold one pass into the totals; return the results it newly added."""
+            def add_results(
+                outcome: _IndexerSearchOutcome, *, count_failures: bool = True
+            ) -> list[dict]:
+                """Fold one pass into the totals; return the results it newly added.
+
+                Only mandatory passes count towards the "N of M indexer searches
+                failed" error; a failed fallback request only takes its indexer out
+                of the ladder (and is logged).
+                """
                 nonlocal attempted_searches, failed_searches, last_search_error
-                attempted_searches += outcome.attempted
-                failed_searches += outcome.failed
-                last_search_error = outcome.last_error or last_search_error
+                if count_failures:
+                    attempted_searches += outcome.attempted
+                    failed_searches += outcome.failed
+                    last_search_error = outcome.last_error or last_search_error
 
                 added: list[dict] = []
                 for r in outcome.results:
@@ -1180,33 +1194,36 @@ class ProwlarrSource(ReleaseSource):
             fallback_variants = [v for v in variants if v.fallback]
 
             # Mandatory variants run exactly as before; a timeout among them now keeps
-            # what was already found instead of discarding it (raised below if nothing).
+            # what was already found - including earlier indexers in the same pass -
+            # instead of discarding it (raised below if nothing was found).
             mandatory_timeout: TimeoutError | None = None
-            try:
-                for idx, variant in enumerate(mandatory_variants, start=1):
-                    _check_timeout()
-                    query = variant.title
-                    rung = f"mandatory {idx}"
+            for idx, variant in enumerate(mandatory_variants, start=1):
+                if _timed_out():
+                    mandatory_timeout = TimeoutError(timeout_message)
+                    break
+                query = variant.title
+                rung = f"mandatory {idx}"
 
-                    if len(mandatory_variants) > 1:
-                        logger.debug(
-                            "Prowlarr query %s/%s: '%s'", idx, len(mandatory_variants), query
-                        )
+                if len(mandatory_variants) > 1:
+                    logger.debug("Prowlarr query %s/%s: '%s'", idx, len(mandatory_variants), query)
 
-                    outcome = search_indexers(query=query, cats=categories, rung=rung)
+                outcome = search_indexers(query=query, cats=categories, rung=rung)
 
-                    # Auto-expand: if no results with categories and auto-expand enabled, retry
-                    # without. Only when every indexer actually answered: a failed search says
-                    # nothing about whether the category filter is what hid the book, and
-                    # retrying it stacks a second request on an indexer that is still busy
-                    # solving a Cloudflare challenge (#1249).
-                    if (
-                        not outcome.results
-                        and not outcome.failed
-                        and categories
-                        and auto_expand_enabled
-                    ):
-                        _check_timeout()
+                # Auto-expand: if no results with categories and auto-expand enabled, retry
+                # without. Only when every indexer actually answered: a failed search says
+                # nothing about whether the category filter is what hid the book, and
+                # retrying it stacks a second request on an indexer that is still busy
+                # solving a Cloudflare challenge (#1249).
+                if (
+                    not outcome.results
+                    and not outcome.failed
+                    and not outcome.timed_out
+                    and categories
+                    and auto_expand_enabled
+                ):
+                    if _timed_out():
+                        outcome.timed_out = True
+                    else:
                         logger.info(
                             "Prowlarr: no results for query '%s' with category filter, auto-expanding search",
                             query,
@@ -1216,12 +1233,15 @@ class ProwlarrSource(ReleaseSource):
                         outcome.attempted += expanded.attempted
                         outcome.failed += expanded.failed
                         outcome.last_error = expanded.last_error or outcome.last_error
+                        outcome.timed_out = expanded.timed_out
                         self.last_search_type = "expanded"
 
-                    add_results(outcome)
-            except TimeoutError as e:
-                logger.warning("Prowlarr search timed out: %s", e)
-                mandatory_timeout = e
+                add_results(outcome)
+                if outcome.timed_out:
+                    mandatory_timeout = TimeoutError(timeout_message)
+                    break
+            if mandatory_timeout is not None:
+                logger.warning("Prowlarr search timed out: %s", mandatory_timeout)
 
             # Fallbacks run only while nothing found so far is the requested book, and
             # stop at the first rung that finds it. Failed indexers sit them out.
@@ -1253,7 +1273,8 @@ class ProwlarrSource(ReleaseSource):
                     query=query,
                     cats=cats,
                     rung=rung,
-                    expanded=cats is None and bool(categories),
+                    # Not an auto-expand retry: the rung's only send to these indexers.
+                    expanded=False,
                     targets=targets,
                 )
                 if not outcome.attempted:
@@ -1286,7 +1307,7 @@ class ProwlarrSource(ReleaseSource):
                         if expanded.attempted:
                             self.last_search_type = "expanded"
 
-                if has_identity_hit(add_results(outcome)):
+                if has_identity_hit(add_results(outcome, count_failures=False)):
                     fallback_stop = "hit"
                     break
                 if outcome.deadline_reached:

@@ -215,7 +215,9 @@ class TestFailedIndexers:
             indexers=(1, 2, 3),
         )
 
-        with pytest.raises(SourceUnavailableError, match="2 of 8 indexer searches failed"):
+        # Only mandatory requests count towards the unavailable error; indexer 2's
+        # fallback failure only takes it out of the ladder.
+        with pytest.raises(SourceUnavailableError, match="1 of 3 indexer searches failed"):
             _search(monkeypatch, client)
 
         assert client.queries(1) == [DXD5]
@@ -228,8 +230,16 @@ class TestFailedIndexers:
             indexers=(1, 2),
         )
 
-        with pytest.raises(SourceUnavailableError, match="1 of 6 indexer searches failed"):
+        with pytest.raises(SourceUnavailableError, match="1 of 2 indexer searches failed"):
             _search(monkeypatch, client)
+
+    def test_a_failed_fallback_request_is_not_a_failed_search(self, monkeypatch):
+        client = _LadderClient(
+            {(1, RUNG_1): ProwlarrSearchError("indexer 1 did not respond within 90s")}
+        )
+
+        assert _search(monkeypatch, client) == []
+        assert client.queries() == [DXD5, RUNG_1]
 
     def test_a_failed_indexer_gets_no_expansion_either(self, monkeypatch):
         client = _LadderClient(
@@ -237,8 +247,7 @@ class TestFailedIndexers:
             indexers=(1, 2),
         )
 
-        with pytest.raises(SourceUnavailableError):
-            _search(monkeypatch, client, auto_expand=True)
+        assert _search(monkeypatch, client, auto_expand=True) == []
 
         assert [c for c in client.calls if c[0] == 1] == [
             (1, DXD5, [7000]),
@@ -290,6 +299,18 @@ class TestDeadline:
         assert client.queries() == [DXD5]
         assert [r.title for r in releases] == [WRONG_VOLUME]
         assert lines[-2].startswith("Prowlarr fallbacks: ran=no stop=deadline")
+        assert source.last_search_incomplete is True
+
+    def test_the_connect_timeout_counts_against_the_budget(self, monkeypatch):
+        clock = _Clock()
+        monkeypatch.setattr(prowlarr_source.time, "monotonic", clock)
+        client = _LadderClient({(1, DXD5): [WRONG_VOLUME]}, clock=clock, seconds_per_request=85)
+        source = ProwlarrSource()
+
+        _search(monkeypatch, client, source=source)
+
+        # 95s left covers the 90s read timeout but not 10s connect + 90s read.
+        assert client.queries() == [DXD5]
         assert source.last_search_incomplete is True
 
     def test_an_empty_search_cut_short_is_reported_incomplete(self, monkeypatch):
@@ -355,6 +376,10 @@ class TestCategoryIncompatibleIndexers:
             (2, RUNG_4, None),
         ]
         assert "Prowlarr fallbacks: ran=yes stop=cap rungs=4/5 requests=4" in lines
+        assert (
+            f"Prowlarr request: query='{RUNG_1}' indexer=idx2 categories=all "
+            "rung=fallback 1 expanded=no outcome=empty results=0"
+        ) in lines
 
 
 class TestMandatoryTimeout:
@@ -377,6 +402,22 @@ class TestMandatoryTimeout:
 
         # The 200s first request spends the 180s budget; the localized variant never runs.
         assert client.queries() == [DXD5]
+        assert [r.title for r in releases] == [WRONG_VOLUME]
+        assert source.last_search_incomplete is True
+
+    def test_results_from_earlier_indexers_in_the_same_pass_are_kept(self, monkeypatch):
+        clock = _Clock()
+        monkeypatch.setattr(prowlarr_source.time, "monotonic", clock)
+        client = _LadderClient(
+            {(1, DXD5): [WRONG_VOLUME]}, indexers=(1, 2), clock=clock, seconds_per_request=200
+        )
+        source = ProwlarrSource()
+
+        releases = _search(monkeypatch, client, source=source)
+
+        # Indexer 1's 200s answer spends the 180s budget before indexer 2 is asked.
+        assert client.queries(1) == [DXD5]
+        assert client.queries(2) == []
         assert [r.title for r in releases] == [WRONG_VOLUME]
         assert source.last_search_incomplete is True
 
