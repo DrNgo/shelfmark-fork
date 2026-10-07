@@ -155,6 +155,14 @@ def _info_lines(monkeypatch) -> list[str]:
     return lines
 
 
+def _level_lines(monkeypatch, level: str) -> list[str]:
+    lines: list[str] = []
+    monkeypatch.setattr(
+        prowlarr_source.logger, level, lambda message, *args: lines.append(message % args)
+    )
+    return lines
+
+
 class TestStopping:
     def test_a_real_hit_from_the_mandatory_query_skips_every_fallback(self, monkeypatch):
         client = _LadderClient({(1, DXD5): [HIT]})
@@ -327,6 +335,7 @@ class TestDeadline:
         monkeypatch.setattr(prowlarr_source.time, "monotonic", clock)
         client = _LadderClient({(1, DXD5): [WRONG_VOLUME]}, clock=clock, seconds_per_request=100)
         lines = _info_lines(monkeypatch)
+        warnings = _level_lines(monkeypatch, "warning")
 
         source = ProwlarrSource()
 
@@ -335,7 +344,9 @@ class TestDeadline:
         # Budget 180s, one 100s request spent: 80s left cannot cover a 90s request.
         assert client.queries() == [DXD5]
         assert [r.title for r in releases] == [WRONG_VOLUME]
-        assert lines[-2].startswith("Prowlarr fallbacks: ran=no stop=deadline")
+        # Skipping the ladder for lack of budget is a warning, not routine.
+        assert any(w.startswith("Prowlarr fallbacks: ran=no stop=deadline") for w in warnings)
+        assert not any(line.startswith("Prowlarr fallbacks:") for line in lines)
         assert source.last_search_incomplete is True
 
     def test_the_connect_timeout_counts_against_the_budget(self, monkeypatch):
@@ -355,7 +366,12 @@ class TestDeadline:
         monkeypatch.setattr(prowlarr_source.time, "monotonic", clock)
         client = _LadderClient(clock=clock, seconds_per_request=100)
 
-        with pytest.raises(SourceUnavailableError, match="search incomplete"):
+        # 10s connect + 90s read per request; 180s budget less one 100s request.
+        with pytest.raises(
+            SourceUnavailableError,
+            match=r"^search incomplete: not enough time left to try fallback queries "
+            r"\(needs up to 100s, 80s left\)$",
+        ):
             _search(monkeypatch, client)
 
     def test_the_endpoint_budget_counts_too(self, monkeypatch):

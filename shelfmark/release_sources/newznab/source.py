@@ -483,6 +483,10 @@ class NewznabSource(ReleaseSource):
         seen_keys: set = set()
         all_results: list[dict] = []
         cut_short = False
+        # A mandatory request ran past the deadline (as opposed to a fallback that could
+        # not start for lack of budget, recorded below as (needed, left) seconds).
+        timed_out = False
+        budget_skip: tuple[float, float] | None = None
         # Failed mandatory requests: these decide whether an empty search was a failure.
         errors: list[str] = []
         # Failed fallback requests only end their connection's ladder (and are logged);
@@ -534,11 +538,13 @@ class NewznabSource(ReleaseSource):
             timeout = _request_timeout(connection.client)
 
             def request(query: str, cats: list[int] | None, idx: int) -> list[dict] | str:
-                nonlocal cut_short
+                nonlocal cut_short, budget_skip
                 if progress.requests >= FALLBACK_REQUESTS_PER_CONNECTION:
                     return "cap"
-                if search_deadline.remaining_seconds(deadline) < timeout:
+                remaining = search_deadline.remaining_seconds(deadline)
+                if remaining < timeout:
                     cut_short = True
+                    budget_skip = (timeout, max(remaining, 0.0))
                     return "deadline"
                 progress.requests += 1
                 progress.rungs = max(progress.rungs, idx)
@@ -637,6 +643,7 @@ class NewznabSource(ReleaseSource):
         except TimeoutError as e:
             logger.warning("Newznab search timed out: %s", e)
             cut_short = True
+            timed_out = True
 
         for connection, found, failed in answered:
             progress = _LadderProgress()
@@ -658,7 +665,9 @@ class NewznabSource(ReleaseSource):
                     )
                     fallback_errors.append(f"{connection.name}: {_redact(connection, e)}")
                     stop = "failed"
-            logger.info(
+            # A ladder skipped for lack of time is worth a warning.
+            log_summary = logger.warning if stop == "deadline" else logger.info
+            log_summary(
                 "Newznab [%s] fallbacks: ran=%s stop=%s rungs=%s/%s requests=%s",
                 connection.name,
                 "yes" if progress.rungs else "no",
@@ -705,10 +714,17 @@ class NewznabSource(ReleaseSource):
                 raise SourceUnavailableError(msg)
             if cut_short:
                 # Ran out of time before every query ran: not a completed "no releases".
-                msg = (
-                    "Newznab search incomplete: ran out of time "
-                    f"({int(NEWZNAB_SEARCH_TIMEOUT_SECONDS)}s budget)"
-                )
+                if budget_skip is not None and not timed_out:
+                    needed, left = budget_skip
+                    msg = (
+                        "Newznab search incomplete: not enough time left to try fallback "
+                        f"queries (needs up to {int(needed)}s, {int(left)}s left)"
+                    )
+                else:
+                    msg = (
+                        "Newznab search incomplete: ran out of time "
+                        f"({int(NEWZNAB_SEARCH_TIMEOUT_SECONDS)}s budget)"
+                    )
                 raise SourceUnavailableError(msg)
 
         self.last_search_incomplete = cut_short

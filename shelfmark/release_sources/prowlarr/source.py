@@ -1055,6 +1055,8 @@ class ProwlarrSource(ReleaseSource):
             fallback_requests: dict[int, int] = {}
             # A fallback request is only started when it can finish: connect + read.
             request_seconds = CONNECT_TIMEOUT_SECONDS + client.indexer_timeout
+            # Seconds left when a fallback could not start for lack of budget.
+            budget_left_at_skip: float | None = None
 
             def fallback_targets(cats: list[int] | None) -> list[int]:
                 """Indexers a fallback request may go to, from the snapshot taken above.
@@ -1104,6 +1106,7 @@ class ProwlarrSource(ReleaseSource):
                 A mandatory pass that runs past the deadline stops with ``timed_out``
                 set instead of raising, so results from indexers already asked survive.
                 """
+                nonlocal budget_left_at_skip
                 outcome = _IndexerSearchOutcome(results=[])
                 fallback = targets is not None
                 target_indexer_ids = (
@@ -1116,8 +1119,10 @@ class ProwlarrSource(ReleaseSource):
 
                 for indexer_id in target_indexer_ids:
                     if fallback:
-                        if search_deadline.remaining_seconds(deadline) < request_seconds:
+                        remaining = search_deadline.remaining_seconds(deadline)
+                        if remaining < request_seconds:
                             outcome.deadline_reached = True
+                            budget_left_at_skip = max(remaining, 0.0)
                             break
                         fallback_requests[indexer_id] = fallback_requests.get(indexer_id, 0) + 1
                     elif _timed_out():
@@ -1145,7 +1150,8 @@ class ProwlarrSource(ReleaseSource):
                         outcome.failed += 1
                         outcome.last_error = str(e)
                         failed_indexers.add(indexer_id)
-                        request.log("rate-limited" if e.rate_limited else "failed", 0)
+                        failure = "rate-limited" if e.rate_limited else "failed"
+                        request.log(failure, 0)
                         continue
                     request.log("ok" if raw else "empty", len(raw))
                     if raw:
@@ -1315,7 +1321,9 @@ class ProwlarrSource(ReleaseSource):
                     break
 
             self.last_search_incomplete = fallback_stop == "deadline"
-            logger.info(
+            # A ladder skipped for lack of time is worth a warning.
+            log_summary = logger.warning if fallback_stop == "deadline" else logger.info
+            log_summary(
                 "Prowlarr fallbacks: ran=%s stop=%s rungs=%s/%s requests=%s",
                 "yes" if fallback_rungs_run else "no",
                 fallback_stop,
@@ -1428,10 +1436,16 @@ class ProwlarrSource(ReleaseSource):
                 raise SourceUnavailableError(msg)
             # Cut short before every fallback ran: not a completed "no releases".
             if not results and fallback_stop == "deadline":
-                msg = (
-                    "search incomplete: ran out of time before every fallback query ran "
-                    f"({int(search_budget)}s budget)"
-                )
+                if budget_left_at_skip is not None:
+                    msg = (
+                        "search incomplete: not enough time left to try fallback queries "
+                        f"(needs up to {int(request_seconds)}s, {int(budget_left_at_skip)}s left)"
+                    )
+                else:
+                    msg = (
+                        "search incomplete: ran out of time before every fallback query ran "
+                        f"({int(search_budget)}s budget)"
+                    )
                 raise SourceUnavailableError(msg)
             return results
 

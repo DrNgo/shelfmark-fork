@@ -136,6 +136,14 @@ def _info_lines(monkeypatch) -> list[str]:
     return lines
 
 
+def _level_lines(monkeypatch, level: str) -> list[str]:
+    lines: list[str] = []
+    monkeypatch.setattr(
+        newznab_source.logger, level, lambda message, *args: lines.append(message % args)
+    )
+    return lines
+
+
 @pytest.fixture
 def all_logs():
     """Every record the Newznab source and API loggers emit, tracebacks included."""
@@ -389,7 +397,7 @@ class TestDeadline:
         clock = _Clock()
         monkeypatch.setattr(newznab_source.time, "monotonic", clock)
         geek = _FakeNewznab({DXD5: [WRONG_VOLUME]}, clock=clock, seconds_per_request=100)
-        lines = _info_lines(monkeypatch)
+        warnings = _level_lines(monkeypatch, "warning")
         source = NewznabSource()
 
         releases = _search(monkeypatch, {"geek": geek}, source=source)
@@ -397,7 +405,8 @@ class TestDeadline:
         # Budget 120s, one 100s request spent: 20s left cannot cover a 60s (connect + read) request.
         assert geek.queries() == [DXD5]
         assert [r.title for r in releases] == [WRONG_VOLUME]
-        assert "Newznab [geek] fallbacks: ran=no stop=deadline rungs=0/5 requests=0" in lines
+        # Skipping the ladder for lack of budget is a warning, not routine.
+        assert "Newznab [geek] fallbacks: ran=no stop=deadline rungs=0/5 requests=0" in warnings
         assert source.last_search_incomplete is True
 
     def test_a_fallback_needs_connect_plus_read_time(self, monkeypatch):
@@ -406,13 +415,17 @@ class TestDeadline:
         clock = _Clock()
         monkeypatch.setattr(newznab_source.time, "monotonic", clock)
         geek = _FakeNewznab(clock=clock, seconds_per_request=70)
-        lines = _info_lines(monkeypatch)
+        warnings = _level_lines(monkeypatch, "warning")
 
-        with pytest.raises(SourceUnavailableError, match="Newznab search incomplete"):
+        with pytest.raises(
+            SourceUnavailableError,
+            match=r"^Newznab search incomplete: not enough time left to try fallback queries "
+            r"\(needs up to 60s, 50s left\)$",
+        ):
             _search(monkeypatch, {"geek": geek})
 
         assert geek.queries() == [DXD5]
-        assert "Newznab [geek] fallbacks: ran=no stop=deadline rungs=0/5 requests=0" in lines
+        assert "Newznab [geek] fallbacks: ran=no stop=deadline rungs=0/5 requests=0" in warnings
 
     def test_fallbacks_never_starve_another_connections_mandatory_search(self, monkeypatch):
         clock = _Clock()
@@ -462,7 +475,10 @@ class TestDeadline:
         geek = _FakeNewznab(clock=clock, seconds_per_request=200)
         slug = _FakeNewznab()
 
-        with pytest.raises(SourceUnavailableError, match="Newznab search incomplete"):
+        # A real timeout keeps its own wording.
+        with pytest.raises(
+            SourceUnavailableError, match=r"^Newznab search incomplete: ran out of time \(120s"
+        ):
             _search(monkeypatch, {"geek": geek, "slug": slug})
 
         assert slug.calls == []
