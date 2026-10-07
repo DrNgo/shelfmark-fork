@@ -1053,6 +1053,8 @@ class ProwlarrSource(ReleaseSource):
             }
             failed_indexers: set[int] = set()
             fallback_requests: dict[int, int] = {}
+            # Failed fallback requests as "<indexer>: <outcome>", for one warning per search.
+            fallback_failures: list[str] = []
             # A fallback request is only started when it can finish: connect + read.
             request_seconds = CONNECT_TIMEOUT_SECONDS + client.indexer_timeout
             # Seconds left when a fallback could not start for lack of budget.
@@ -1152,6 +1154,8 @@ class ProwlarrSource(ReleaseSource):
                         failed_indexers.add(indexer_id)
                         failure = "rate-limited" if e.rate_limited else "failed"
                         request.log(failure, 0)
+                        if fallback:
+                            fallback_failures.append(f"{request.indexer}: {failure}")
                         continue
                     request.log("ok" if raw else "empty", len(raw))
                     if raw:
@@ -1321,8 +1325,14 @@ class ProwlarrSource(ReleaseSource):
                     break
 
             self.last_search_incomplete = fallback_stop == "deadline"
-            # A ladder skipped for lack of time is worth a warning.
-            log_summary = logger.warning if fallback_stop == "deadline" else logger.info
+            # Routine outcomes at INFO; no ladder at all is DEBUG noise, and a ladder
+            # skipped for lack of time is worth a warning.
+            if fallback_stop == "not planned":
+                log_summary = logger.debug
+            elif fallback_stop == "deadline":
+                log_summary = logger.warning
+            else:
+                log_summary = logger.info
             log_summary(
                 "Prowlarr fallbacks: ran=%s stop=%s rungs=%s/%s requests=%s",
                 "yes" if fallback_rungs_run else "no",
@@ -1331,6 +1341,12 @@ class ProwlarrSource(ReleaseSource):
                 len(fallback_variants),
                 sum(fallback_requests.values()),
             )
+            if fallback_failures:
+                logger.warning(
+                    "Prowlarr: %s fallback request(s) failed, not counted as a failed search (%s)",
+                    len(fallback_failures),
+                    "; ".join(fallback_failures),
+                )
 
             if failed_searches:
                 logger.warning(

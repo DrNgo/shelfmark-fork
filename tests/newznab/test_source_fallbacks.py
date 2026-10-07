@@ -508,3 +508,18 @@ class TestLogging:
 
         assert any("outcome=rate-limited results=0" in line for line in lines)
         assert "Newznab [down] fallbacks: ran=no stop=failed rungs=0/5 requests=0" in lines
+
+    def test_a_search_without_fallbacks_logs_its_summary_at_debug(self, monkeypatch):
+        geek = _FakeNewznab()
+        lines = _info_lines(monkeypatch)
+        debug_lines = _level_lines(monkeypatch, "debug")
+        book = BookMetadata(
+            provider="hardcover", provider_id="1", title="Dune", authors=["Frank Herbert"]
+        )
+
+        _search(monkeypatch, {"geek": geek}, book=book)
+
+        assert not any(line.startswith("Newznab [geek] fallbacks:") for line in lines)
+        assert "Newznab [geek] fallbacks: ran=no stop=not planned rungs=0/0 requests=0" in (
+            debug_lines
+        )

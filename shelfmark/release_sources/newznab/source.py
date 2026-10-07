@@ -665,8 +665,14 @@ class NewznabSource(ReleaseSource):
                     )
                     fallback_errors.append(f"{connection.name}: {_redact(connection, e)}")
                     stop = "failed"
-            # A ladder skipped for lack of time is worth a warning.
-            log_summary = logger.warning if stop == "deadline" else logger.info
+            # Routine outcomes at INFO; no ladder at all is DEBUG noise, and a ladder
+            # skipped for lack of time is worth a warning.
+            if stop == "not planned":
+                log_summary = logger.debug
+            elif stop == "deadline":
+                log_summary = logger.warning
+            else:
+                log_summary = logger.info
             log_summary(
                 "Newznab [%s] fallbacks: ran=%s stop=%s rungs=%s/%s requests=%s",
                 connection.name,

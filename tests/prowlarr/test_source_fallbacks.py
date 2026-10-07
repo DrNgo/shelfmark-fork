@@ -587,6 +587,7 @@ class TestLogging:
     def test_a_search_without_fallbacks_says_so(self, monkeypatch):
         client = _LadderClient()
         lines = _info_lines(monkeypatch)
+        debug_lines = _level_lines(monkeypatch, "debug")
 
         _search(
             monkeypatch,
@@ -596,4 +597,24 @@ class TestLogging:
             ),
         )
 
-        assert "Prowlarr fallbacks: ran=no stop=not planned rungs=0/0 requests=0" in lines
+        assert not any(line.startswith("Prowlarr fallbacks:") for line in lines)
+        assert "Prowlarr fallbacks: ran=no stop=not planned rungs=0/0 requests=0" in debug_lines
+
+    def test_failed_fallback_requests_get_one_aggregated_warning(self, monkeypatch):
+        client = _LadderClient(
+            {
+                (1, RUNG_1): ProwlarrSearchError("http://x/?apikey=SECRET 429", rate_limited=True),
+                (2, RUNG_1): ProwlarrSearchError("http://x/?apikey=SECRET timeout"),
+            },
+            indexers=(1, 2, 3),
+        )
+        warnings = _level_lines(monkeypatch, "warning")
+
+        _search(monkeypatch, client)
+
+        failed = [w for w in warnings if "fallback request(s) failed" in w]
+        assert failed == [
+            "Prowlarr: 2 fallback request(s) failed, not counted as a failed search "
+            "(idx1: rate-limited; idx2: failed)"
+        ]
+        assert "SECRET" not in failed[0]
