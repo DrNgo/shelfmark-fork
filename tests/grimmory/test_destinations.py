@@ -1,5 +1,7 @@
 """Tests for Grimmory upload destination keys (`grimmory:<libraryId>:<pathId>`)."""
 
+import pytest
+
 from shelfmark.grimmory.destinations import (
     build_destination_options,
     grimmory_destination_key,
@@ -124,3 +126,88 @@ class TestBuildDestinationOptions:
 
     def test_a_non_list_payload_gives_no_options(self):
         assert build_destination_options({"content": []}) == []
+
+
+class TestDisplayOptions:
+    """`get_booklore_destination_options` reads through the settings-dropdown cache."""
+
+    SETTINGS = {
+        "BOOKS_OUTPUT_MODE": "booklore",
+        "BOOKLORE_HOST": "http://grimmory:6060/",
+        "BOOKLORE_USERNAME": "shelfmark",
+        "BOOKLORE_PASSWORD": "secret",
+    }
+
+    @pytest.fixture
+    def settings(self, monkeypatch):
+        from shelfmark.config import booklore_settings
+
+        values = dict(self.SETTINGS)
+        monkeypatch.setattr(
+            booklore_settings.config,
+            "get",
+            lambda key, default=None, **_kw: values.get(key, default),
+        )
+        monkeypatch.setattr(
+            booklore_settings,
+            "_BOOKLORE_OPTIONS_CACHE",
+            {"key": None, "library_options": [], "path_options": [], "destination_options": []},
+        )
+        return booklore_settings, values
+
+    def test_lists_options_from_one_library_read(self, settings, monkeypatch):
+        booklore_settings, _ = settings
+        calls = []
+        monkeypatch.setattr(booklore_settings, "booklore_login", lambda cfg: "token")
+        monkeypatch.setattr(
+            booklore_settings,
+            "booklore_list_libraries",
+            lambda cfg, token: calls.append(cfg.base_url) or LIBRARIES,
+        )
+
+        first = booklore_settings.get_booklore_destination_options()
+        second = booklore_settings.get_booklore_destination_options()
+
+        assert first == second == build_destination_options(LIBRARIES)
+        assert calls == ["http://grimmory:6060"]
+
+    def test_the_settings_dropdowns_still_get_their_options(self, settings, monkeypatch):
+        booklore_settings, _ = settings
+        monkeypatch.setattr(booklore_settings, "booklore_login", lambda cfg: "token")
+        monkeypatch.setattr(booklore_settings, "booklore_list_libraries", lambda cfg, t: LIBRARIES)
+
+        booklore_settings.get_booklore_destination_options()
+
+        assert [o["value"] for o in booklore_settings.get_booklore_library_options()] == ["5", "3"]
+
+    def test_unreachable_grimmory_gives_no_options(self, settings, monkeypatch):
+        booklore_settings, _ = settings
+
+        def fail(cfg):
+            raise booklore_settings.BookloreError("Could not connect to Grimmory")
+
+        monkeypatch.setattr(booklore_settings, "booklore_login", fail)
+
+        assert booklore_settings.get_booklore_destination_options() == []
+
+    def test_other_output_modes_give_no_options(self, settings, monkeypatch):
+        booklore_settings, values = settings
+        values["BOOKS_OUTPUT_MODE"] = "folder"
+        monkeypatch.setattr(
+            booklore_settings,
+            "booklore_login",
+            lambda cfg: pytest.fail("must not contact Grimmory"),
+        )
+
+        assert booklore_settings.get_booklore_destination_options() == []
+
+    def test_missing_credentials_give_no_options(self, settings, monkeypatch):
+        booklore_settings, values = settings
+        values["BOOKLORE_PASSWORD"] = ""
+        monkeypatch.setattr(
+            booklore_settings,
+            "booklore_login",
+            lambda cfg: pytest.fail("must not contact Grimmory"),
+        )
+
+        assert booklore_settings.get_booklore_destination_options() == []

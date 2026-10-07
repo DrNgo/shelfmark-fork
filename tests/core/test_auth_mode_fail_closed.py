@@ -2,7 +2,7 @@
 
 `determine_auth_mode` historically ended in a bare `return "none"`, and `"none"` is the
 wide-open mode: every consumer treats it as "no accounts, allow anonymous"
-(`request_routes.py:75`, `activity_routes.py:141/245`, `audiobookshelf/routes.py:27`,
+(`request_routes.py:75`, `activity_routes.py:141/245`, `destination_routes.py:34`,
 and the inverse `!= "none"` enforcement in `admin_routes.py:166` /
 `self_user_routes.py:196`).
 

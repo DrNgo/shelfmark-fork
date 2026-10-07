@@ -16,6 +16,7 @@ from shelfmark.grimmory.client import (
     booklore_login,
     list_books,
 )
+from shelfmark.grimmory.destinations import build_destination_options
 
 logger = setup_logger(__name__)
 
@@ -23,6 +24,9 @@ _BOOKLORE_OPTIONS_CACHE: dict[str, Any] = {
     "key": None,
     "library_options": [],
     "path_options": [],
+    # Ebook picker options (fork-only). Display only: an upload re-verifies its
+    # target against a fresh library listing.
+    "destination_options": [],
 }
 
 
@@ -104,6 +108,7 @@ def _get_booklore_select_options(
             "key": cache_key,
             "library_options": library_options,
             "path_options": path_options,
+            "destination_options": build_destination_options(libraries),
         }
     )
 
@@ -173,6 +178,33 @@ def get_booklore_path_options() -> list[dict[str, Any]]:
         return []
     else:
         return path_options
+
+
+def get_booklore_destination_options() -> list[dict[str, str]]:
+    """List every Grimmory library path as an ebook picker option.
+
+    Served from the same credential-keyed cache as the settings dropdowns, so
+    it never costs a Grimmory call per modal. An empty list (not booklore mode,
+    missing credentials, Grimmory unreachable) hides the picker.
+    """
+    if config.get("BOOKS_OUTPUT_MODE", "folder") != "booklore":
+        return []
+
+    base_url = str(config.get("BOOKLORE_HOST", "") or "").strip().rstrip("/")
+    username = str(config.get("BOOKLORE_USERNAME", "") or "").strip()
+    password = str(config.get("BOOKLORE_PASSWORD", "") or "")
+
+    if not base_url or not username or not password:
+        return []
+
+    if _BOOKLORE_OPTIONS_CACHE.get("key") != _get_booklore_cache_key(base_url, username, password):
+        try:
+            _get_booklore_select_options(base_url, username, password)
+        except Exception:
+            logger.exception("Failed to fetch Grimmory destinations")
+            return []
+
+    return list(_BOOKLORE_OPTIONS_CACHE.get("destination_options", []))
 
 
 def check_booklore_connection(
