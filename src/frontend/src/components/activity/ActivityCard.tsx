@@ -1,15 +1,18 @@
 import type { ReactNode } from 'react';
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 
-import { useAudiobookDestinations } from '../../hooks/useAudiobookDestinations';
+import { useDownloadDestinations } from '../../hooks/useDownloadDestinations';
 import { useLibraryMatches } from '../../hooks/useLibraryMatches';
 import type { RequestRecord } from '../../types';
-import {
-  resolveDefaultDestinationKey,
-  shouldShowDestinationPicker,
-} from '../../utils/audiobookDestinations';
 import { withBasePath } from '../../utils/basePath';
 import { coverObjectPositionClass, isSquareCover } from '../../utils/coverAspect';
+import {
+  destinationDefaultLabel,
+  destinationKeyToSend,
+  pickerDestinations,
+  resolveSelectedDestinationKey,
+  shouldShowDestinationPicker,
+} from '../../utils/downloadDestinations';
 import { hardcoverIdentity, singleBookLookup } from '../../utils/libraryMatches';
 import { InLibraryBadge } from '../shared/InLibraryBadge';
 import { Tooltip } from '../shared/Tooltip';
@@ -17,12 +20,7 @@ import type { ActivityCardAction } from './activityCardModel';
 import { buildActivityCardModel } from './activityCardModel';
 import { STATUS_BADGE_STYLES, STATUS_TOOLTIP_CLASSES, getProgressConfig } from './activityStyles';
 import type { ActivityItem } from './activityTypes';
-
-interface RequestApproveOptions {
-  browseOnly?: boolean;
-  manualApproval?: boolean;
-  destinationKey?: string;
-}
+import { type RequestApproveOptions, reviewApproveOptions } from './reviewApproval';
 
 type RequestApproveHandler = (
   requestId: number,
@@ -336,14 +334,31 @@ const ReviewInlinePanel = ({
   );
   const libraryMatch = useLibraryMatches(lookupBooks)[`review-${reviewRecord.id}`];
 
-  const destinations = useAudiobookDestinations(reviewRecord.content_type === 'audiobook');
+  const { destinations, defaultName: destinationDefaultName } = useDownloadDestinations(
+    reviewRecord.content_type,
+  );
   const showDestinationPicker = shouldShowDestinationPicker(
     reviewRecord.content_type,
     destinations,
+    destinationKey,
   );
-  // Drop a selection whose library disappeared from settings mid-review, so an
-  // approval can never carry a key that no longer routes anywhere.
-  const selectedDestinationKey = resolveDefaultDestinationKey(destinationKey, destinations);
+  // An audiobook selection whose library disappeared mid-review is dropped; an
+  // ebook pick is kept and verified by the server, which fails closed.
+  const selectedDestinationKey = resolveSelectedDestinationKey(
+    reviewRecord.content_type,
+    destinationKey,
+    destinations,
+  );
+  const approvalDestinationKey = destinationKeyToSend(
+    reviewRecord.content_type,
+    destinationKey,
+    destinations,
+  );
+  const destinationOptions = pickerDestinations(
+    reviewRecord.content_type,
+    selectedDestinationKey,
+    destinations,
+  );
 
   const handleReviewApprove = async () => {
     if (isSubmitting) {
@@ -352,17 +367,14 @@ const ReviewInlinePanel = ({
 
     setIsSubmitting(true);
     try {
-      if (requiresBrowseBeforeApprove) {
-        await reviewApproveHandler(reviewRecord.id, reviewRecord, {
-          browseOnly: true,
-          destinationKey: selectedDestinationKey || undefined,
-        });
-        return;
-      }
-
-      await reviewApproveHandler(reviewRecord.id, reviewRecord, {
-        destinationKey: selectedDestinationKey || undefined,
-      });
+      await reviewApproveHandler(
+        reviewRecord.id,
+        reviewRecord,
+        reviewApproveOptions(
+          requiresBrowseBeforeApprove ? 'browse' : 'approve',
+          approvalDestinationKey,
+        ),
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -375,7 +387,11 @@ const ReviewInlinePanel = ({
 
     setIsSubmitting(true);
     try {
-      await reviewApproveHandler(reviewRecord.id, reviewRecord, { browseOnly: true });
+      await reviewApproveHandler(
+        reviewRecord.id,
+        reviewRecord,
+        reviewApproveOptions('browse', approvalDestinationKey),
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -388,7 +404,7 @@ const ReviewInlinePanel = ({
 
     setIsSubmitting(true);
     try {
-      await reviewApproveHandler(reviewRecord.id, reviewRecord, { manualApproval: true });
+      await reviewApproveHandler(reviewRecord.id, reviewRecord, reviewApproveOptions('manual'));
     } finally {
       setIsSubmitting(false);
     }
@@ -438,8 +454,10 @@ const ReviewInlinePanel = ({
             disabled={isSubmitting}
             className="w-full rounded-md border border-(--border-muted) bg-(--bg-soft) px-2 py-1.5 text-xs disabled:opacity-60"
           >
-            <option value="">Default audiobook destination</option>
-            {destinations.map((destination) => (
+            <option value="">
+              {destinationDefaultLabel(reviewRecord.content_type, destinationDefaultName)}
+            </option>
+            {destinationOptions.map((destination) => (
               <option key={destination.key} value={destination.key}>
                 {destination.name}
               </option>
