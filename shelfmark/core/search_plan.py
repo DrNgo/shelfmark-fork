@@ -8,6 +8,12 @@ from typing import TYPE_CHECKING
 
 from shelfmark.core.config import config
 from shelfmark.core.logger import setup_logger
+from shelfmark.core.search_queries import (
+    SearchIdentity,
+    build_fallback_queries,
+    build_search_identity,
+    exact_query_key,
+)
 from shelfmark.metadata_providers import (
     BookMetadata,
     build_localized_search_titles,
@@ -29,6 +35,9 @@ class ReleaseSearchVariant:
     title: str
     author: str
     languages: list[str] | None = None
+    # A ladder query (shelfmark.core.search_queries): Prowlarr and Newznab run it only
+    # while nothing found so far is the requested book. Every other source ignores it.
+    fallback: bool = False
 
     @property
     def query(self) -> str:
@@ -48,6 +57,8 @@ class ReleaseSearchPlan:
     manual_query: str | None = None
     indexers: list[str] | None = None  # Indexer names for Prowlarr (overrides settings)
     source_filters: SearchFilters | None = None
+    # What a result must show to stop the fallback variants; set whenever there are any.
+    identity: SearchIdentity | None = None
 
     @property
     def primary_query(self) -> str:
@@ -165,6 +176,54 @@ def _pick_search_title(book: BookMetadata) -> str:
     return book.search_title or book.title
 
 
+def _wants_fallbacks(book: BookMetadata, content_type: str | None) -> bool:
+    """Fallbacks are for ebook metadata searches only.
+
+    Audiobook searches keep today's queries, and a manual-provider book is whatever the
+    user typed, so it gets no ladder either.
+    """
+    if not isinstance(content_type, str) or content_type.strip().lower() != "ebook":
+        return False
+    return book.provider != "manual"
+
+
+def _with_fallbacks(
+    book: BookMetadata,
+    base_title: str,
+    author: str,
+    title_variants: list[ReleaseSearchVariant],
+) -> tuple[list[ReleaseSearchVariant], SearchIdentity | None]:
+    """Append the ladder after the mandatory and localized variants.
+
+    A ladder query that is the same request as a mandatory title (case and whitespace
+    aside - mandatory titles are sent uncleaned) is dropped, so the title keeps its
+    mandatory status.
+    """
+    ladder = build_fallback_queries(
+        title=book.title,
+        current_query=base_title,
+        series_name=book.series_name,
+        series_position=book.series_position,
+    )
+    seen = {exact_query_key(variant.title) for variant in title_variants}
+    fallbacks: list[ReleaseSearchVariant] = []
+    for query in ladder:
+        key = exact_query_key(query)
+        if key in seen:
+            continue
+        seen.add(key)
+        fallbacks.append(ReleaseSearchVariant(title=query, author=author, fallback=True))
+    if not fallbacks:
+        return title_variants, None
+    identity = build_search_identity(
+        title=book.title,
+        current_query=base_title,
+        series_name=book.series_name,
+        series_position=book.series_position,
+    )
+    return [*title_variants, *fallbacks], identity
+
+
 def build_release_search_plan(
     book: BookMetadata,
     languages: list[str] | None = None,
@@ -172,12 +231,16 @@ def build_release_search_plan(
     indexers: list[str] | None = None,
     source_filters: SearchFilters | None = None,
     user_id: int | None = None,
+    content_type: str | None = None,
 ) -> ReleaseSearchPlan:
     """Build normalized search variants shared across release sources.
 
     ``user_id`` picks up that user's default languages when the caller does not
     filter explicitly, so a search started without a language filter uses the
     reader's own default rather than the instance-wide one.
+
+    ``content_type`` "ebook" adds the fallback ladder after today's variants; any
+    other value (or none) leaves the plan exactly as it was.
     """
     resolved_languages = _normalize_languages(languages, user_id)
 
@@ -241,6 +304,10 @@ def build_release_search_plan(
         if title
     ]
 
+    identity: SearchIdentity | None = None
+    if title_variants and _wants_fallbacks(book, content_type):
+        title_variants, identity = _with_fallbacks(book, base_title, author, title_variants)
+
     # If no titles could be built, fall back to ISBN queries.
     if not title_variants and isbn_candidates:
         title_variants = [
@@ -256,4 +323,5 @@ def build_release_search_plan(
         manual_query=None,
         indexers=indexers,
         source_filters=source_filters,
+        identity=identity,
     )

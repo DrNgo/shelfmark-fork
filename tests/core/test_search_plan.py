@@ -1,3 +1,5 @@
+import pytest
+
 from shelfmark.core.search_plan import build_release_search_plan
 from shelfmark.metadata_providers import BookMetadata
 
@@ -173,3 +175,185 @@ class TestSearchAuthorNormalization:
         )
 
         assert build_release_search_plan(book).primary_query == "Elantris Brandon Sanderson"
+
+
+DXD5_TITLE = "High School DxD (Light Novel), Vol. 5: Hellcat of the Underworld Training Camp"
+
+
+def _dxd5(**overrides) -> BookMetadata:
+    """DxD vol 5 as Hardcover's get_book returns it: no subtitle, so no search_title."""
+    fields: dict[str, object] = {
+        "provider": "hardcover",
+        "provider_id": "2575261",
+        "title": DXD5_TITLE,
+        "authors": ["Ichiei Ishibumi"],
+        "search_author": "Ichiei Ishibumi",
+        "series_name": "High School DxD (Light Novel)",
+        "series_position": 5,
+        "isbn_13": "9780316559294",
+    }
+    fields.update(overrides)
+    return BookMetadata(**fields)
+
+
+DXD5_LADDER = [
+    "High School DxD Vol. 5",
+    "High School DxD v05",
+    "Hellcat of the Underworld Training Camp",
+    "High School DxD Volume 05",
+    "High School DxD Vol. 5 Hellcat of the Underworld Training Camp",
+]
+
+
+class TestFallbackVariants:
+    def test_order_is_mandatory_then_localized_then_fallbacks(self):
+        book = _dxd5(titles_by_language={"de": "Highschool DxD 5"})
+
+        plan = build_release_search_plan(book, languages=["en", "de"], content_type="ebook")
+
+        assert [(v.title, v.fallback) for v in plan.title_variants] == [
+            (DXD5_TITLE, False),
+            ("Highschool DxD 5", False),
+            *[(query, True) for query in DXD5_LADDER],
+        ]
+        assert plan.identity is not None
+        assert (plan.identity.series_key, plan.identity.position) == ("High School DxD", 5)
+
+    def test_fallbacks_carry_the_search_author_like_every_variant(self):
+        plan = build_release_search_plan(_dxd5(), languages=["en"], content_type="ebook")
+
+        assert {v.author for v in plan.title_variants} == {"Ichiei Ishibumi"}
+        assert all(v.languages is None for v in plan.title_variants if v.fallback)
+
+    def test_a_duplicate_title_keeps_its_mandatory_status(self):
+        book = _dxd5(titles_by_language={"de": "high school dxd  vol. 5"})
+
+        plan = build_release_search_plan(book, languages=["en", "de"], content_type="ebook")
+
+        titles = [(v.title, v.fallback) for v in plan.title_variants]
+        assert ("high school dxd  vol. 5", False) in titles
+        assert ("High School DxD Vol. 5", True) not in titles
+        assert [t for t, fallback in titles if fallback] == DXD5_LADDER[1:]
+
+    def test_a_title_that_differs_only_in_punctuation_is_a_different_request(self):
+        book = _dxd5(titles_by_language={"de": "High School DxD, Vol. 5"})
+
+        plan = build_release_search_plan(book, languages=["en", "de"], content_type="ebook")
+
+        assert [v.title for v in plan.title_variants if v.fallback] == DXD5_LADDER
+
+    @pytest.mark.parametrize("content_type", ["audiobook", None, "", "comic"])
+    def test_only_ebook_searches_get_fallbacks(self, content_type):
+        plan = build_release_search_plan(_dxd5(), languages=["en"], content_type=content_type)
+
+        assert [v.title for v in plan.title_variants] == [DXD5_TITLE]
+        assert plan.identity is None
+
+    def test_content_type_is_matched_case_insensitively(self):
+        plan = build_release_search_plan(_dxd5(), languages=["en"], content_type=" EBook ")
+
+        assert [v.title for v in plan.title_variants if v.fallback] == DXD5_LADDER
+
+    def test_primary_query_and_grouped_variants_are_unchanged(self):
+        book = _dxd5(titles_by_language={"de": "Highschool DxD 5"})
+
+        before = build_release_search_plan(book, languages=["en", "de"])
+        after = build_release_search_plan(book, languages=["en", "de"], content_type="ebook")
+
+        assert after.primary_query == before.primary_query == f"{DXD5_TITLE} Ichiei Ishibumi"
+        assert after.grouped_title_variants == before.grouped_title_variants
+        assert after.title_variants[: len(before.title_variants)] == before.title_variants
+        assert after.isbn_candidates == before.isbn_candidates
+
+    def test_a_manual_query_keeps_its_trimming_and_gets_no_fallbacks(self):
+        plan = build_release_search_plan(
+            _dxd5(), languages=["en"], manual_query="  dxd v05  ", content_type="ebook"
+        )
+
+        assert [(v.title, v.fallback) for v in plan.title_variants] == [("dxd v05", False)]
+        assert plan.identity is None
+
+        long_plan = build_release_search_plan(
+            _dxd5(), languages=["en"], manual_query="x" * 300, content_type="ebook"
+        )
+        assert [v.title for v in long_plan.title_variants] == ["x" * 256]
+
+    def test_a_manual_provider_book_gets_no_fallbacks(self):
+        book = BookMetadata(
+            provider="manual",
+            provider_id="abc",
+            title="Overlord, Vol. 2",
+            search_title="Overlord, Vol. 2",
+            authors=["Kugane Maruyama"],
+        )
+
+        plan = build_release_search_plan(book, languages=["en"], content_type="ebook")
+
+        assert [v.title for v in plan.title_variants] == ["Overlord, Vol. 2"]
+        assert plan.identity is None
+
+    def test_an_empty_title_still_falls_back_to_isbn_only(self):
+        plan = build_release_search_plan(_dxd5(title=""), languages=["en"], content_type="ebook")
+
+        assert [(v.title, v.fallback) for v in plan.title_variants] == [("9780316559294", False)]
+        assert plan.identity is None
+
+
+class TestFallbacksPerProvider:
+    def test_openlibrary_without_series_fields_parses_the_title(self):
+        book = BookMetadata(
+            provider="openlibrary",
+            provider_id="OL1W",
+            title="Overlord, Vol. 2: The Dark Warrior",
+            authors=["Kugane Maruyama"],
+        )
+
+        plan = build_release_search_plan(book, languages=["en"], content_type="ebook")
+
+        assert [v.title for v in plan.title_variants if v.fallback] == [
+            "Overlord Vol. 2",
+            "Overlord v02",
+            "The Dark Warrior",
+            "Overlord Volume 02",
+            # Today's query keeps its comma and colon, so this is a different request.
+            "Overlord Vol. 2 The Dark Warrior",
+        ]
+
+    def test_google_books_standalone_gets_none(self):
+        book = BookMetadata(
+            provider="googlebooks", provider_id="g1", title="Dune", authors=["Frank Herbert"]
+        )
+
+        plan = build_release_search_plan(book, languages=["en"], content_type="ebook")
+
+        assert [v.title for v in plan.title_variants] == ["Dune"]
+        assert plan.identity is None
+
+    def test_moly_display_only_series_is_not_used(self):
+        from shelfmark.metadata_providers import DisplayField
+
+        book = BookMetadata(
+            provider="moly",
+            provider_id="m1",
+            title="A Sötét Harcos",
+            authors=["Kugane Maruyama"],
+            display_fields=[DisplayField(label="Series", value="Overlord", icon="editions")],
+        )
+
+        plan = build_release_search_plan(book, languages=["hu"], content_type="ebook")
+
+        assert [v.title for v in plan.title_variants] == ["A Sötét Harcos"]
+
+    def test_audible_audiobook_gets_none(self):
+        book = BookMetadata(
+            provider="audible",
+            provider_id="B0X",
+            title="Overlord, Vol. 2",
+            authors=["Kugane Maruyama"],
+            series_name="Overlord",
+            series_position=2,
+        )
+
+        plan = build_release_search_plan(book, languages=["en"], content_type="audiobook")
+
+        assert [v.title for v in plan.title_variants] == ["Overlord, Vol. 2"]

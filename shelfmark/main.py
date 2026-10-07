@@ -3100,6 +3100,7 @@ def api_releases() -> Response | tuple[Response, int]:
                     indexers=indexers,
                     source_filters=source_query_filters,
                     user_id=db_user_id,
+                    content_type=content_type,
                 )
 
                 if plan.source_filters is not None:
@@ -3302,6 +3303,9 @@ def api_releases() -> Response | tuple[Response, int]:
         for source_name, source_instance in source_instances.items():
             if hasattr(source_instance, "last_search_type") and source_instance.last_search_type:
                 search_info[source_name] = {"search_type": source_instance.last_search_type}
+            # A search cut short by its deadline still returns what it found; say so.
+            if getattr(source_instance, "last_search_incomplete", False) is True:
+                search_info.setdefault(source_name, {})["incomplete"] = True
 
         response = {
             "releases": releases_data,
