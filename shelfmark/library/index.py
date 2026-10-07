@@ -91,6 +91,9 @@ class LibraryItem:
     author: str
     asin: str
     isbn13: str
+    # A Hardcover book id (digits) when the source knows the work; it is carried
+    # only as a `hardcover:` match key, never stored as a column.
+    hardcover_id: str = ""
 
 
 @dataclass(frozen=True)

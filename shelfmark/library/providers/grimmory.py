@@ -9,15 +9,24 @@ from __future__ import annotations
 
 from typing import Any
 
+import requests
+
 from shelfmark.core.logger import setup_logger
-from shelfmark.grimmory.client import BookloreConfig, booklore_login, list_books
+from shelfmark.grimmory.client import (
+    BookloreAuthError,
+    BookloreConfig,
+    BookloreError,
+    booklore_login,
+    get_book,
+    list_books,
+)
 from shelfmark.library.index import (
     MEDIA_TYPE_AUDIOBOOK,
     MEDIA_TYPE_EBOOK,
     SOURCE_GRIMMORY,
     LibraryItem,
 )
-from shelfmark.library.matching import normalize_isbn
+from shelfmark.library.matching import HARDCOVER_KEY_PREFIX, hardcover_match_key, normalize_isbn
 
 logger = setup_logger(__name__)
 
@@ -73,6 +82,11 @@ def _first_author(metadata: dict[str, Any]) -> str:
     return ""
 
 
+def _hardcover_id(value: object) -> str:
+    key = hardcover_match_key(value)
+    return key[len(HARDCOVER_KEY_PREFIX) :] if key else ""
+
+
 def extract_library_items(raw_books: list[Any]) -> list[LibraryItem]:
     """Flatten Grimmory's book payloads into index rows."""
     items: list[LibraryItem] = []
@@ -104,6 +118,7 @@ def extract_library_items(raw_books: list[Any]) -> list[LibraryItem]:
                 asin=str(metadata.get("asin") or "").strip(),
                 isbn13=normalize_isbn(metadata.get("isbn13"))
                 or normalize_isbn(metadata.get("isbn10")),
+                hardcover_id=_hardcover_id(metadata.get("hardcoverBookId")),
             )
         )
 
@@ -146,7 +161,14 @@ class GrimmoryProvider:
         return max(interval, _MIN_INTERVAL_HOURS)
 
     def fetch_items(self) -> list[LibraryItem]:
-        """Page through every book the configured account can see."""
+        """List every book, then read each in full for its provider IDs.
+
+        The listing omits ``hardcoverBookId``, so each book is read on its own
+        (one shared session). Every failure fails the sync, so the scheduler
+        keeps the previous index rather than storing one with badges missing:
+        a failed read, a second expired session, or a listing too long for the
+        page cap.
+        """
         from shelfmark.core.config import config
 
         booklore_config = BookloreConfig(
@@ -159,15 +181,34 @@ class GrimmoryProvider:
 
         token = booklore_login(booklore_config)
 
-        items: list[LibraryItem] = []
+        rows: list[dict[str, Any]] = []
         page = 0
         total_pages = 1
-        while page < total_pages and page < _MAX_PAGES:
+        while page < total_pages:
+            if page >= _MAX_PAGES:
+                msg = f"Grimmory listing exceeded the {_MAX_PAGES}-page cap"
+                raise BookloreError(msg)
             books, total_pages = list_books(booklore_config, token, page=page, size=_PAGE_SIZE)
-            items.extend(extract_library_items(books))
+            rows.extend(books)
             page += 1
 
-        if page >= _MAX_PAGES:
-            logger.warning("Stopped indexing Grimmory at the %d page cap", _MAX_PAGES)
+        details: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        relogged = False
+        with requests.Session() as session:
+            for row in rows:
+                book_id = row.get("id")
+                if book_id is None or str(book_id) in seen:
+                    continue
+                seen.add(str(book_id))
+                try:
+                    detail = get_book(booklore_config, token, book_id, session=session)
+                except BookloreAuthError:
+                    if relogged:
+                        raise
+                    relogged = True
+                    token = booklore_login(booklore_config)
+                    detail = get_book(booklore_config, token, book_id, session=session)
+                details.append(detail)
 
-        return items
+        return extract_library_items(details)
