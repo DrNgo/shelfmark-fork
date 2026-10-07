@@ -81,8 +81,9 @@ untagged until someone runs `backfill`.
     verification. `resolve_entry` finds the book by `book_id`, or by library + exact
     filename.
 - **Grimmory book fields:** `primaryFile` carries `fileName`, `fileSizeKb` and `addedOn`
-  (P1 probe findings). Whether a library upload keeps the original filename is
-  **unverified**; Grimmory may apply its own upload naming pattern.
+  (P1 probe findings). The 2026-10-07 ingest probe showed that a library upload is
+  **renamed** from the EPUB's embedded metadata and that the upload response carries no id
+  (see Rollout, "Probe result"), hence the upload-window binding in §4.
 - **Constraint:** Grimmory runs `DISK_TYPE: NETWORK`, so books cannot be moved between
   libraries in the UI (`POST /api/v1/files/move` returns 409). A wrong pick needs a manual
   `mv` on the NFS host.
@@ -294,31 +295,30 @@ blocking call; the notifications run under their own hard limit inside the reser
    The queue lock is awaited only until the deadline; a busy or unwritable queue is
    treated as unqueued: "Needs attention — could not queue", and the next full
    `backfill` covers the book.
-3. **Bind each file to its Grimmory book.** A binding must be *verified*; there is no
-   guessing.
-   - **Verified by the upload response:** the binding comes from the book or file id in
-     `uploaded_files[].response`, if the probe (Rollout) shows Grimmory returns one. The
-     book must exist in `library_id`.
-   - **Verified by an exact file match:** otherwise, all of:
-     - the uploaded name and size (`fileSizeKb` = floor or ceiling of `size_bytes`/1024)
-       are unique across the **whole** library, of any age — an older copy or a second
-       upload makes the match ambiguous
-     - `fileName` equal to the uploaded name (or to the name Grimmory's naming pattern
-       produces, if the probe shows uploads are renamed and the pattern is
-       deterministic)
-     - that book's `primaryFile.filePath` is under the chosen path
-     - its `addedOn` is within [`upload_started_at` − 120 s, `upload_finished_at` + poll
-       window]
-     - the same single result is seen on two consecutive polls (settling), so a duplicate
-       that lands a moment later is caught
+3. **Bind the upload to its Grimmory book (upload window).** A binding must be
+   *verified*; there is no guessing. The probe (Rollout, 2026-10-07) ruled out both
+   identity routes first planned: the upload answers HTTP 204 with an empty body (no book
+   or file id), and Grimmory renames the file from the EPUB's embedded metadata (the
+   uploaded name never matches). So the hook binds by the upload window, and only when
+   all of these hold:
+   - the task uploaded exactly **one** file; a multi-file task stays unbound
+   - exactly **one** book in `library_id` — any size, any path — has an `addedOn` (UTC; a
+     naive value is read as UTC) within [`upload_started_at` − 10 s,
+     `upload_finished_at` + 10 s]; any other arrival in the window is ambiguous
+   - that book's `primaryFile.filePath` is under the chosen path's root
+   - its `fileSizeKb` is the floor or ceiling of `size_bytes`/1024
+   - the same single result is seen on two consecutive polls (settling), so an arrival a
+     moment later is caught. Grimmory rejects a second upload of the same file (409), so
+     a duplicate copy cannot appear; window uniqueness would catch it anyway.
    - **Hydration:** a listing row missing any file identity field (`id`, `fileName`,
      `fileSizeKb`, `filePath`, `addedOn`) is completed from the full book before any
      filtering.
-   - **Waiting:** poll every 5 s until bound or until 60 s pass (clamped to the deadline).
+   - **Waiting:** poll every 5 s until bound or until 60 s pass (clamped to the deadline);
+     the probe saw the book listed 3.3 s after the refresh.
    - **No verified binding:** the entry stays unresolved. There is no write and no
      suggestion acted on.
    - **On success:** the `book_id` is written onto the entry (atomic update), together
-     with the filename it was verified against.
+     with the stored (renamed) file name it was verified against.
 4. **Take the writer lock and score one book.** The hook takes the tagger's writer lock
    (below) before scoring.
    - **Scoring:** a new `score_books(book_ids, hint_entries)` function, extracted from
@@ -349,7 +349,7 @@ blocking call; the notifications run under their own hard limit inside the reser
    |---|---|
    | `review` row with a bound book | `apply --report <id> --decisions FILE`, as in P1 |
    | `conflict` row (decisions cannot choose one), or a collision found under the lock | Fix the conflicting metadata or binding in Grimmory, re-run `backfill --book <id>`, then apply the new report |
-   | Unbound (not found, or no verified match) | The next full `backfill` retries the binding, using the filename rule and `book_id`. If it still cannot bind, run `backfill --book <id>` after finding the book in Grimmory. |
+   | Unbound (multi-file task, nothing or more than one arrival in the window, or a path/size mismatch) | Find the book in Grimmory (added at the upload time) and run `backfill --book <id>`; the next full `backfill` also scores it like any other book. |
    | Dependency failure or timeout | The next `backfill` retries it automatically, since queued entries are always included. |
 
 7. **Exit.** Always exit 0. A notification failure is logged, never raised.
@@ -441,7 +441,7 @@ tagged-ingest acceptance.
 | Upload fails | Task fails (as today) |
 | Custom script missing, failing, timed out, or its payload can't be built, after a successful Grimmory upload | Logged as a warning; the task completes as uploaded (book untagged until the next `backfill`) |
 | A requester puts a destination key in a request's `release_data` | Stripped before the request is stored or queued |
-| Hook: no verified binding | Entry kept, unbound; "Needs attention" names the backfill route; exit 0 |
+| Hook: no verified binding (multi-file task, an ambiguous or empty upload window, a path or size mismatch) | Entry kept, unbound; "Needs attention" names the `backfill --book` route; exit 0 |
 | Hook: scoring isn't `accepted`, or the apply/read-back isn't a full success | Entry kept; "Needs attention" with the matching next step; exit 0 |
 | Hook: Hardcover or Grimmory error, lock wait, or deadline | Entry kept; next `backfill` retries; exit 0 |
 | Hook exceeds 292 s | Dispatcher kills its process group; the queue entries already exist (the hook stops itself at 250 s, even inside a stalled read) |
@@ -489,10 +489,12 @@ tagged-ingest acceptance.
   - **Hook:**
     - the guard
     - the whole batch queued before any network call (multiple files)
-    - binding: from the upload response; from an exact file match, only once settled;
-      never found; two books with the same size and no name match stay unbound; a second
-      copy appearing on a later poll, or an older copy of the same name and size, makes it
-      ambiguous; rows missing `primaryFile`, `fileName` or the file id are hydrated
+    - binding by the upload window: a single arrival binds only once settled (a renamed
+      file name is irrelevant); two books in the window, a different-size book in the
+      window, or a second copy appearing on a later poll stay unbound; a file outside
+      the path root, a wrong size, an `addedOn` outside the window, or a multi-file task
+      stay unbound; a naive `addedOn` is read as UTC; rows missing `primaryFile` or file
+      fields are hydrated
     - an accepted result that writes and verifies, a stale result, a write failure, a
       missing ISBN, and `unchanged`-already-complete
     - the deadline: a slow call, retries, a hanging notifier, a held queue lock, and real
@@ -539,6 +541,20 @@ follows Spring paging (`page.totalPages`); a probe book is one in the destinatio
 carrying an exact marker (the probe title or file name). Cleanup is complete only after a
 successful full enumeration finds nothing and the NFS library root holds no file with the
 probe tag.
+
+**Probe result (2026-10-07):** tag `06c07b5d`, test book 306, Fiction (library 3, path 3).
+The upload answered HTTP 204 with an empty body (no id); Grimmory renamed the file from the
+embedded metadata (`… - Probe Author.epub`, absolute `filePath` under `/books/fiction`);
+`fileSizeKb` = floor (1 for 1,743 bytes); `addedOn` in UTC with `Z`, inside the upload's
+own start/finish; listed 3.3 s after the refresh; a second upload of the same file got HTTP
+409 "File already exists"; listing rows carry every `primaryFile` field, and there is no
+hash. The gate failed (neither a response id nor the uploaded name can bind), and the user
+chose **upload-window binding** (§4.3): single-file tasks only; exactly one book of the
+library with `addedOn` in [started − 10 s, finished + 10 s]; under the path root; size =
+floor or ceiling of bytes/1024; the same result on two consecutive polls; `POLL_WINDOW` =
+60 s; a naive `addedOn` read as UTC. The response-id and exact-name routes are dropped.
+Details: fleet-infra `docs/superpowers/specs/2026-10-06-grimmory-tagger-probe-findings.md`
+§8.
 
 Then, each push needing the user's OK:
 
