@@ -357,3 +357,39 @@ class TestFallbacksPerProvider:
         plan = build_release_search_plan(book, languages=["en"], content_type="audiobook")
 
         assert [v.title for v in plan.title_variants] == ["Overlord, Vol. 2"]
+
+
+class TestFallbacksStayWithTheirSources:
+    """Only Prowlarr and Newznab read ``fallback``; no other source may see a ladder title.
+
+    AudiobookBay takes ``title_variants[0]``, IRC takes ``primary_query`` and direct
+    download takes ``grouped_title_variants``: each must still be a mandatory title.
+    """
+
+    def _plan(self):
+        book = _dxd5(titles_by_language={"de": "Highschool DxD 5"})
+        plan = build_release_search_plan(book, languages=["en", "de"], content_type="ebook")
+        fallbacks = {v.title for v in plan.title_variants if v.fallback}
+        assert fallbacks == set(DXD5_LADDER)
+        return plan, fallbacks
+
+    def test_every_fallback_comes_after_every_mandatory_variant(self):
+        plan, _ = self._plan()
+
+        flags = [v.fallback for v in plan.title_variants]
+        first_fallback = flags.index(True)
+        assert not any(flags[:first_fallback])
+        assert all(flags[first_fallback:])
+
+    def test_other_sources_never_see_a_fallback_title(self):
+        plan, fallbacks = self._plan()
+
+        # AudiobookBay
+        assert not plan.title_variants[0].fallback
+        assert plan.title_variants[0].title not in fallbacks
+        # IRC
+        assert plan.primary_query == f"{DXD5_TITLE} Ichiei Ishibumi"
+        assert plan.primary_query not in {v.query for v in plan.title_variants if v.fallback}
+        # Direct download
+        assert not any(v.fallback for v in plan.grouped_title_variants)
+        assert not {v.title for v in plan.grouped_title_variants} & fallbacks
