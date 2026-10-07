@@ -10,9 +10,45 @@ import requests
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.utils import normalize_http_url
 from shelfmark.download.network import get_ssl_verify
-from shelfmark.release_sources.prowlarr.torznab import parse_torznab_xml
+from shelfmark.release_sources.prowlarr.torznab import parse_torznab_error, parse_torznab_xml
 
 logger = setup_logger(__name__)
+
+_HTTP_TOO_MANY_REQUESTS = 429
+
+# ``apikey=…``, ``api_key=…`` or ``key=…`` in a URL or message (requests puts the
+# full request URL, query string included, in its exception text).
+_SECRET_PARAM_RE = re.compile(r"(?i)\b(apikey|api_key|key)=([^&\s'\"]+)")
+
+
+def redact_secrets(text: object, *known_secrets: str | None) -> str:
+    """Return ``str(text)`` with API keys replaced by ``REDACTED``.
+
+    Removes ``apikey=``/``api_key=``/``key=`` query values, and every non-empty
+    ``known_secrets`` value (the configured key) wherever it appears.
+    """
+    redacted = str(text)
+    for secret in known_secrets:
+        if secret:
+            redacted = redacted.replace(secret, "REDACTED")
+    return _SECRET_PARAM_RE.sub(r"\1=REDACTED", redacted)
+
+
+def _describe_request_error(e: requests.exceptions.RequestException) -> str:
+    """Name a failed request without its text, which carries the URL and API key."""
+    status = getattr(e.response, "status_code", None)
+    return type(e).__name__ + (f" (HTTP {status})" if status is not None else "")
+
+
+class NewznabSearchError(RuntimeError):
+    """A Newznab search could not be completed - never the same as "no results".
+
+    ``rate_limited`` marks an HTTP 429 or a Newznab request/download-limit error.
+    """
+
+    def __init__(self, message: str, *, rate_limited: bool = False) -> None:
+        super().__init__(message)
+        self.rate_limited = rate_limited
 
 
 class NewznabClient:
@@ -45,7 +81,11 @@ class NewznabClient:
             params["apikey"] = self.api_key
 
         url = self._api_url()
-        logger.debug("Newznab API: GET %s params=%s", url, *params)
+        logger.debug(
+            "Newznab API: GET %s params=%s",
+            url,
+            {k: ("REDACTED" if k == "apikey" else v) for k, v in params.items()},
+        )
 
         headers = {}
         if accept_xml:
@@ -85,7 +125,7 @@ class NewznabClient:
                 return False, "Invalid API key"
             return False, f"HTTP error {status}"
         except requests.exceptions.RequestException as e:
-            return False, f"Connection failed: {e!s}"
+            return False, f"Connection failed: {redact_secrets(e, self.api_key)}"
         else:
             return True, f"Connected to {title}"
 
@@ -109,6 +149,11 @@ class NewznabClient:
         Returns:
             List of result dicts shaped like Prowlarr JSON search results so that
             the shared ``_prowlarr_result_to_release`` converter can process them.
+            An empty list strictly means the indexer answered with no matches.
+
+        Raises:
+            NewznabSearchError: The request failed, or the indexer answered with a
+                Newznab ``<error>`` instead of a result feed.
         """
         if not query:
             return []
@@ -124,16 +169,21 @@ class NewznabClient:
 
         try:
             response = self._get(params, accept_xml=True)
-            results = parse_torznab_xml(response.text)
-            logger.debug("Newznab search '%s': %d results", query, len(results))
-            if not results:
-                preview = response.text[:300].strip() if response.text else "<empty>"
-                logger.debug("Newznab empty response body: %s", preview)
-        except requests.exceptions.RequestException:
-            logger.exception("Newznab search request failed")
-            return []
-        except Exception:
-            logger.exception("Newznab search failed")
-            return []
-        else:
-            return results
+        except requests.exceptions.RequestException as e:
+            status = getattr(e.response, "status_code", None)
+            msg = f"Newznab search failed: {_describe_request_error(e)}"
+            logger.warning("%s", msg)
+            raise NewznabSearchError(msg, rate_limited=status == _HTTP_TOO_MANY_REQUESTS) from e
+
+        text = response.text or ""
+        results = parse_torznab_xml(text)
+        logger.debug("Newznab search '%s': %d results", query, len(results))
+        if not results:
+            error = parse_torznab_error(text)
+            if error is not None:
+                description = redact_secrets(error.description or "no description", self.api_key)
+                msg = f"Newznab search failed: indexer error {error.code}: {description}"
+                raise NewznabSearchError(msg, rate_limited=error.rate_limited)
+            preview = text[:300].strip() or "<empty>"
+            logger.debug("Newznab empty response body: %s", redact_secrets(preview, self.api_key))
+        return results

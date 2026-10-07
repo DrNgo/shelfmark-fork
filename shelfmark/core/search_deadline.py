@@ -121,6 +121,20 @@ def expired() -> bool:
     return deadline is not None and deadline.expired
 
 
+def remaining_seconds(source_deadline: float) -> float:
+    """Seconds left before ``source_deadline`` (a ``time.monotonic()`` value) or the
+    budget in force, whichever comes first.
+
+    A release source keeps its own deadline on top of the endpoint's; a request that
+    cannot finish inside the sooner of the two is not worth starting.
+    """
+    remaining = source_deadline - time.monotonic()
+    deadline = _current.get()
+    if deadline is not None:
+        remaining = min(remaining, 0.0 if deadline.expired else deadline.remaining)
+    return remaining
+
+
 def cancel_event() -> threading.Event | None:
     """The Event that trips when the budget runs out, for use as a cancel flag."""
     deadline = _current.get()

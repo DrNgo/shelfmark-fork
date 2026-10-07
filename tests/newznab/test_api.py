@@ -1,10 +1,34 @@
 """Unit tests for the Newznab API client."""
 
+import logging
 from unittest.mock import MagicMock, patch
 
+import pytest
 import requests
 
-from shelfmark.release_sources.newznab.api import NewznabClient
+import shelfmark.release_sources.newznab.api as newznab_api
+from shelfmark.release_sources.newznab.api import NewznabClient, NewznabSearchError
+
+SECRET_URL = "http://nzbhydra:5076/api?t=search&q=book&apikey=SECRET&cat=7000"
+
+
+@pytest.fixture
+def api_logs():
+    """Every record the Newznab API logger emits (DEBUG and up, tracebacks included)."""
+    records: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(logging.Formatter().format(record))
+
+    handler = _Capture(level=logging.DEBUG)
+    previous = newznab_api.logger.level
+    newznab_api.logger.setLevel(logging.DEBUG)
+    newznab_api.logger.addHandler(handler)
+    yield records
+    newznab_api.logger.removeHandler(handler)
+    newznab_api.logger.setLevel(previous)
+
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -106,6 +130,15 @@ class TestTestConnection:
         assert ok is False
         assert "oops" in msg.lower()
 
+    def test_a_connection_failure_message_hides_the_api_key(self):
+        client = NewznabClient("http://nzbhydra:5076", "SECRET")
+        error = requests.exceptions.Timeout(f"Read timed out for url: {SECRET_URL}")
+        with patch.object(client, "_get", side_effect=error):
+            ok, msg = client.test_connection()
+        assert ok is False
+        assert "SECRET" not in msg
+        assert "apikey=REDACTED" in msg
+
     def test_caps_without_title_still_succeeds(self):
         client = NewznabClient("http://nzbhydra:5076", "key")
         caps_no_title = "<?xml version='1.0'?><caps/>"
@@ -162,15 +195,151 @@ class TestSearch:
 
         assert "cat" not in captured[0]
 
-    def test_returns_empty_on_request_error(self):
+    def test_a_request_error_is_a_failure_not_an_empty_result(self):
         client = NewznabClient("http://nzbhydra:5076", "key")
-        with patch.object(
-            client,
-            "_get",
-            side_effect=requests.exceptions.ConnectionError("down"),
+        with (
+            patch.object(
+                client,
+                "_get",
+                side_effect=requests.exceptions.ConnectionError("down"),
+            ),
+            pytest.raises(NewznabSearchError, match="ConnectionError") as excinfo,
         ):
-            results = client.search(query="book")
-        assert results == []
+            client.search(query="book")
+        assert excinfo.value.rate_limited is False
+
+    def test_a_request_error_never_carries_the_api_key(self, api_logs):
+        client = NewznabClient("http://nzbhydra:5076", "SECRET")
+        error = requests.exceptions.ConnectionError(f"Max retries exceeded with url: {SECRET_URL}")
+        with (
+            patch.object(client, "_get", side_effect=error),
+            pytest.raises(NewznabSearchError) as excinfo,
+        ):
+            client.search(query="book")
+        assert str(excinfo.value) == "Newznab search failed: ConnectionError"
+        # Guard: the warning these checks read really was captured.
+        assert any("Newznab search failed: ConnectionError" in line for line in api_logs)
+        assert not any("SECRET" in line for line in api_logs)
+
+    def test_an_http_error_names_its_status_not_its_url(self, api_logs):
+        client = NewznabClient("http://nzbhydra:5076", "SECRET")
+        error = requests.exceptions.HTTPError(
+            f"429 Client Error: Too Many Requests for url: {SECRET_URL}",
+            response=_make_response("", status=429),
+        )
+        with (
+            patch.object(client, "_get", side_effect=error),
+            pytest.raises(NewznabSearchError) as excinfo,
+        ):
+            client.search(query="book")
+        assert str(excinfo.value) == "Newznab search failed: HTTPError (HTTP 429)"
+        # Guard: the warning these checks read really was captured.
+        assert any("HTTPError (HTTP 429)" in line for line in api_logs)
+        assert not any("SECRET" in line for line in api_logs)
+
+    def test_an_error_document_never_echoes_the_api_key(self, monkeypatch):
+        lines: list[str] = []
+        for level in ("debug", "info", "warning", "error"):
+            monkeypatch.setattr(
+                newznab_api.logger, level, lambda message, *args: lines.append(message % args)
+            )
+        client = NewznabClient("http://nzbhydra:5076", "SECRET")
+        body = '<?xml version="1.0"?><error code="100" description="invalid key SECRET"/>'
+        with (
+            patch.object(client, "_get", return_value=_make_response(body)),
+            pytest.raises(NewznabSearchError) as excinfo,
+        ):
+            client.search(query="book")
+        assert str(excinfo.value) == (
+            "Newznab search failed: indexer error 100: invalid key REDACTED"
+        )
+        assert lines  # Guard: the client's log calls were recorded.
+        assert not any("SECRET" in line for line in lines)
+
+    def test_an_empty_body_preview_never_echoes_the_api_key(self, monkeypatch):
+        lines: list[str] = []
+        monkeypatch.setattr(
+            newznab_api.logger, "debug", lambda message, *args: lines.append(message % args)
+        )
+        client = NewznabClient("http://nzbhydra:5076", "SECRET")
+        body = "<html>unknown user SECRET</html>"
+        with patch.object(client, "_get", return_value=_make_response(body)):
+            assert client.search(query="book") == []
+        preview = [line for line in lines if line.startswith("Newznab empty response body")]
+        assert preview == ["Newznab empty response body: <html>unknown user REDACTED</html>"]
+
+    def test_the_request_debug_log_shows_params_without_the_api_key(self, monkeypatch):
+        # Recorded at the call (not through a handler), so a test elsewhere that
+        # disables DEBUG logging process-wide cannot hide it.
+        lines: list[str] = []
+        monkeypatch.setattr(
+            newznab_api.logger, "debug", lambda message, *args: lines.append(message % args)
+        )
+        client = NewznabClient("http://nzbhydra:5076", "SECRET")
+        with patch.object(client._session, "get", return_value=_make_response(NZB_XML)):
+            client.search(query="book")
+        get_lines = [line for line in lines if line.startswith("Newznab API: GET")]
+        assert len(get_lines) == 1
+        assert "'q': 'book'" in get_lines[0]
+        assert "'apikey': 'REDACTED'" in get_lines[0]
+        assert not any("SECRET" in line for line in lines)
+
+    def test_http_429_is_a_rate_limited_failure(self):
+        client = NewznabClient("http://nzbhydra:5076", "key")
+        error = requests.exceptions.HTTPError(response=_make_response("", status=429))
+        with (
+            patch.object(client, "_get", side_effect=error),
+            pytest.raises(NewznabSearchError) as excinfo,
+        ):
+            client.search(query="book")
+        assert excinfo.value.rate_limited is True
+
+    @pytest.mark.parametrize(
+        ("code", "rate_limited"),
+        [("500", True), ("501", True), ("100", False), ("900", False)],
+    )
+    def test_a_newznab_error_document_is_a_failure(self, code, rate_limited):
+        client = NewznabClient("http://nzbhydra:5076", "key")
+        body = f'<?xml version="1.0"?><error code="{code}" description="nope"/>'
+        with (
+            patch.object(client, "_get", return_value=_make_response(body)),
+            pytest.raises(NewznabSearchError, match=f"indexer error {code}") as excinfo,
+        ):
+            client.search(query="book")
+        assert excinfo.value.rate_limited is rate_limited
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "<error code='500' description='Request limit reached'/>",
+            '<error\n  code = "500"\n  description = "Request limit reached" />',
+            '<nn:error xmlns:nn="http://www.newznab.com/DTD/2010/feeds/attributes/" '
+            'code="500" description="Request limit reached"/>',
+        ],
+    )
+    def test_error_documents_are_parsed_not_pattern_matched(self, body):
+        client = NewznabClient("http://nzbhydra:5076", "key")
+        with (
+            patch.object(client, "_get", return_value=_make_response(body)),
+            pytest.raises(NewznabSearchError, match="indexer error 500") as excinfo,
+        ):
+            client.search(query="book")
+        assert excinfo.value.rate_limited is True
+
+    def test_a_feed_that_mentions_error_is_not_one(self):
+        client = NewznabClient("http://nzbhydra:5076", "key")
+        body = (
+            '<?xml version="1.0"?><rss><channel><description>&lt;error code="500"&gt;'
+            "</description></channel></rss>"
+        )
+        with patch.object(client, "_get", return_value=_make_response(body)):
+            assert client.search(query="book") == []
+
+    def test_an_empty_feed_is_still_an_empty_success(self):
+        client = NewznabClient("http://nzbhydra:5076", "key")
+        empty = '<?xml version="1.0"?><rss version="2.0"><channel></channel></rss>'
+        with patch.object(client, "_get", return_value=_make_response(empty)):
+            assert client.search(query="book") == []
 
     def test_returns_empty_on_malformed_xml(self):
         client = NewznabClient("http://nzbhydra:5076", "key")

@@ -11,7 +11,7 @@ from shelfmark.core.config import config
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.utils import normalize_http_url
 from shelfmark.download.network import get_ssl_verify
-from shelfmark.release_sources.prowlarr.torznab import parse_torznab_xml
+from shelfmark.release_sources.prowlarr.torznab import parse_torznab_error, parse_torznab_xml
 from shelfmark.release_sources.prowlarr.utils import coerce_float_like, coerce_int_like
 
 logger = setup_logger(__name__)
@@ -30,7 +30,7 @@ MIN_INDEXER_TIMEOUT_SECONDS = 5
 MAX_INDEXER_TIMEOUT_SECONDS = 300
 
 # Connecting to Prowlarr itself is a LAN hop; only the read is allowed to be slow.
-_CONNECT_TIMEOUT_SECONDS = 10.0
+CONNECT_TIMEOUT_SECONDS = 10.0
 
 _PROWLARR_CLIENT_ERRORS = (
     requests.exceptions.RequestException,
@@ -48,7 +48,20 @@ class ProwlarrSearchError(RuntimeError):
     "this indexer has nothing" is what turns a slow FlareSolverr challenge into
     "No releases found for this book" in the UI (#1249), and it also makes the
     auto-expand retry fire a second request on top of the one still running.
+
+    ``rate_limited`` marks an HTTP 429 or a request-limit error document: still a
+    failure, but logged as its own outcome.
     """
+
+    def __init__(self, message: str, *, rate_limited: bool = False) -> None:
+        super().__init__(message)
+        self.rate_limited = rate_limited
+
+
+def _is_rate_limited(error: BaseException) -> bool:
+    """Whether a failed request was refused with HTTP 429 Too Many Requests."""
+    response = getattr(error, "response", None)
+    return getattr(response, "status_code", None) == HTTPStatus.TOO_MANY_REQUESTS
 
 
 def resolve_indexer_timeout(timeout: object = None) -> int:
@@ -392,7 +405,7 @@ class ProwlarrClient:
             response = self._session.get(
                 url=url,
                 params=params,
-                timeout=(_CONNECT_TIMEOUT_SECONDS, self.indexer_timeout),
+                timeout=(CONNECT_TIMEOUT_SECONDS, self.indexer_timeout),
                 headers={
                     # Override the session default JSON accept header.
                     "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8"
@@ -423,8 +436,16 @@ class ProwlarrClient:
         except Exception as e:
             logger.exception("Prowlarr Torznab search failed for indexer %s", indexer_id)
             msg = f"indexer {indexer_id} search failed: {e}"
-            raise ProwlarrSearchError(msg) from e
+            raise ProwlarrSearchError(msg, rate_limited=_is_rate_limited(e)) from e
         else:
+            # A 200 carrying an <error .../> document is a failed search, not an empty one.
+            error = None if results else parse_torznab_error(response.text)
+            if error is not None:
+                msg = (
+                    f"indexer {indexer_id} returned error {error.code}: "
+                    f"{error.description or 'no description'}"
+                )
+                raise ProwlarrSearchError(msg, rate_limited=error.rate_limited)
             return results
 
     def _has_book_categories(self, categories: list[dict[str, Any]]) -> bool:

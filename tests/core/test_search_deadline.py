@@ -55,6 +55,30 @@ def test_timer_is_cancelled_on_exit():
     assert deadline._timer.finished.is_set()
 
 
+def test_remaining_is_the_source_deadline_outside_a_search():
+    import time
+
+    remaining = search_deadline.remaining_seconds(time.monotonic() + 50)
+
+    assert 49 < remaining <= 50
+
+
+def test_remaining_is_the_sooner_of_the_source_and_endpoint_budgets():
+    import time
+
+    with search_deadline.search_deadline(30):
+        assert search_deadline.remaining_seconds(time.monotonic() + 500) <= 30
+        assert search_deadline.remaining_seconds(time.monotonic() + 5) <= 5
+
+
+def test_an_expired_endpoint_budget_leaves_nothing():
+    import time
+
+    with search_deadline.search_deadline(3600) as deadline:
+        deadline.event.set()
+        assert search_deadline.remaining_seconds(time.monotonic() + 500) == 0.0
+
+
 def test_message_names_the_challenge_not_the_proxy():
     with search_deadline.search_deadline(120):
         message = search_deadline.deadline_message()

@@ -650,7 +650,8 @@ class TestProwlarrLocalizedQueries:
 
         query = fake_client.calls[0][0]
         assert fake_client.calls == [(query, [7000]), (query, None)]
-        assert info_calls == [
+        # Per-request lines are logged at INFO too; this pins the auto-expand line.
+        assert [call for call in info_calls if "auto-expanding" in call[0]] == [
             (
                 "Prowlarr: no results for query '%s' with category filter, auto-expanding search",
                 (query,),
