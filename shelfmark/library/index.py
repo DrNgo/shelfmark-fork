@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from shelfmark.core.logger import setup_logger
-from shelfmark.library.matching import build_match_keys
+from shelfmark.library.matching import HARDCOVER_KEY_PREFIX, build_match_keys
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -109,6 +109,9 @@ class LibraryMatch:
     author: str
     asin: str
     isbn13: str
+    # The matched item's Hardcover book id, read back from its `hardcover:` key.
+    # Internal: lets a lookup veto a match whose work id disagrees.
+    hardcover_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -193,7 +196,12 @@ class LibraryIndexDB:
             if not item.item_id or item.item_id in seen:
                 continue
             keys = build_match_keys(
-                item.title, item.author, item.subtitle, asin=item.asin, isbn=item.isbn13
+                item.title,
+                item.author,
+                item.subtitle,
+                asin=item.asin,
+                isbn=item.isbn13,
+                hardcover_id=item.hardcover_id,
             )
             if not keys:
                 continue
@@ -279,15 +287,20 @@ class LibraryIndexDB:
                     cursor = conn.execute(
                         f"""
                         SELECT DISTINCT i.source, i.item_id, i.library_id, i.library_name,
-                               i.media_type, i.title, i.author, i.asin, i.isbn13
+                               i.media_type, i.title, i.author, i.asin, i.isbn13,
+                               (SELECT h.match_key FROM library_item_keys h
+                                 WHERE h.source = i.source AND h.item_id = i.item_id
+                                   AND h.match_key LIKE ?
+                                 LIMIT 1) AS hardcover_key
                         FROM library_items i
                         JOIN library_item_keys k
                           ON k.item_id = i.item_id AND k.source = i.source
                         WHERE k.match_key IN ({placeholders}){source_filter}
                         """,  # noqa: S608 - placeholders only, keys/sources are bound
-                        params,
+                        [f"{HARDCOVER_KEY_PREFIX}%", *params],
                     )
                     for row in cursor.fetchall():
+                        hardcover_key = str(row["hardcover_key"] or "")
                         match = LibraryMatch(
                             source=str(row["source"]),
                             item_id=str(row["item_id"]),
@@ -298,6 +311,7 @@ class LibraryIndexDB:
                             author=str(row["author"]),
                             asin=str(row["asin"] or ""),
                             isbn13=str(row["isbn13"] or ""),
+                            hardcover_id=hardcover_key[len(HARDCOVER_KEY_PREFIX) :],
                         )
                         matches[(match.source, match.item_id)] = match
             finally:

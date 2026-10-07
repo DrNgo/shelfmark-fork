@@ -668,3 +668,95 @@ class TestSourceReporting:
 
     def test_enabled_is_true_when_any_source_is_on(self, both_formats):
         assert lookup_books([_book("ebook")], index=both_formats)["enabled"] is True
+
+
+def _overlord(item_id="161", hardcover_id="730514", **overrides):
+    fields = {
+        "title": "Overlord, Vol. 1",
+        "author": "Maruyama Kugane",
+        "hardcover_id": hardcover_id,
+    }
+    fields.update(overrides)
+    return _stored(SOURCE_GRIMMORY, MEDIA_TYPE_EBOOK, item_id=item_id, **fields)
+
+
+def _hardcover_result(provider_id="730514", provider="hardcover", **overrides):
+    book = {
+        "id": "hc1",
+        "title": "Overlord (Light Novel), Vol. 1: The Undead King",
+        "author": "Kugane Maruyama",
+        "provider": provider,
+        "provider_id": provider_id,
+        "content_type": "ebook",
+    }
+    book.update(overrides)
+    return book
+
+
+class TestHardcoverIdMatching:
+    def test_the_real_overlord_pair_is_held_not_just_matched(self, index, enabled_providers):
+        index.replace_items(SOURCE_GRIMMORY, [_overlord()])
+
+        match = lookup_books([_hardcover_result()], index=index)["matches"]["hc1"]
+
+        assert [i["item_id"] for i in match["items"]] == ["161"]
+        assert match["other_editions"] == []
+
+    def test_provider_spelling_does_not_matter(self, index, enabled_providers):
+        # Review Focus #1
+        index.replace_items(SOURCE_GRIMMORY, [_overlord()])
+
+        for provider in ("Hardcover", "HARDCOVER", " hardcover "):
+            result = lookup_books(
+                [_hardcover_result(provider=provider, title="Unrelated", author="Nobody")],
+                index=index,
+            )
+            assert "hc1" in result["matches"], provider
+
+    def test_another_providers_numeric_id_is_not_a_hardcover_id(self, index, enabled_providers):
+        index.replace_items(SOURCE_GRIMMORY, [_overlord()])
+
+        result = lookup_books(
+            [_hardcover_result(provider="openlibrary", title="Unrelated", author="Nobody")],
+            index=index,
+        )
+
+        assert result["matches"] == {}
+
+    def test_a_different_hardcover_id_vetoes_a_title_match(self, index, enabled_providers):
+        # The manga shares the normalized title and (reversed) author with the
+        # light novel, but Hardcover says it is a different work.
+        index.replace_items(SOURCE_GRIMMORY, [_overlord()])
+
+        manga = _hardcover_result(provider_id="480363", title="Overlord (Manga) Vol. 1")
+        result = lookup_books([manga], index=index)
+
+        assert result["matches"] == {}
+
+    def test_a_manga_title_without_ids_still_demotes(self, index, enabled_providers):
+        index.replace_items(SOURCE_GRIMMORY, [_overlord(hardcover_id="")])
+
+        manga = _hardcover_result(provider_id="", title="Overlord (Manga) Vol. 1")
+        match = lookup_books([manga], index=index)["matches"]["hc1"]
+
+        assert match["items"] == []
+        assert [i["item_id"] for i in match["other_editions"]] == ["161"]
+
+    def test_an_item_without_a_hardcover_id_is_not_vetoed(self, index, enabled_providers):
+        index.replace_items(SOURCE_GRIMMORY, [_overlord(hardcover_id="")])
+
+        result = lookup_books([_hardcover_result(title="Overlord, Vol. 1")], index=index)
+        match = result["matches"]["hc1"]
+
+        assert [i["item_id"] for i in match["items"]] == ["161"]
+
+    def test_an_audiobook_search_reports_the_ebook_as_another_format(
+        self, index, enabled_providers
+    ):
+        index.replace_items(SOURCE_GRIMMORY, [_overlord()])
+
+        result = lookup_books([_hardcover_result(content_type="audiobook")], index=index)
+        match = result["matches"]["hc1"]
+
+        assert match["items"] == []
+        assert [i["item_id"] for i in match["other_formats"]] == ["161"]

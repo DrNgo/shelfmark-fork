@@ -14,7 +14,13 @@ from __future__ import annotations
 from typing import Any
 
 from shelfmark.library.index import LibraryIndexDB, LibraryMatch, get_library_index
-from shelfmark.library.matching import build_match_keys, edition_qualifiers, normalize_asin
+from shelfmark.library.matching import (
+    HARDCOVER_KEY_PREFIX,
+    build_match_keys,
+    edition_qualifiers,
+    hardcover_match_key,
+    normalize_asin,
+)
 from shelfmark.library.media_type import media_type_for_content_type
 from shelfmark.library.providers import get_providers
 from shelfmark.library.scheduler import is_index_stale
@@ -122,6 +128,26 @@ def _oldest_sync(states: dict[str, dict[str, Any]]) -> str | None:
     return min(stamps)
 
 
+def _hardcover_id(book: dict[str, Any]) -> str:
+    """The book's Hardcover id, only when the result came from Hardcover."""
+    provider = str(book.get("provider") or "").strip().casefold()
+    if provider != "hardcover":
+        return ""
+    key = hardcover_match_key(book.get("provider_id"))
+    return key[len(HARDCOVER_KEY_PREFIX) :] if key else ""
+
+
+def _without_conflicts(matches: list[LibraryMatch], hardcover_id: str) -> list[LibraryMatch]:
+    """Drop holdings whose Hardcover work id disagrees with the book's.
+
+    Two verified works can still share a normalized title/author key (a light
+    novel and its manga, say); the work id is the stronger evidence.
+    """
+    if not hardcover_id:
+        return matches
+    return [m for m in matches if not m.hardcover_id or m.hardcover_id == hardcover_id]
+
+
 def lookup_books(books: list[Any], *, index: LibraryIndexDB | None = None) -> dict[str, Any]:
     """Look up which of `books` are already held, in their own format or another.
 
@@ -152,16 +178,18 @@ def lookup_books(books: list[Any], *, index: LibraryIndexDB | None = None) -> di
         if not book_id or book_id in matches:
             continue
 
+        hardcover_id = _hardcover_id(book)
         keys = build_match_keys(
             book.get("title"),
             book.get("author"),
             asin=book.get("asin"),
             isbn=book.get("isbn_13") or book.get("isbn_10"),
+            hardcover_id=hardcover_id,
         )
         if not keys:
             continue
 
-        found = library_index.find_matches(keys, states.keys())
+        found = _without_conflicts(library_index.find_matches(keys, states.keys()), hardcover_id)
         if found:
             matches[book_id] = _match_payload(
                 found,

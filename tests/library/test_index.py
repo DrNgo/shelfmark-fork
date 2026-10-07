@@ -279,3 +279,23 @@ class TestPerSourceState:
 
         assert index.get_state(SOURCE_AUDIOBOOKSHELF).item_count == 2
         assert index.get_state(SOURCE_GRIMMORY).item_count == 1
+
+
+class TestHardcoverKey:
+    def test_an_item_is_found_by_its_hardcover_key_and_carries_the_id(self, index):
+        overlord = _item(
+            title="Overlord, Vol. 1", author="Maruyama Kugane", asin="", hardcover_id="730514"
+        )
+        index.replace_items(SOURCE_AUDIOBOOKSHELF, [overlord])
+
+        matches = index.find_matches(build_match_keys("", "", hardcover_id="730514"))
+
+        assert [m.item_id for m in matches] == ["li_1"]
+        assert matches[0].hardcover_id == "730514"
+
+    def test_an_item_without_a_hardcover_id_reports_none(self, index):
+        index.replace_items(SOURCE_AUDIOBOOKSHELF, [_item()])
+
+        matches = index.find_matches(build_match_keys("The Housemaid", "Freida McFadden"))
+
+        assert matches[0].hardcover_id == ""
