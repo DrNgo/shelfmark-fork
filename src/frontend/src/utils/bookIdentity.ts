@@ -20,7 +20,8 @@ export const bookIdentityFields = (book: Book): BookIdentityFields => {
   return {
     provider: book.provider,
     provider_id: book.provider_id,
-    isbn_13: book.isbn_13 ?? book.isbn_10,
+    // `||`, not `??`: a blank ISBN-13 must not hide the ISBN-10.
+    isbn_13: book.isbn_13 || book.isbn_10 || undefined,
     asin: book.asin,
   };
 };
