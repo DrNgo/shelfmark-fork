@@ -1,4 +1,5 @@
 import type { Book, ContentType, CreateRequestPayload, Release } from '../types';
+import { bookIdentityFields } from './bookIdentity';
 
 // Re-exported for backward compatibility: several modules and tests import
 // this from here rather than from ../utils/mediaType, where it is defined.
@@ -36,6 +37,10 @@ export const buildMetadataBookRequestData = (book: Book, contentType: ContentTyp
     // Persisted so the approving admin gets the same exact library match the
     // requester saw, without re-querying the metadata provider.
     asin: book.asin,
+    // Fork-only: kept so an approved request can still tell the tagging hook
+    // which edition was asked for.
+    isbn_13: book.isbn_13,
+    isbn_10: book.isbn_10,
     year: book.year,
     preview: book.preview,
     cover_aspect: book.cover_aspect,
@@ -97,6 +102,7 @@ export const buildReleaseDataFromMetadataRelease = (
     series_count: book.series_count,
     subtitle: book.subtitle,
     language: release.language,
+    ...bookIdentityFields(book),
     ...(isSourceBackedReleaseContext ? { search_mode: 'direct' as const } : {}),
   };
 };

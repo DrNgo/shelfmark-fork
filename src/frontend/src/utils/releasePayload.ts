@@ -1,5 +1,6 @@
 import type { DownloadReleasePayload } from '../services/api';
 import type { Book, ContentType, PackBook, Release } from '../types';
+import { bookIdentityFields } from './bookIdentity';
 import { withDestinationKey } from './downloadDestinations';
 
 export interface ReleaseDownloadOptions {
@@ -52,6 +53,7 @@ export function buildReleaseDownloadPayload(
       // From the release, never the book: book.language is the provider's
       // canonical edition, which would mislabel a translated release.
       language: release.language ?? undefined,
+      ...bookIdentityFields(book),
     },
     options.destinationKey,
   );

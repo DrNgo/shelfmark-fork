@@ -589,6 +589,11 @@ export type DownloadReleasePayload = {
   language?: string; // Release language code, for the {Language} naming variable
   search_author?: string;
   search_mode?: 'direct' | 'universal';
+  // Metadata identity of the book (fork-only), for the post-upload tagging hook.
+  provider?: string;
+  provider_id?: string;
+  isbn_13?: string;
+  asin?: string;
   // Library chosen by an admin in the release modal: an Audiobookshelf key for
   // an audiobook, `grimmory:<lib>:<path>` for an ebook. Absent unless one was
   // picked, and stripped server-side from a non-admin's payload.

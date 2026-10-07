@@ -87,6 +87,50 @@ describe('requestPayload utilities', () => {
     expect(bookData.asin).toBe('B0BSHZ1234');
   });
 
+  // Fork-only: identity a post-upload hook tags the book with.
+  it('stores both ISBNs in the request book data', () => {
+    const bookData = buildMetadataBookRequestData(
+      { ...baseBook, isbn_13: '9780316005142', isbn_10: '0316005142' },
+      'ebook',
+    );
+
+    expect(bookData.isbn_13).toBe('9780316005142');
+    expect(bookData.isbn_10).toBe('0316005142');
+  });
+
+  it('puts the book identity on release request data', () => {
+    const releaseData = buildReleaseDataFromMetadataRelease(
+      {
+        ...baseBook,
+        provider: 'hardcover',
+        provider_id: '886465',
+        isbn_13: '9780316005142',
+        asin: 'B0X',
+      },
+      baseRelease,
+      'ebook',
+    );
+
+    expect(releaseData).toMatchObject({
+      provider: 'hardcover',
+      provider_id: '886465',
+      isbn_13: '9780316005142',
+      asin: 'B0X',
+    });
+  });
+
+  it('puts no identity on release request data for a manual book', () => {
+    const releaseData = buildReleaseDataFromMetadataRelease(
+      { ...baseBook, provider: 'manual', provider_id: 'manual-1', isbn_13: '9780316005142' },
+      baseRelease,
+      'ebook',
+    );
+
+    expect(releaseData.provider).toBeUndefined();
+    expect(releaseData.provider_id).toBeUndefined();
+    expect(releaseData.isbn_13).toBeUndefined();
+  });
+
   it('resolves browse source from source-backed or provider-backed books', () => {
     expect(getBrowseSource(baseBook)).toBe('direct_download');
     expect(
