@@ -29,7 +29,7 @@
 2. **Non-digit or padded IDs** (`"hc-123"`, `" 886465 "`, `"12a"`, `True`, `0`-free unicode digits like `"²"`) → only clean ASCII digits (after strip) make a key. Test in Task 1.
 3. **Empty Grimmory library** (`content: []`) → sync succeeds with zero items and makes no detail reads. Test in Task 3.
 4. **The same book id listed twice across pages** → indexed once (no duplicate rows, no crash). Test in Task 3.
-5. **Combined mode with nothing held, or only the other format held** → never locked. Test in Task 5.
+5. **Combined mode with nothing held, only one format held, or the other format held only as a different edition** → never locked. Test in Task 5.
 
 ## File Structure
 
@@ -281,7 +281,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Test: `tests/grimmory/test_client.py`
 
 **Interfaces:**
-- Produces: `class BookloreAuthError(BookloreError)`; `get_book(booklore_config: BookloreConfig, token: str, book_id: object, *, session: requests.Session | None = None) -> dict[str, Any]` — raises `BookloreAuthError` on 401 and `BookloreError` on any other failure or malformed payload; `list_books` returns the page count from `payload["page"]["totalPages"]` (falling back to top-level `totalPages`) and raises when a non-empty page carries no usable count.
+- Produces: `class BookloreAuthError(BookloreError)`; `get_book(booklore_config: BookloreConfig, token: str, book_id: object, *, session: requests.Session | None = None) -> dict[str, Any]` — raises `BookloreAuthError` on 401 and `BookloreError` on any other failure or malformed payload; `list_books` returns the page count from `payload["page"]["totalPages"]` (falling back to top-level `totalPages`) and raises when a page whose `content` is not literally empty carries no usable count.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -315,6 +315,19 @@ class TestListBooksPaging:
 
         with pytest.raises(BookloreError, match="page count"):
             list_books(CONFIG, "token", page=0, size=500)
+
+    def test_junk_rows_without_a_count_are_malformed_not_empty(self, monkeypatch):
+        payload = {"content": [None], "page": {"number": 0}}
+        monkeypatch.setattr(requests, "get", lambda url, **kw: _Response(payload))
+
+        with pytest.raises(BookloreError, match="page count"):
+            list_books(CONFIG, "token", page=0, size=500)
+
+    def test_an_empty_library_is_one_empty_page(self, monkeypatch):
+        payload = {"content": [], "page": {"number": 0}}
+        monkeypatch.setattr(requests, "get", lambda url, **kw: _Response(payload))
+
+        assert list_books(CONFIG, "token", page=0, size=500) == ([], 1)
 
     def test_an_invalid_count_on_a_non_empty_page_is_malformed(self, monkeypatch):
         payload = {"content": [{"id": 1}], "page": {"totalPages": 0}}
@@ -403,7 +416,10 @@ In `list_books`, replace the last block (from `raw_total = payload.get("totalPag
         raw_total = payload.get("totalPages")
     if isinstance(raw_total, int) and not isinstance(raw_total, bool) and raw_total > 0:
         return books, raw_total
-    if not books:
+    # Only a literally empty `content` is an empty library. Rows filtered out
+    # above as non-objects are a broken page, and reading that as "empty" would
+    # let the sync replace the whole index with nothing.
+    if not content:
         return books, 1
     msg = f"Unexpected {BOOKLORE_DISPLAY_NAME} book listing payload: missing page count"
     raise BookloreError(msg)
@@ -1081,6 +1097,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `src/frontend/src/utils/libraryMatches.ts`
+- Modify: `src/frontend/src/hooks/useLibraryMatches.ts` (`useBothFormatMatches`)
 - Test: `src/frontend/src/tests/libraryMatches.test.ts`
 
 **Interfaces:**
@@ -1089,11 +1106,18 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   - `LibraryLookupBook.provider?: string`, `LibraryLookupBook.provider_id?: string`
   - `singleBookLookup(id, title, author, asin?, isbn?, contentType?, provider?, providerId?): Book[]`
   - `hardcoverIdentity(bookData: Record<string, unknown> | null | undefined): { provider?: string; providerId?: string }`
-  - `isLockedInLibrary(match: LibraryMatch | undefined, combinedMode: boolean): boolean`
+  - `interface FormatMatches { ebook?: LibraryMatch; audiobook?: LibraryMatch }`
+  - `interface BothFormatMatches { ebook: Record<string, LibraryMatch>; audiobook: Record<string, LibraryMatch> }`
+  - `withContentType(books: Book[], contentType: string): Book[]`
+  - `bothFormatsFor(both: BothFormatMatches | null, id: string): FormatMatches | undefined`
+  - `isLockedInLibrary(match: LibraryMatch | undefined, bothFormats?: FormatMatches): boolean`
+  - `useBothFormatMatches(books: Book[], enabled: boolean): BothFormatMatches | null` (in `hooks/useLibraryMatches.ts`)
+
+Why combined mode looks each format up separately: the combined action acquires both formats, so it may lock only when *each* format is held as the same edition. The backend sorts editions only within the requested format: `other_formats` is never edition-checked (`_match_payload`). So "the other format appears in `other_formats`" would let a full-cast audiobook stand in for the recording being acquired. A lookup per format puts each holding through that format's own edition check, with no backend change.
 
 - [ ] **Step 1: Write the failing tests**
 
-In `src/frontend/src/tests/libraryMatches.test.ts`, add `hardcoverIdentity` and `isLockedInLibrary` to the import list from `'../utils/libraryMatches'`, then append:
+In `src/frontend/src/tests/libraryMatches.test.ts`, add `bothFormatsFor`, `hardcoverIdentity`, `isLockedInLibrary` and `withContentType` to the import list from `'../utils/libraryMatches'`, then append:
 
 ```ts
 describe('Hardcover identity in the lookup', () => {
@@ -1171,39 +1195,55 @@ describe('Hardcover identity in the lookup', () => {
 });
 
 describe('isLockedInLibrary', () => {
-  const ebookHolding = {
-    source: 'grimmory',
-    media_type: 'ebook',
-    item_id: '161',
-    library_id: '1',
-    library_name: 'Fiction',
-    title: 'Overlord, Vol. 1',
-    author: 'Maruyama Kugane',
-    asin: '',
-    isbn13: '',
-  };
+  const held = match();
+  // Same book, same format, but a different recording (a full-cast adaptation, say).
+  const differentEdition = match({ items: [], other_editions: match().items });
 
   it('locks on a same-format holding outside combined mode', () => {
-    expect(isLockedInLibrary(match(), false)).toBe(true);
+    expect(isLockedInLibrary(held)).toBe(true);
   });
 
   it('never locks without a same-format holding', () => {
-    expect(isLockedInLibrary(match({ items: [], other_formats: [ebookHolding] }), false)).toBe(
-      false,
-    );
-    expect(isLockedInLibrary(undefined, false)).toBe(false);
+    expect(isLockedInLibrary(differentEdition)).toBe(false);
+    expect(isLockedInLibrary(undefined)).toBe(false);
   });
 
   // Review Focus #5: combined mode acquires both formats, so one is not enough.
   it('does not lock combined mode on one format', () => {
-    expect(isLockedInLibrary(match(), true)).toBe(false);
-    expect(isLockedInLibrary(match({ items: [], other_formats: [ebookHolding] }), true)).toBe(
-      false,
-    );
+    expect(isLockedInLibrary(held, { ebook: held, audiobook: undefined })).toBe(false);
+    expect(isLockedInLibrary(held, { ebook: undefined, audiobook: held })).toBe(false);
+  });
+
+  it('does not lock combined mode when the other format is only a different edition', () => {
+    expect(isLockedInLibrary(held, { ebook: held, audiobook: differentEdition })).toBe(false);
   });
 
   it('locks combined mode when both formats are held', () => {
-    expect(isLockedInLibrary(match({ other_formats: [ebookHolding] }), true)).toBe(true);
+    expect(isLockedInLibrary(held, { ebook: held, audiobook: held })).toBe(true);
+  });
+});
+
+describe('combined-mode lookups', () => {
+  it('forces every book to one format', () => {
+    const books = withContentType(
+      [book({ content_type: 'ebook' }), book({ id: 'bk2' })],
+      'audiobook',
+    );
+
+    expect(buildLibraryLookupPayload(books).map((entry) => entry.content_type)).toEqual([
+      'audiobook',
+      'audiobook',
+    ]);
+  });
+
+  it('picks one book out of both lookups', () => {
+    const both = { ebook: { bk1: match() }, audiobook: {} };
+
+    expect(bothFormatsFor(both, 'bk1')).toEqual({ ebook: match(), audiobook: undefined });
+  });
+
+  it('has nothing outside combined mode', () => {
+    expect(bothFormatsFor(null, 'bk1')).toBeUndefined();
   });
 });
 ```
@@ -1211,7 +1251,7 @@ describe('isLockedInLibrary', () => {
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `cd src/frontend && npx vitest run src/tests/libraryMatches.test.ts`
-Expected: FAIL — `hardcoverIdentity`/`isLockedInLibrary` are not exported, and the payload omits `provider`.
+Expected: FAIL — `bothFormatsFor`, `hardcoverIdentity`, `isLockedInLibrary` and `withContentType` are not exported, and the payload omits `provider`.
 
 - [ ] **Step 3: Implement**
 
@@ -1338,18 +1378,75 @@ export const booksLookupSignature = (books: Book[], defaultContentType?: string)
 Add after `isHeldInFormat`:
 
 ```ts
+/** One book's holdings in each format, from a lookup per format (combined mode). */
+export interface FormatMatches {
+  ebook?: LibraryMatch;
+  audiobook?: LibraryMatch;
+}
+
+/** A whole result set's per-format lookups, keyed like any lookup response. */
+export interface BothFormatMatches {
+  ebook: Record<string, LibraryMatch>;
+  audiobook: Record<string, LibraryMatch>;
+}
+
+/** The same books, all asked about as one format. */
+export const withContentType = (books: Book[], contentType: string): Book[] =>
+  books.map((book) => ({ ...book, content_type: contentType }));
+
+export const bothFormatsFor = (
+  both: BothFormatMatches | null,
+  id: string,
+): FormatMatches | undefined =>
+  both ? { ebook: both.ebook[id], audiobook: both.audiobook[id] } : undefined;
+
 /**
  * Whether the acquire action should lock.
  *
- * Combined mode looks up one format but its action fetches both, so holding
- * one of them is worth a badge, not a lock: only both formats held — the
- * browsed one in `items`, the other in `other_formats` — locks.
+ * Outside combined mode, holding the browsed format locks. Combined mode's
+ * action fetches both formats, so it locks only when each is held as the same
+ * edition, which is what each format's own lookup says in its `items`. One
+ * format held is still worth the badge, never the lock.
  */
 export const isLockedInLibrary = (
   match: LibraryMatch | undefined,
-  combinedMode: boolean,
-): boolean => isHeldInFormat(match) && (!combinedMode || (match?.other_formats.length ?? 0) > 0);
+  bothFormats?: FormatMatches,
+): boolean =>
+  bothFormats
+    ? isHeldInFormat(bothFormats.ebook) && isHeldInFormat(bothFormats.audiobook)
+    : isHeldInFormat(match);
 ```
+
+In `src/frontend/src/hooks/useLibraryMatches.ts`, change the utils import to
+
+```ts
+import type { BothFormatMatches, LibraryMatch } from '../utils/libraryMatches';
+import {
+  booksLookupSignature,
+  buildLibraryLookupPayload,
+  withContentType,
+} from '../utils/libraryMatches';
+```
+
+and append:
+
+```ts
+const NO_BOOKS: Book[] = [];
+
+/**
+ * Combined mode's lock: ask about the same books once as ebooks and once as
+ * audiobooks, so each format gets its own edition check.
+ *
+ * Disabled, both lookups see no books and make no request.
+ */
+export const useBothFormatMatches = (books: Book[], enabled: boolean): BothFormatMatches | null => {
+  const ebook = useLibraryMatches(enabled ? withContentType(books, 'ebook') : NO_BOOKS);
+  const audiobook = useLibraryMatches(enabled ? withContentType(books, 'audiobook') : NO_BOOKS);
+  return enabled ? { ebook, audiobook } : null;
+};
+```
+
+`useLibraryMatches` refetches on its signature, not on array identity, so the fresh arrays each render cost no requests.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -1360,19 +1457,19 @@ Expected: all pass, including the existing `singleBookLookup` and signature test
 
 ```bash
 cd src/frontend && npm run typecheck && npm run lint && npm run format:check && cd ../..
-git add src/frontend/src/utils/libraryMatches.ts src/frontend/src/tests/libraryMatches.test.ts
+git add src/frontend/src/utils/libraryMatches.ts src/frontend/src/hooks/useLibraryMatches.ts src/frontend/src/tests/libraryMatches.test.ts
 git commit -m "feat(frontend): send Hardcover identity to the library lookup, combined-mode lock rule
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
-Both new exports are imported by the test file, so knip does not flag them at this commit.
+Knip may flag `useBothFormatMatches` as unused until Task 6 wires it. The other new exports are imported by the test file.
 
 ---
-### Task 6: Frontend wiring — combined mode to the result views, identity from the three single-book surfaces
+### Task 6: Frontend wiring — combined-mode lock in the result views and details, identity from the three single-book surfaces
 
 **Files:**
-- Modify: `src/frontend/src/App.tsx` (the `<ResultsSection>` element, ~line 2587)
+- Modify: `src/frontend/src/App.tsx` (the `<ResultsSection>` element, ~line 2587, and the `<DetailsModal>` element, ~line 2631)
 - Modify: `src/frontend/src/components/ResultsSection.tsx`
 - Modify: `src/frontend/src/components/resultsViews/CardView.tsx`, `CompactView.tsx`, `ListView.tsx`
 - Modify: `src/frontend/src/components/DetailsModal.tsx`
@@ -1380,61 +1477,119 @@ Both new exports are imported by the test file, so knip does not flag them at th
 - Modify: `src/frontend/src/components/RequestConfirmationModal.tsx`
 
 **Interfaces:**
-- Consumes (Task 5): `isLockedInLibrary(match, combinedMode)`, `singleBookLookup(..., provider?, providerId?)`, `hardcoverIdentity(bookData)`.
-- Produces: `ResultsSectionProps.combinedMode?: boolean`; `CardViewProps.combinedMode?`, `CompactViewProps.combinedMode?`, `ListViewProps.combinedMode?` (all default `false`).
+- Consumes (Task 5): `useBothFormatMatches(books, enabled)`, `bothFormatsFor(both, id)`, `isLockedInLibrary(match, bothFormats?)`, the `FormatMatches`/`BothFormatMatches` types, `singleBookLookup(..., provider?, providerId?)`, `hardcoverIdentity(bookData)`.
+- Produces: `ResultsSectionProps.combinedMode?: boolean` and `DetailsModalProps.combinedMode?: boolean` (default `false`); `CardViewProps.bothFormats?: FormatMatches`, `CompactViewProps.bothFormats?: FormatMatches`, `ListViewProps.bothFormatMatches?: BothFormatMatches | null`.
 
 There is no component test harness in this repo (vitest runs pure-module tests only). The behaviour lives in Task 5's tested helpers; this task is wiring, checked by the typechecker, lint, knip and the acceptance run in Task 7.
 
 `DiscoverSection` only shows the badge (no lock) and already sends whole `Book`s, so it picks up the Hardcover id through `buildLibraryLookupPayload` with no change.
 
-- [ ] **Step 1: Thread `combinedMode` to the result views**
+- [ ] **Step 1: Combined-mode lock in the result views and the details modal**
 
-`App.tsx` — on the `<ResultsSection ...>` element, next to `defaultContentType={effectiveContentType}`, add:
+`App.tsx`: on the `<ResultsSection ...>` element, next to `defaultContentType={effectiveContentType}`, add this. Add the same line on the `<DetailsModal ...>` element, next to its `defaultContentType={effectiveContentType}`. Its "Find Downloads" runs the same combined acquisition (`handleGetReleases`), so it must lock by the same rule.
 
 ```tsx
             combinedMode={effectiveCombinedMode}
 ```
 
-`ResultsSection.tsx` — add to `ResultsSectionProps` after `defaultContentType?: string;`:
+`ResultsSection.tsx`: change the hook import to `import { useBothFormatMatches, useLibraryMatches } from '../hooks/useLibraryMatches';` and add `import { bothFormatsFor } from '../utils/libraryMatches';` directly above `import { isBookRequested } from '../utils/requestedBooks';`. Then add to `ResultsSectionProps`, after `defaultContentType?: string;`:
 
 ```ts
   /** Combined mode acquires both formats, so the lock needs both held. */
   combinedMode?: boolean;
 ```
 
-add `combinedMode = false,` to the destructured props after `defaultContentType,`, and pass `combinedMode={combinedMode}` to each of `<ListView>`, `<CardView>` and `<CompactView>` (next to their `libraryMatch`/`libraryMatches` prop).
-
-`CardView.tsx` and `CompactView.tsx` — add to the props interface after `isRequested?: boolean;`:
+Add `combinedMode = false,` to the destructured props after `defaultContentType,`. Then, right after `const libraryMatches = useLibraryMatches(books, defaultContentType);`, add:
 
 ```ts
-  combinedMode?: boolean;
+  // Combined mode only: the same books asked about once per format.
+  const bothFormatMatches = useBothFormatMatches(books, combinedMode);
 ```
 
-add `combinedMode = false,` to the destructured props after `isRequested = false,`, change the import to `import { isLockedInLibrary } from '../../utils/libraryMatches';`, and replace both occurrences of
+Pass `bothFormatMatches={bothFormatMatches}` to `<ListView>`, and `bothFormats={bothFormatsFor(bothFormatMatches, book.id)}` to `<CardView>` and `<CompactView>`. Put each next to its `libraryMatch`/`libraryMatches` prop.
 
-```tsx
-isInLibrary={isHeldInFormat(libraryMatch)}
-```
+`CardView.tsx` and `CompactView.tsx`:
+1. Add this to the props interface after `isRequested?: boolean;`:
 
-with
+   ```ts
+     /** Both formats' holdings; set only in combined mode. */
+     bothFormats?: FormatMatches;
+   ```
 
-```tsx
-isInLibrary={isLockedInLibrary(libraryMatch, combinedMode)}
-```
+2. Add `bothFormats,` to the destructured props after `isRequested = false,`.
+3. Change the imports to `import { isLockedInLibrary } from '../../utils/libraryMatches';` and `import type { FormatMatches, LibraryMatch } from '../../utils/libraryMatches';`.
+4. Replace both occurrences of
 
-`ListView.tsx` — add `combinedMode?: boolean;` to `ListViewProps` after `openRequestKeys?: Set<string>;`, `combinedMode = false,` to the destructured props after `openRequestKeys = NO_OPEN_REQUESTS,`, change the import to `isLockedInLibrary`, and replace
+   ```tsx
+   isInLibrary={isHeldInFormat(libraryMatch)}
+   ```
 
-```tsx
-isInLibrary={isHeldInFormat(libraryMatches[book.id])}
-```
+   with
 
-with
+   ```tsx
+   isInLibrary={isLockedInLibrary(libraryMatch, bothFormats)}
+   ```
 
-```tsx
-isInLibrary={isLockedInLibrary(libraryMatches[book.id], combinedMode)}
-```
+`ListView.tsx`:
+1. Add `bothFormatMatches?: BothFormatMatches | null;` to `ListViewProps` after `openRequestKeys?: Set<string>;`.
+2. Add `bothFormatMatches = null,` to the destructured props after `openRequestKeys = NO_OPEN_REQUESTS,`.
+3. Change the imports to `import { bothFormatsFor, isLockedInLibrary } from '../../utils/libraryMatches';` and `import type { BothFormatMatches, LibraryMatch } from '../../utils/libraryMatches';`.
+4. Replace
 
-The badges (`InLibraryBadge`) are untouched: holding one format still shows.
+   ```tsx
+   isInLibrary={isHeldInFormat(libraryMatches[book.id])}
+   ```
+
+   with
+
+   ```tsx
+   isInLibrary={isLockedInLibrary(
+     libraryMatches[book.id],
+     bothFormatsFor(bothFormatMatches, book.id),
+   )}
+   ```
+
+`DetailsModal.tsx`:
+1. Add this to `DetailsModalProps` after `defaultContentType?: string;`:
+
+   ```ts
+     /** Combined mode acquires both formats, so the lock needs both held. */
+     combinedMode?: boolean;
+   ```
+
+2. Add `combinedMode = false,` to the destructured props after `defaultContentType,`.
+3. Change the hook import to `import { useBothFormatMatches, useLibraryMatches } from '../hooks/useLibraryMatches';`, and the utils import to the following (`isHeldInFormat` is no longer used here):
+
+   ```tsx
+   import {
+     applyInLibraryLock,
+     bothFormatsFor,
+     isLockedInLibrary,
+     singleBookLookup,
+   } from '../utils/libraryMatches';
+   ```
+4. Directly after the `const libraryMatch = useLibraryMatches(lookupBooks)[...]` line (it must stay above any early return, like every hook), add:
+
+   ```tsx
+     const bothFormatMatches = useBothFormatMatches(lookupBooks, combinedMode);
+   ```
+
+5. Replace
+
+   ```tsx
+     const effectiveButtonState = applyInLibraryLock(buttonState, isHeldInFormat(libraryMatch));
+   ```
+
+   with
+
+   ```tsx
+     const effectiveButtonState = applyInLibraryLock(
+       buttonState,
+       isLockedInLibrary(libraryMatch, bothFormatsFor(bothFormatMatches, `details-${book.id}`)),
+     );
+   ```
+
+The badges (`InLibraryBadge`) are untouched: holding one format still shows them. The request-confirmation modal and the approval panel only advise and never lock, so they need no combined-mode change.
 
 - [ ] **Step 2: Pass the identity from the three single-book surfaces**
 
@@ -1505,7 +1660,7 @@ The banner's `isHeldInFormat(libraryMatch)` in this modal stays: it decides the 
 - [ ] **Step 3: Run the frontend gates**
 
 Run: `make frontend-checks frontend-test` (or, from `src/frontend`: `npm run typecheck && npm run lint && npm run format:check && npm run knip && npm run test:unit`)
-Expected: all pass. `npm run knip` already exits non-zero on main (2 unused exports, 27 unused exported types, pre-existing); its output must be unchanged from main — nothing new from this branch. (`make frontend-checks` does not run knip.)
+Expected: all pass. Combined mode makes two extra lookup requests per result set (one per format); other modes make none. `npm run knip` already exits non-zero on main (2 unused exports, 27 unused exported types, pre-existing); its output must be unchanged from main — nothing new from this branch. (`make frontend-checks` does not run knip.)
 
 - [ ] **Step 4: Commit**
 

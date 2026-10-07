@@ -80,7 +80,9 @@ and 4 (author reversal, medium labels) apply to Audiobookshelf titles too, by de
   lacks a `metadata` object, is a `BookloreError` (malformed), never a skipped row. A
   missing or non-numeric `hardcoverBookId` inside valid metadata is normal (untagged book)
   and just yields `hardcover_id = ""`.
-- **Bounded cost:** all reads of one sync share one `requests.Session` (connection reuse);
+- **Bounded cost:** the per-book detail reads of one sync share one `requests.Session`
+  (connection reuse; login and the few listing pages keep their existing sessionless
+  calls, since they are a handful of requests — Codex plan review #6);
   the first failure ends the loop (fail fast — no per-book retries). A 401 mid-loop
   triggers exactly one re-login and one retry of that book; a second 401 fails the sync.
   A 404 (book deleted between list and read) fails the sync too — the next scheduled
@@ -122,7 +124,11 @@ and 4 (author reversal, medium labels) apply to Audiobookshelf titles too, by de
 - **Conflict veto:** when the requested book has a Hardcover ID and a matched item carries
   a *different* Hardcover ID, that item is dropped from the result (two verified distinct
   works that merely share a normalized title/author key). An item without a Hardcover ID
-  is unaffected.
+  is unaffected. The veto applies even when the item also matched on an exact ISBN or
+  ASIN (Codex plan review #7, declined). Real Grimmory data held wrong ISBNs, such as
+  manga ISBNs on light-novel volumes, which is the error the tagger exists to fix. The
+  Hardcover ID was verified by the tagger, so it outranks a stored identifier that may
+  be stale. The cost is a missed badge, the cheap failure.
 - **Medium labels:** `light novel`, `novel` and `ln` join `abridged`/`unabridged` in
   `_NON_EDITION_QUALIFIERS`, so `Overlord (Light Novel), Vol. 1: …` against Grimmory's
   `Overlord, Vol. 1` stays a same-edition holding (`items`). `(Manga)`, `(Graphic Novel)`
@@ -150,9 +156,13 @@ and 4 (author reversal, medium labels) apply to Audiobookshelf titles too, by de
     no provider fields, so read them from `payload.book_data` (requests already store
     `provider`/`provider_id`, `utils/requestPayload.ts`, `core/user_db.py`; no migration).
 - **Combined mode:** the results view looks up one format (`effectiveContentType`) but the
-  combined acquire action opens both legs. In combined mode `isInLibrary` is true only
-  when the book is held in the looked-up format (`items`) **and** the other format appears
-  in `other_formats`; holding one format shows the badge but never locks the action.
+  combined acquire action opens both legs. In combined mode the results view and the
+  details modal (whose "Find Downloads" runs the same combined flow) look the books up
+  once more per format (`ebook`, `audiobook`). The action locks only when **each**
+  format's own lookup reports a same-edition holding (`items`). `other_formats` is never
+  edition-checked by the backend, so a full-cast audiobook must not stand in for the
+  recording being acquired (Codex plan review #2). Holding one format shows the badge but
+  never locks the action.
 
 ## Error Handling
 
@@ -161,6 +171,11 @@ and 4 (author reversal, medium labels) apply to Audiobookshelf titles too, by de
 - Lookup: a missing or non-numeric `provider_id` simply adds no Hardcover key.
 - Stale index after a failed sync keeps serving the previous holdings, as today; the
   `stale` flag already reaches the frontend.
+- **Known limit (Codex plan review #4, deferred):** the settings "Sync Library Now" action
+  is synchronous behind the frontend's 30 s request timeout. At ~55 ms per detail read,
+  libraries beyond ~500 books will show a timeout in the UI while the sync still finishes
+  in the background. The current library (~148 books, ~8 s) is far below that. A
+  background job with polling is the fix if the library grows.
 
 ## Testing
 
