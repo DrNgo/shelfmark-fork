@@ -17,6 +17,10 @@ import math
 import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 # Medium labels no release name carries. "(Manga)" is a different adaptation, so it stays.
 _MEDIUM_LABEL_RE = re.compile(r"\s*\((?:light\s+novel|novel|ln)\)", re.IGNORECASE)
@@ -227,3 +231,178 @@ def build_fallback_queries(
         seen.add(key)
         queries.append(candidate)
     return queries
+
+
+_STOPWORDS = frozenset(
+    {"a", "an", "and", "at", "by", "for", "from", "in", "of", "on", "or", "the", "to", "with"}
+)
+# Words that say "a volume" without saying which book; not identity on their own.
+_TITLE_NOISE = frozenset({"vol", "volume"})
+# Title-token identity needs this many significant tokens, or it would stop on almost
+# anything; with fewer, nothing stops the ladder (which costs requests, never results).
+_MIN_TITLE_TOKENS = 2
+_TOKEN_RE = re.compile(r"[^\W_]+")
+
+# Release names that are not an ebook of the book: video encodes and episode markers.
+_VIDEO_RE = re.compile(
+    r"\b(?:2160p|1080p|720p|480p|x264|x265|h\.?264|h\.?265|hevc|bd|bdrip|blu-?ray|web-?dl"
+    r"|webrip|mkv|mp4|avi|dual[ ._-]?audio|s\d{1,2}e\d{1,3}|episodes?|ep\.?\s?\d+)\b",
+    re.IGNORECASE,
+)
+# A manga or comic edition is a different book from the novel it adapts. Applied only
+# when the requested book itself is not a manga or comic.
+_COMIC_RELEASE_RE = re.compile(r"\b(?:manga|comics?|graphic[\s._-]+novels?)\b", re.IGNORECASE)
+_COMIC_BOOK_RE = re.compile(r"manga|comic", re.IGNORECASE)
+# An ebook search is not satisfied by a recording of the book.
+_AUDIO_RE = re.compile(r"\b(?:mp3|m4b|m4a|flac|aac|audiobook|unabridged)\b", re.IGNORECASE)
+
+# Volume numbers a release name can carry: "Vol. 5", "Volume 05", "v05", "[5]", "- 5".
+# The number is captured whole (at most six digits, so int() stays cheap); what follows
+# it decides whether it is a complete volume token.
+_RELEASE_VOLUME_RES = (
+    re.compile(r"\bvol(?:ume)?s?\b\.?\s*(\d{1,6})(?!\d)", re.IGNORECASE),
+    re.compile(r"\bv(\d{1,6})(?!\d)", re.IGNORECASE),
+    re.compile(r"\[\s*(\d{1,3})\s*\](?!\d)"),
+    re.compile(r"(?:^|\s)-\s*(\d{1,3})(?![\d.])"),
+)
+# After a volume number: a fraction ("5.5" - but not "05.2022", a year), a letter
+# ("5a"), or a second volume ("5 & 6", "5 to 7", "5-7", "5—7", "v05-07") make it not a
+# single complete volume.
+_INCOMPLETE_VOLUME_RE = re.compile(
+    r"\.\d(?!\d)|[^\W\d_]|\s*(?:[-–—~&+]|\bto\b|\band\b)\s*v?\d",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class SearchIdentity:
+    """What a release name has to show to count as the requested book.
+
+    ``series_key`` and ``position`` are set together, only when the book has a
+    complete, consistent single-volume identity; otherwise ``title_tokens`` decide.
+    """
+
+    series_key: str = ""
+    position: int | None = None
+    title_tokens: tuple[str, ...] = ()
+    # The requested book is itself a manga or comic, so such releases may be it.
+    book_is_comic: bool = False
+
+
+def _tokens(text: str) -> list[str]:
+    return _TOKEN_RE.findall(text.casefold())
+
+
+def _title_tokens(title: str) -> tuple[str, ...]:
+    """Significant tokens of the full cleaned title, without bare volume words."""
+    return tuple(t for t in significant_tokens(title) if t not in _TITLE_NOISE)
+
+
+def significant_tokens(text: object) -> tuple[str, ...]:
+    """Word tokens of ``text`` without stopwords (all tokens if only stopwords remain)."""
+    tokens = _tokens(clean_query(text))
+    significant = [t for t in tokens if t not in _STOPWORDS]
+    return tuple(significant or tokens)
+
+
+def build_search_identity(
+    *,
+    title: object,
+    current_query: object,
+    series_name: object,
+    series_position: object,
+) -> SearchIdentity:
+    """The identity ``is_identity_hit`` checks results against for this book."""
+    title_text = _normalize_title(title)
+    resolved = _resolve(title_text, series_name, series_position)
+    # The full title, not today's (often shortened) query: "Spice, Vol. 5: Wolf" must not
+    # be stopped by any release that merely says "Wolf".
+    title_tokens = _title_tokens(title_text) or _title_tokens(clean_query(current_query))
+    series_text = series_name if isinstance(series_name, str) else ""
+    return SearchIdentity(
+        series_key=resolved.series,
+        position=resolved.position,
+        title_tokens=title_tokens,
+        book_is_comic=bool(_COMIC_BOOK_RE.search(f"{title_text} {series_text}")),
+    )
+
+
+def _release_volumes(text: str, series_tokens: tuple[str, ...]) -> set[int] | None:
+    """The volume numbers ``text`` names, or None if any of them is not a whole volume."""
+    patterns = list(_RELEASE_VOLUME_RES)
+    if series_tokens:
+        # "Expanse 01 - Leviathan Wakes": the series, its number, then " - ".
+        last = re.escape(series_tokens[-1])
+        patterns.append(re.compile(rf"\b{last}[\s._]+(\d{{1,3}})\s+-\s"))
+    numbers: set[int] = set()
+    for pattern in patterns:
+        for match in pattern.finditer(text):
+            if _INCOMPLETE_VOLUME_RE.match(text, match.end(1)):
+                return None
+            numbers.add(int(match.group(1)))
+    return numbers
+
+
+def is_identity_hit(
+    release_title: object,
+    *,
+    series_key: str,
+    position: int | None,
+    title_tokens: tuple[str, ...] | list[str],
+    content_type: str,
+    book_is_comic: bool = False,
+) -> bool:
+    """Whether a release name is the requested book, for deciding when fallbacks stop.
+
+    A series volume must name this volume (and no other), carry the series key tokens
+    and not be video. Any other book must carry its significant title tokens and not be
+    video. Unless ``book_is_comic``, a manga, comic or graphic-novel release is not the
+    book either. Never used to filter or reorder results.
+    """
+    if not isinstance(release_title, str) or not release_title.strip():
+        return False
+    if not isinstance(title_tokens, (tuple, list)):
+        return False
+    if not isinstance(series_key, str) or isinstance(position, bool):
+        series_key, position = "", None
+    if position is not None and not isinstance(position, int):
+        position = None
+    text = release_title.casefold()
+    if _VIDEO_RE.search(text):
+        return False
+    if str(content_type).strip().lower() == "ebook" and _AUDIO_RE.search(text):
+        return False
+    if not book_is_comic and _COMIC_RELEASE_RE.search(text):
+        return False
+
+    present = set(_tokens(text))
+    if series_key and position is not None:
+        key_tokens = significant_tokens(series_key)
+        if not key_tokens or not all(token in present for token in key_tokens):
+            return False
+        return _release_volumes(text, key_tokens) == {position}
+
+    wanted = [token.casefold() for token in title_tokens if isinstance(token, str) and token]
+    return len(wanted) >= _MIN_TITLE_TOKENS and all(token in present for token in wanted)
+
+
+def any_identity_hit(
+    release_titles: Iterable[object],
+    identity: SearchIdentity | None,
+    *,
+    content_type: str,
+) -> bool:
+    """Whether any of ``release_titles`` is the book ``identity`` describes."""
+    if identity is None:
+        return False
+    return any(
+        is_identity_hit(
+            title,
+            series_key=identity.series_key,
+            position=identity.position,
+            title_tokens=identity.title_tokens,
+            content_type=content_type,
+            book_is_comic=identity.book_is_comic,
+        )
+        for title in release_titles
+    )

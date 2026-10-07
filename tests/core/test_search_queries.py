@@ -14,8 +14,12 @@ import math
 import pytest
 
 from shelfmark.core.search_queries import (
+    SearchIdentity,
+    any_identity_hit,
     build_fallback_queries,
+    build_search_identity,
     clean_query,
+    is_identity_hit,
     normalize_position,
 )
 from shelfmark.metadata_providers import BookMetadata
@@ -585,4 +589,266 @@ class TestStandalones:
                 title=None, current_query=None, series_name=7, series_position=object()
             )
             == []
+        )
+
+
+class TestIdentityPredicate:
+    DXD5 = SearchIdentity(series_key="High School DxD", position=5, title_tokens=("hellcat",))
+    STANDALONE = SearchIdentity(title_tokens=("project", "hail", "mary"))
+
+    def _hit(self, title: str, identity: SearchIdentity, content_type: str = "ebook") -> bool:
+        return is_identity_hit(
+            title,
+            series_key=identity.series_key,
+            position=identity.position,
+            title_tokens=identity.title_tokens,
+            content_type=content_type,
+        )
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "High School DxD, Vol. 5: Hellcat of the Underworld Training Camp by Ichiei Ishibumi [ENG / EPUB]",
+            "Ichiei Ishibumi - [High School DxD - Volume 05] - Hellcat of the Underworld Training Camp",
+            "High School DxD v05 (2015) (Digital) (danke-Empire)",
+            "Seven.Seas-High.School.DxD.Vol.05.2016.Retail.eBook-BitBook",
+            "High School DxD [5] (epub)",
+            "High School DxD - 05 (epub)",
+            "High School DxD Vol 5",
+        ],
+    )
+    def test_the_right_volume_is_a_hit(self, title):
+        assert self._hit(title, self.DXD5)
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "High School DxD, Vol. 15 by Ichiei Ishibumi [ENG / EPUB]",
+            "High School DxD v04 (2015) (Digital)",
+            "High School DxD Vol. 5-6 (epub)",
+            "High School DxD (epub)",
+        ],
+    )
+    def test_a_wrong_missing_or_extra_volume_is_not(self, title):
+        assert not self._hit(title, self.DXD5)
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "High School DxD Vol. 5.5 (epub)",
+            "High School DxD Vol. 5a (epub)",
+            "High School DxD Vol. 5 & 6 (epub)",
+            "High School DxD Vol. 5 and 6 (epub)",
+            "High School DxD Vol. 5 to 7 (epub)",
+            "High School DxD Vol. 5\u20147 (epub)",
+            "High School DxD Vol. 5\u20137 (epub)",
+            "High School DxD Vol. 5+6 (epub)",
+            "High School DxD v05-07 (Digital)",
+            "High School DxD v05-v07 (Digital)",
+            "High School DxD [5] Vol. 5.5",
+        ],
+    )
+    def test_an_incomplete_volume_token_is_not(self, title):
+        assert not self._hit(title, self.DXD5)
+
+    @pytest.mark.parametrize(("position", "hit"), [(1, True), (10, False)])
+    def test_series_then_number_then_dash_names_the_volume(self, position, hit):
+        expanse = SearchIdentity(series_key="The Expanse", position=position)
+        title = "Reader Corey, James S A - The Expanse 01 - Leviathan Wakes (Retail)"
+
+        assert self._hit(title, expanse) is hit
+
+    def test_a_year_after_the_volume_is_not_a_fraction(self):
+        assert self._hit("High.School.DxD.Vol.05.2016.eBook", self.DXD5)
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "High School DxD S01E05 1080p WEB-DL x264",
+            "High School DxD Vol. 5 [BD 720p]",
+            "High School DxD - 05 (mkv)",
+            "High School DxD Episode 5",
+        ],
+    )
+    def test_video_is_not(self, title):
+        assert not self._hit(title, self.DXD5)
+
+    def test_another_series_is_not(self):
+        assert not self._hit("Overlord, Vol. 5 by Kugane Maruyama [ENG / EPUB]", self.DXD5)
+
+    def test_an_audiobook_does_not_stop_an_ebook_search(self):
+        title = "High School DxD, Volume 5 by Ichiei Ishibumi [ENG / M4B]"
+        assert not self._hit(title, self.DXD5)
+        assert self._hit(title, self.DXD5, content_type="audiobook")
+
+    def test_standalone_needs_its_title_tokens(self):
+        assert self._hit("Project Hail Mary by Andy Weir [ENG / EPUB]", self.STANDALONE)
+        assert self._hit("Andy.Weir-Project.Hail.Mary.2021.RETAIL.EPUB", self.STANDALONE)
+        assert not self._hit("Project Hail (epub)", self.STANDALONE)
+        assert not self._hit("Project Hail Mary 2160p WEB-DL", self.STANDALONE)
+
+    def test_suppressed_identity_uses_the_full_title(self):
+        # "Spice, Vol. 5: Wolf" with metadata position 6 conflicts, so the series rule is
+        # off; today's query would be just "Wolf", which another series' release has.
+        identity = build_search_identity(
+            title="Spice, Vol. 5: Wolf",
+            current_query="Wolf",
+            series_name="Spice",
+            series_position=6,
+        )
+
+        assert identity.title_tokens == ("spice", "5", "wolf")
+        assert not self._hit("Other Series Vol. 1 Wolf EPUB", identity)
+        assert self._hit("Spice Vol. 5 Wolf (epub)", identity)
+
+    def test_fewer_than_two_title_tokens_never_stop_the_ladder(self):
+        assert not self._hit("Wolf (epub)", SearchIdentity(title_tokens=("wolf",)))
+
+    def test_junk_is_never_a_hit(self):
+        for title in (None, "", "   ", 7):
+            assert not self._hit(title, self.DXD5)
+        assert not self._hit("anything", SearchIdentity())
+
+    @pytest.mark.parametrize(
+        ("series_key", "position", "title_tokens"),
+        [
+            ("High School DxD", 5, None),
+            (None, 5, ("high", "school")),
+            ("High School DxD", True, ("high", "school")),
+            ("High School DxD", "5", ("high", "school")),
+            ("High School DxD", 5, "high school"),
+        ],
+    )
+    def test_junk_arguments_never_raise(self, series_key, position, title_tokens):
+        result = is_identity_hit(
+            "High School DxD Vol. 5",
+            series_key=series_key,
+            position=position,
+            title_tokens=title_tokens,
+            content_type="ebook",
+        )
+        assert result in (True, False)
+        if title_tokens is None or isinstance(title_tokens, str):
+            assert result is False
+
+
+class TestComicReleases:
+    """A manga or comic edition is not the light novel, even with the right volume."""
+
+    OVERLORD5 = SearchIdentity(series_key="Overlord", position=5)
+    OVERLORD5_MANGA = SearchIdentity(series_key="Overlord", position=5, book_is_comic=True)
+    LIVE_RESULTS = (
+        "Yen.Press-Overlord.Vol.05.Manga.2022.Hybrid.Comic.eBook-BitBook",
+        "Yen.Press-Overlord.The.Undead.King.Oh.Vol.05.2022.Hybrid.Comic.eBook-BitBook",
+    )
+
+    def _hit(self, title: str, identity: SearchIdentity) -> bool:
+        return is_identity_hit(
+            title,
+            series_key=identity.series_key,
+            position=identity.position,
+            title_tokens=identity.title_tokens,
+            content_type="ebook",
+            book_is_comic=identity.book_is_comic,
+        )
+
+    @pytest.mark.parametrize("title", LIVE_RESULTS)
+    def test_the_live_manga_results_do_not_stop_a_light_novel_ladder(self, title):
+        assert not self._hit(title, self.OVERLORD5)
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "Overlord Vol. 5 (Graphic Novel)",
+            "Overlord v05 (Comics)",
+            "Overlord.Vol.05.graphic.novel",
+        ],
+    )
+    def test_comics_and_graphic_novels_are_not_the_light_novel(self, title):
+        assert not self._hit(title, self.OVERLORD5)
+
+    def test_the_light_novel_release_still_is(self):
+        assert self._hit("Overlord.v05.2018.Digital.danke-Empire", self.OVERLORD5)
+
+    @pytest.mark.parametrize("title", LIVE_RESULTS)
+    def test_a_manga_book_accepts_manga_releases(self, title):
+        assert self._hit(title, self.OVERLORD5_MANGA)
+
+    def test_any_identity_hit_uses_the_identity_s_comic_flag(self):
+        assert not any_identity_hit(self.LIVE_RESULTS, self.OVERLORD5, content_type="ebook")
+        assert any_identity_hit(self.LIVE_RESULTS, self.OVERLORD5_MANGA, content_type="ebook")
+
+
+class TestBuildSearchIdentity:
+    def test_a_series_volume_identity(self):
+        identity = build_search_identity(
+            title=f"{DXD}, Vol. 5: Hellcat of the Underworld Training Camp",
+            current_query=f"{DXD}, Vol. 5: Hellcat of the Underworld Training Camp",
+            series_name=DXD,
+            series_position=5,
+        )
+        assert (identity.series_key, identity.position) == ("High School DxD", 5)
+
+    def test_a_part_in_the_book_name_is_still_a_series_volume(self):
+        identity = build_search_identity(
+            title=f"{OL}, Vol. 5: The Men of the Kingdom Part I",
+            current_query="The Men of the Kingdom Part I",
+            series_name=OL,
+            series_position=5,
+        )
+        assert (identity.series_key, identity.position) == ("Overlord", 5)
+
+    def test_a_split_volume_falls_back_to_title_tokens(self):
+        identity = build_search_identity(
+            title="Spice, Vol. 2 Part 1",
+            current_query="Spice Vol. 2 Part 1",
+            series_name="Spice",
+            series_position=2,
+        )
+        assert identity == SearchIdentity(title_tokens=("spice", "2", "part", "1"))
+
+    def test_a_manga_or_comic_book_is_flagged(self):
+        for title, series in (
+            ("Overlord (Manga), Vol. 5", "Overlord (Manga)"),
+            ("Spice", "Spice Comics"),
+        ):
+            identity = build_search_identity(
+                title=title, current_query=title, series_name=series, series_position=5
+            )
+            assert identity.book_is_comic is True
+
+        light_novel = build_search_identity(
+            title=f"{OL}, Vol. 5: The Men of the Kingdom Part I",
+            current_query="The Men of the Kingdom Part I",
+            series_name=OL,
+            series_position=5,
+        )
+        assert light_novel.book_is_comic is False
+
+    def test_a_standalone_identity(self):
+        identity = build_search_identity(
+            title="The Housemaid",
+            current_query="The Housemaid",
+            series_name=None,
+            series_position=None,
+        )
+        assert identity == SearchIdentity(title_tokens=("housemaid",))
+
+
+class TestAnyIdentityHit:
+    def test_true_when_one_title_is_the_book(self):
+        identity = SearchIdentity(series_key="Overlord", position=2)
+
+        assert any_identity_hit(
+            ["Overlord, Vol. 3", None, "Overlord v02 (2016) (Digital)"],
+            identity,
+            content_type="ebook",
+        )
+
+    def test_false_without_an_identity_or_a_hit(self):
+        assert not any_identity_hit(["Overlord v02"], None, content_type="ebook")
+        assert not any_identity_hit(
+            ["Overlord, Vol. 3"],
+            SearchIdentity(series_key="Overlord", position=2),
+            content_type="ebook",
         )
