@@ -532,9 +532,12 @@ _RANK_VOLUME_RES = (
 _RANK_PARTIAL_VOLUME_RE = re.compile(r"\.(?!(?:19|20)\d{2}(?!\d))\d+|[^\W\d_]")
 # A range or list separator between two volume numbers: "5-6", "5 & 6", "5 to 7", "2/3".
 _RANK_RANGE_SEPARATOR = r"\s*(?:[-–—~&+,/]|\bto\b|\band\b|\bthrough\b)\s*"
-# A second volume right after the first: "5-6", "5 & 6", "v05-v07", "1, 2", "2 / 3".
+# A second volume right after the first: "5-6", "5 & 6", "v05-v07", "1, 2", "2 / 3". Not a
+# page count ("Vol. 2 - 451 pages", "Vol 2 - 320 pp").
 _RANK_VOLUME_LIST_RE = re.compile(
-    _RANK_RANGE_SEPARATOR + r"(?:vol(?:ume)?s?\b\.?\s*|v|#|book\s+)?\d{1,3}(?![\d.]|[^\W\d_])",
+    _RANK_RANGE_SEPARATOR
+    + r"(?:vol(?:ume)?s?\b\.?\s*|v|#|book\s+)?\d{1,3}(?![\d.]|[^\W\d_])"
+    + r"(?!\s*(?:pages?|pp?)\b)",
     re.IGNORECASE,
 )
 # Collection evidence: several books in one release. Separators between names ("Corey &

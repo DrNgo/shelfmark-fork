@@ -1826,3 +1826,22 @@ class TestRankingShortSeriesKey:
         # Known limit: "The Rising of the Shield Hero" has no colon, so "Shield Hero" is
         # not a key and the release stays unknown.
         assert _volume("Shield Hero v03", SHIELD3_RANK) == ("unknown", None)
+
+
+class TestRankingPageCount:
+    """Final review: a page count after a volume is not a second volume."""
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Overlord Vol. 2 - 451 pages (epub)",
+            "Overlord Vol 2 - 320 pages",
+            "Overlord Vol 2 - 320 pp",
+            "Overlord Vol 2 - 320 p.",
+        ],
+    )
+    def test_a_page_count_after_the_volume(self, name):
+        assert _volume(name, OVERLORD2_RANK) == ("match", None)
+
+    def test_a_real_range_is_still_a_list(self):
+        assert _volume("Overlord Vol 2 - 3 (epub)", OVERLORD2_RANK) == ("unknown", None)
