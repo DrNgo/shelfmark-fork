@@ -906,6 +906,8 @@ const ReleaseModalSession = ({
     manualQuery,
     setManualQuery,
     showManualQuery,
+    manualQueryApplied,
+    canRunManualSearch,
     toggleManualQuery,
     applyCurrentFilters,
     runManualSearch,
@@ -1895,7 +1897,7 @@ const ReleaseModalSession = ({
                       type="button"
                       onClick={toggleManualQuery}
                       className={`hover-surface rounded-full p-2.5 text-zinc-500 transition-colors dark:text-zinc-400 ${
-                        manualQuery.trim() ? 'text-emerald-600 dark:text-emerald-400' : ''
+                        manualQueryApplied ? 'text-emerald-600 dark:text-emerald-400' : ''
                       }`}
                       aria-label="Manual search query"
                       title="Manual query"
@@ -2298,9 +2300,9 @@ const ReleaseModalSession = ({
                   />
                   <button
                     type="submit"
-                    disabled={currentTabLoading || !manualQuery.trim()}
+                    disabled={currentTabLoading || !canRunManualSearch}
                     className={`rounded-lg px-3 py-2 text-sm font-medium text-white transition-colors ${
-                      currentTabLoading || !manualQuery.trim()
+                      currentTabLoading || !canRunManualSearch
                         ? 'cursor-not-allowed bg-emerald-600/60'
                         : 'bg-emerald-600 hover:bg-emerald-700'
                     }`}

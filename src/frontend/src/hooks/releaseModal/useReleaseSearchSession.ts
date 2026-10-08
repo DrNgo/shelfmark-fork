@@ -22,8 +22,15 @@ import {
 import { useDependencyEffect, useMountEffect } from '../useMountEffect';
 import {
   applyReleaseResponse,
+  canSubmitManualSearch,
+  isCurrentRequest,
+  manualQueryAfterToggle,
+  manualSearchSubmission,
   queryContext,
   releaseResponseAction,
+  startRequest,
+  supersedeRequests,
+  tabNeedsFetch,
   usesBookReleaseCache,
 } from './releaseSearchSession.helpers';
 
@@ -64,6 +71,10 @@ interface UseReleaseSearchSessionReturn {
   manualQuery: string;
   setManualQuery: Dispatch<SetStateAction<string>>;
   showManualQuery: boolean;
+  /** Whether the results come from a submitted manual query rather than the automatic search. */
+  manualQueryApplied: boolean;
+  /** Whether the manual form's Search button can be used. */
+  canRunManualSearch: boolean;
   toggleManualQuery: () => void;
   applyCurrentFilters: () => void;
   runManualSearch: () => void;
@@ -166,7 +177,10 @@ export function useReleaseSearchSession(
   // The manual query last submitted ('' for the automatic search), and per tab the query
   // context of the list on screen and the newest request. Refs, because a response is
   // checked against the values current when it arrives, not when it was requested.
-  const appliedManualQueryRef = useRef(defaultShowManualQuery ? defaultManualQuery : '');
+  const initialAppliedManualQuery = defaultShowManualQuery ? defaultManualQuery : '';
+  const appliedManualQueryRef = useRef(initialAppliedManualQuery);
+  // The same value as state, for rendering.
+  const [appliedManualQuery, setAppliedManualQuery] = useState(initialAppliedManualQuery);
   const displayedContextRef = useRef<Record<string, string>>({});
   const requestSeqRef = useRef<Record<string, number>>({});
 
@@ -237,14 +251,8 @@ export function useReleaseSearchSession(
         return;
       }
 
-      if (!force) {
-        if (
-          releasesBySource[tabName] !== undefined ||
-          loadingBySource[tabName] ||
-          errorBySource[tabName]
-        ) {
-          return;
-        }
+      if (!force && !tabNeedsFetch({ releasesBySource, loadingBySource, errorBySource }, tabName)) {
+        return;
       }
 
       const provider = book.provider;
@@ -268,9 +276,8 @@ export function useReleaseSearchSession(
         }
       }
 
-      const requestSeq = (requestSeqRef.current[tabName] ?? 0) + 1;
-      requestSeqRef.current[tabName] = requestSeq;
-      const isLatestRequest = () => requestSeqRef.current[tabName] === requestSeq;
+      const requestSeq = startRequest(requestSeqRef.current, tabName);
+      const isLatestRequest = () => isCurrentRequest(requestSeqRef.current, tabName, requestSeq);
 
       setLoadingBySource((prev) => ({ ...prev, [tabName]: true }));
       setErrorBySource((prev) => ({ ...prev, [tabName]: null }));
@@ -378,10 +385,9 @@ export function useReleaseSearchSession(
     // A new book or content type: back to the automatic search, and every response still
     // in flight is superseded.
     appliedManualQueryRef.current = defaultShowManualQuery ? defaultManualQuery : '';
+    setAppliedManualQuery(appliedManualQueryRef.current);
     displayedContextRef.current = {};
-    for (const tab of Object.keys(requestSeqRef.current)) {
-      requestSeqRef.current[tab] += 1;
-    }
+    supersedeRequests(requestSeqRef.current);
     const nextInitialActiveTab = preferredDefaultReleaseSource || '';
     initialActiveTabRef.current = nextInitialActiveTab;
     pendingStatusRef.current = null;
@@ -486,26 +492,57 @@ export function useReleaseSearchSession(
         return;
       }
 
-      if (
-        releasesBySource[tabName] === undefined &&
-        !loadingBySource[tabName] &&
-        !errorBySource[tabName]
-      ) {
+      if (tabNeedsFetch({ releasesBySource, loadingBySource, errorBySource }, tabName)) {
         void fetchReleaseResults(tabName, { force: false });
       }
     },
     [errorBySource, fetchReleaseResults, loadingBySource, releasesBySource],
   );
 
-  const toggleManualQuery = useCallback(() => {
-    setShowManualQuery((prev) => {
-      const next = !prev;
-      if (next && !manualQuery.trim()) {
-        setManualQuery(defaultManualQuery);
+  // Make `nextQuery` the applied query ('' for the automatic search) and search the active
+  // tab in it. Every tab's list, error and loading flag is cleared and every request still
+  // in flight is superseded, so another tab refetches in the new context when activated.
+  const switchQueryContext = useCallback(
+    (nextQuery: string) => {
+      if (!book.provider || !book.provider_id || !activeTab) {
+        return;
       }
-      return next;
-    });
-  }, [defaultManualQuery, manualQuery]);
+
+      for (const tab of allTabs) {
+        invalidateCachedReleases(book.provider, book.provider_id, tab.name, contentType);
+      }
+
+      supersedeRequests(requestSeqRef.current);
+      displayedContextRef.current = {};
+      setExpandedBySource({});
+      setErrorBySource({});
+      setReleasesBySource({});
+      setLoadingBySource({});
+
+      // Submitting makes this the applied query: filters, tabs and expansion use it from now
+      // on, whatever the text field holds later.
+      appliedManualQueryRef.current = nextQuery;
+      setAppliedManualQuery(nextQuery);
+      void fetchReleaseResults(activeTab, {
+        force: true,
+        manualQueryOverride: nextQuery,
+      });
+    },
+    [activeTab, allTabs, book.provider, book.provider_id, contentType, fetchReleaseResults],
+  );
+
+  const toggleManualQuery = useCallback(() => {
+    const next = !showManualQuery;
+    setShowManualQuery(next);
+    if (next && !manualQuery.trim()) {
+      setManualQuery(defaultManualQuery);
+    }
+
+    const nextQuery = manualQueryAfterToggle(next, appliedManualQueryRef.current);
+    if (nextQuery !== null) {
+      switchQueryContext(nextQuery);
+    }
+  }, [defaultManualQuery, manualQuery, showManualQuery, switchQueryContext]);
 
   const applyCurrentFilters = useCallback(() => {
     if (!book.provider || !book.provider_id || !activeTab) {
@@ -547,39 +584,11 @@ export function useReleaseSearchSession(
   ]);
 
   const runManualSearch = useCallback(() => {
-    if (!book.provider || !book.provider_id || !activeTab) {
-      return;
+    const nextQuery = manualSearchSubmission(manualQuery, appliedManualQueryRef.current);
+    if (nextQuery !== null) {
+      switchQueryContext(nextQuery);
     }
-
-    const manualSearchQuery = manualQuery.trim();
-    if (!manualSearchQuery) {
-      return;
-    }
-
-    for (const tab of allTabs) {
-      invalidateCachedReleases(book.provider, book.provider_id, tab.name, contentType);
-    }
-
-    setExpandedBySource({});
-    setErrorBySource({});
-    setReleasesBySource({});
-
-    // Submitting makes this the applied query: filters, tabs and expansion use it from now
-    // on, whatever the text field holds later.
-    appliedManualQueryRef.current = manualSearchQuery;
-    void fetchReleaseResults(activeTab, {
-      force: true,
-      manualQueryOverride: manualSearchQuery,
-    });
-  }, [
-    activeTab,
-    allTabs,
-    book.provider,
-    book.provider_id,
-    contentType,
-    fetchReleaseResults,
-    manualQuery,
-  ]);
+  }, [manualQuery, switchQueryContext]);
 
   const expandSearch = useCallback(async (): Promise<void> => {
     if (!book.provider || !book.provider_id || !activeTab) {
@@ -621,6 +630,8 @@ export function useReleaseSearchSession(
     manualQuery,
     setManualQuery,
     showManualQuery,
+    manualQueryApplied: appliedManualQuery !== '',
+    canRunManualSearch: canSubmitManualSearch(manualQuery, appliedManualQuery),
     toggleManualQuery,
     applyCurrentFilters,
     runManualSearch,

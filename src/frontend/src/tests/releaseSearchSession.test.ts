@@ -4,9 +4,16 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   applyReleaseResponse,
+  canSubmitManualSearch,
+  isCurrentRequest,
+  manualQueryAfterToggle,
+  manualSearchSubmission,
   mergeExpandedReleases,
   queryContext,
   releaseResponseAction,
+  startRequest,
+  supersedeRequests,
+  tabNeedsFetch,
   usesBookReleaseCache,
 } from '../hooks/releaseModal/releaseSearchSession.helpers';
 import type { Release, ReleasesResponse } from '../types';
@@ -305,5 +312,153 @@ describe('useReleaseSearchSession uses the helpers', () => {
   it('sends the applied manual query, never the draft text', () => {
     expect(hook).toContain('queryContext(manualQueryOverride ?? appliedManualQueryRef.current)');
     expect(hook).not.toMatch(/manualQueryOverride \?\? manualQuery\)/);
+  });
+
+  it('reads and writes the book cache only behind the cache decision', () => {
+    const decisions = hook.match(/usesBookReleaseCache\(requestContext\)/g) ?? [];
+    expect(decisions.length).toBeGreaterThanOrEqual(2);
+    expect(hook).toMatch(
+      /if \(!expandSearch && usesBookReleaseCache\(requestContext\)\) \{\s*const cached = getCachedReleases\(/,
+    );
+  });
+
+  it('clears loading and errors only for the newest request', () => {
+    expect(hook).toMatch(/\} catch \(err\) \{\s*if \(isLatestRequest\(\)\) \{/);
+    expect(hook).toMatch(/\} finally \{\s*if \(isLatestRequest\(\)\) \{/);
+  });
+
+  it('switches the query context through the extracted bookkeeping', () => {
+    for (const call of [
+      'startRequest(requestSeqRef.current, tabName)',
+      'isCurrentRequest(requestSeqRef.current, tabName, requestSeq)',
+      'manualSearchSubmission(manualQuery, appliedManualQueryRef.current)',
+      'manualQueryAfterToggle(next, appliedManualQueryRef.current)',
+      'canSubmitManualSearch(manualQuery, appliedManualQuery)',
+    ]) {
+      expect(hook).toContain(call);
+    }
+    // The book reset and every context switch supersede all tabs' requests and clear
+    // every tab's loading flag.
+    expect(hook.match(/supersedeRequests\(requestSeqRef\.current\)/g) ?? []).toHaveLength(2);
+    expect(hook.match(/setLoadingBySource\(\{\}\)/g) ?? []).toHaveLength(2);
+    expect(hook.match(/tabNeedsFetch\(/g) ?? []).toHaveLength(2);
+  });
+});
+
+describe('ReleaseModal reads the applied manual query', () => {
+  const modal = readFileSync(new URL('../components/ReleaseModal.tsx', import.meta.url), 'utf8');
+
+  it('highlights the toggle and enables Search from the hook, not the draft text', () => {
+    expect(modal).toMatch(/manualQueryApplied \? 'text-emerald-600/);
+    expect(modal).not.toMatch(/manualQuery\.trim\(\) \? 'text-emerald/);
+    expect(modal).toContain('disabled={currentTabLoading || !canRunManualSearch}');
+    expect(modal).not.toContain('!manualQuery.trim()');
+  });
+});
+
+describe('request bookkeeping', () => {
+  it('starts, checks and supersedes per-tab requests', () => {
+    const seqs: Record<string, number> = {};
+    const a1 = startRequest(seqs, 'a');
+    const b1 = startRequest(seqs, 'b');
+    expect(isCurrentRequest(seqs, 'a', a1)).toBe(true);
+    const a2 = startRequest(seqs, 'a');
+    expect(isCurrentRequest(seqs, 'a', a1)).toBe(false);
+    expect(isCurrentRequest(seqs, 'a', a2)).toBe(true);
+    supersedeRequests(seqs);
+    expect(isCurrentRequest(seqs, 'a', a2)).toBe(false);
+    expect(isCurrentRequest(seqs, 'b', b1)).toBe(false);
+  });
+
+  it('fetches a tab only when it has no list, request or error', () => {
+    const state = { releasesBySource: {}, loadingBySource: {}, errorBySource: {} };
+    expect(tabNeedsFetch(state, 'b')).toBe(true);
+    expect(tabNeedsFetch({ ...state, loadingBySource: { b: true } }, 'b')).toBe(false);
+    expect(tabNeedsFetch({ ...state, errorBySource: { b: 'x' } }, 'b')).toBe(false);
+    expect(tabNeedsFetch({ ...state, releasesBySource: { b: null } }, 'b')).toBe(false);
+  });
+
+  it('never leaves a tab loading with no request after a context switch', () => {
+    // The hook's bookkeeping for two tabs, driven through the same helpers it uses.
+    const seqs: Record<string, number> = {};
+    let applied = '';
+    let loading: Record<string, boolean> = {};
+    const releases: Record<string, ReleasesResponse | null> = {};
+    const displayed: Record<string, string> = {};
+    const fetchTab = (tab: string) => {
+      const request = { tab, id: startRequest(seqs, tab), context: queryContext(applied) };
+      loading = { ...loading, [tab]: true };
+      return request;
+    };
+    const arrive = (
+      request: { tab: string; id: number; context: string },
+      data: ReleasesResponse,
+    ) => {
+      const latest = isCurrentRequest(seqs, request.tab, request.id);
+      const action = releaseResponseAction({
+        expandSearch: false,
+        requestContext: request.context,
+        currentContext: queryContext(applied),
+        displayedContext: displayed[request.tab],
+        isLatestRequest: latest,
+      });
+      if (action !== 'discard') {
+        displayed[request.tab] = request.context;
+        releases[request.tab] = applyReleaseResponse(releases[request.tab], data, action);
+      }
+      if (latest) loading = { ...loading, [request.tab]: false };
+    };
+    const switchContext = (next: string, activeTab: string) => {
+      applied = next;
+      supersedeRequests(seqs);
+      loading = {};
+      for (const tab of Object.keys(releases)) delete releases[tab];
+      return fetchTab(activeTab);
+    };
+    const activate = (tab: string) =>
+      tabNeedsFetch(
+        { releasesBySource: releases, loadingBySource: loading, errorBySource: {} },
+        tab,
+      )
+        ? fetchTab(tab)
+        : null;
+
+    // Tab B's automatic request is in flight; the user submits a manual query on A.
+    const staleB = fetchTab('b');
+    const manualA = switchContext('dxd 5', 'a');
+    arrive(manualA, response([plain('m')]));
+    // Clicking B starts a request in the manual context instead of waiting on the stale one.
+    const freshB = activate('b');
+    if (!freshB) throw new Error('activating B started no request');
+    expect(freshB.context).toBe('dxd 5');
+    // B's stale automatic response arrives: dropped, and B stays loading for its new request.
+    arrive(staleB, response([annotated('a', matchPayload('match'))]));
+    expect(releases.b).toBeUndefined();
+    expect(loading.b).toBe(true);
+    arrive(freshB, response([plain('n')]));
+    expect(releases.b?.releases.map((r) => r.source_id)).toEqual(['n']);
+    expect(loading.b).toBe(false);
+  });
+});
+
+describe('getting back to the automatic search', () => {
+  it('submits a trimmed manual query, or the automatic search from an empty field', () => {
+    expect(manualSearchSubmission(' dxd 5 ', '')).toBe('dxd 5');
+    expect(manualSearchSubmission('dxd 6', 'dxd 5')).toBe('dxd 6');
+    expect(manualSearchSubmission('  ', 'dxd 5')).toBe('');
+    expect(manualSearchSubmission('', '')).toBeNull();
+  });
+
+  it('enables Search for a query, or for an empty field while a manual query is applied', () => {
+    expect(canSubmitManualSearch('dxd', '')).toBe(true);
+    expect(canSubmitManualSearch(' ', 'dxd 5')).toBe(true);
+    expect(canSubmitManualSearch(' ', '')).toBe(false);
+  });
+
+  it('returns to the automatic search when the panel closes over an applied query', () => {
+    expect(manualQueryAfterToggle(false, 'dxd 5')).toBe('');
+    expect(manualQueryAfterToggle(false, '')).toBeNull();
+    expect(manualQueryAfterToggle(true, 'dxd 5')).toBeNull();
+    expect(manualQueryAfterToggle(true, '')).toBeNull();
   });
 });

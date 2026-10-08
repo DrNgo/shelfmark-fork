@@ -86,3 +86,72 @@ export function mergeExpandedReleases(
 
   return { ...existing, releases: [...refreshed, ...added] };
 }
+
+/** Start a request for a tab: its new sequence number, which supersedes older ones. */
+export function startRequest(requestSeq: Record<string, number>, tabName: string): number {
+  const next = (requestSeq[tabName] ?? 0) + 1;
+  requestSeq[tabName] = next;
+  return next;
+}
+
+/** Whether `seq` is still the newest request for the tab. */
+export function isCurrentRequest(
+  requestSeq: Record<string, number>,
+  tabName: string,
+  seq: number,
+): boolean {
+  return requestSeq[tabName] === seq;
+}
+
+/**
+ * Supersede every tab's in-flight request (a new book, content type or query context):
+ * its response is discarded and it no longer owns the tab's loading flag.
+ */
+export function supersedeRequests(requestSeq: Record<string, number>): void {
+  for (const tab of Object.keys(requestSeq)) {
+    requestSeq[tab] += 1;
+  }
+}
+
+/** Whether activating a tab must start a search: it has no list, request or error. */
+export function tabNeedsFetch(
+  state: {
+    releasesBySource: Record<string, ReleasesResponse | null>;
+    loadingBySource: Record<string, boolean>;
+    errorBySource: Record<string, string | null>;
+  },
+  tabName: string,
+): boolean {
+  return (
+    state.releasesBySource[tabName] === undefined &&
+    !state.loadingBySource[tabName] &&
+    !state.errorBySource[tabName]
+  );
+}
+
+/**
+ * The query to apply when the manual form is submitted: the trimmed draft, `''` (back to
+ * the automatic search) for an empty draft while a manual query is applied, or `null`
+ * when there is nothing to do.
+ */
+export function manualSearchSubmission(draft: string, appliedManualQuery: string): string | null {
+  const query = draft.trim();
+  if (query) return query;
+  return appliedManualQuery ? '' : null;
+}
+
+/** Whether the manual form's Search button can be used. */
+export function canSubmitManualSearch(draft: string, appliedManualQuery: string): boolean {
+  return manualSearchSubmission(draft, appliedManualQuery) !== null;
+}
+
+/**
+ * The query to apply after the manual panel is toggled: closing it over an applied manual
+ * query returns to the automatic search (`''`); anything else changes nothing (`null`).
+ */
+export function manualQueryAfterToggle(
+  nextShown: boolean,
+  appliedManualQuery: string,
+): string | null {
+  return !nextShown && appliedManualQuery ? '' : null;
+}
