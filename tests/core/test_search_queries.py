@@ -10,14 +10,19 @@ the one `get_book` computed and `current_query` is today's real query.
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import pytest
 
 from shelfmark.core.search_queries import (
+    RankingIdentity,
+    ReleaseMatch,
     SearchIdentity,
     any_identity_hit,
     build_fallback_queries,
+    build_ranking_identity,
     build_search_identity,
+    classify_release,
     clean_query,
     is_identity_hit,
     normalize_position,
@@ -1036,3 +1041,552 @@ class TestLiveAcceptanceShapes:
         # Named by title: "&amp;" is the same "&" that marks two books in one release.
         assert not self._hit("Leviathan Wakes &amp; Caliban's War (epub)", leviathan)
         assert self._hit("James S A Corey - The Expanse 01 Leviathan Wakes (epub, mobi)", leviathan)
+
+
+# --- Release ranking (classify_release) ----------------------------------------------
+
+
+def _ranking(
+    title: str, series: str | None, position: object, authors: tuple[str, ...] = ()
+) -> RankingIdentity:
+    return build_ranking_identity(
+        title=title,
+        current_query=title,
+        series_name=series,
+        series_position=position,
+        authors=list(authors),
+    )
+
+
+DXD5_RANK = _ranking(
+    f"{DXD}, Vol. 5: Hellcat of the Underworld Training Camp", DXD, 5, ("Ichiei Ishibumi",)
+)
+OVERLORD2_RANK = _ranking(f"{OL}, Vol. 2: The Dark Warrior", OL, 2, ("Kugane Maruyama",))
+LEVIATHAN_RANK = _ranking("Leviathan Wakes", "The Expanse", 1, ("James S. A. Corey",))
+CALIBAN_RANK = _ranking("Caliban's War", "The Expanse", 2, ("James S. A. Corey",))
+
+
+def _classify(
+    name: object,
+    identity: Any,
+    *,
+    formats: Any = (),
+    content_type: object = None,
+    author: object = None,
+) -> ReleaseMatch:
+    """identity and formats are Any so the junk-input tests can pass junk."""
+    return classify_release(
+        name=name,
+        formats=formats,
+        content_type=content_type,
+        release_author=author,
+        identity=identity,
+    )
+
+
+def _volume(name: str, identity: RankingIdentity) -> tuple[str, int | None]:
+    match = _classify(name, identity)
+    return match.volume, match.other_volume
+
+
+class TestRankingIdentity:
+    def test_it_resolves_series_and_position_like_the_ladder(self):
+        assert DXD5_RANK == RankingIdentity(
+            series_key="High School DxD",
+            position=5,
+            title_tokens=(
+                "high",
+                "school",
+                "dxd",
+                "5",
+                "hellcat",
+                "underworld",
+                "training",
+                "camp",
+            ),
+            title_names_volume=True,
+            book_is_comic=False,
+            authors=("Ichiei Ishibumi",),
+        )
+
+    def test_a_natural_title_series_book(self):
+        assert LEVIATHAN_RANK.series_key == "The Expanse"
+        assert LEVIATHAN_RANK.position == 1
+        assert LEVIATHAN_RANK.title_names_volume is False
+
+    def test_a_graphic_novel_request_is_a_comic(self):
+        assert _ranking("Watchmen (Graphic Novel)", None, None).book_is_comic is True
+        assert _ranking("Overlord (Manga), Vol. 2", "Overlord (Manga)", 2).book_is_comic is True
+
+    def test_comical_is_not_a_comic(self):
+        assert _ranking("The Comical Adventures", None, None).book_is_comic is False
+        assert _ranking("Mangarama", "Comicality", 1).book_is_comic is False
+
+    def test_junk_authors_are_dropped(self):
+        identity = build_ranking_identity(
+            title="Dune",
+            current_query="Dune",
+            series_name=None,
+            series_position=None,
+            authors=["Frank Herbert", None, "  ", 5],
+        )
+        assert identity.authors == ("Frank Herbert",)
+        assert _ranking("Dune", None, None).authors == ()
+
+
+class TestRankingVolume:
+    def test_the_requested_volume_is_a_match(self):
+        name = (
+            "High School DxD, Vol. 5: Hellcat of the Underworld Training Camp "
+            "by Ichiei Ishibumi [ENG / EPUB]"
+        )
+        assert _volume(name, DXD5_RANK) == ("match", None)
+
+    def test_volume_25_is_another_volume(self):
+        name = "High School DxD - Volume 25 by Ichiei Ishibumi [ENG / EPUB]"
+        assert _volume(name, DXD5_RANK) == ("other", 25)
+
+    def test_a_bracketed_series_number_is_a_match(self):
+        name = "Kugane Maruyama - [Overlord 02] - The Dark Warrior (epub)"
+        assert _volume(name, OVERLORD2_RANK) == ("match", None)
+
+    def test_a_hash_number_names_another_volume(self):
+        assert _volume("Overlord #3 EPUB", OVERLORD2_RANK) == ("other", 3)
+
+    def test_underscore_scene_names_are_explicit_volume_syntax(self):
+        assert _volume("Overlord_Vol_02_2018_Retail_EPUB", OVERLORD2_RANK) == ("match", None)
+        assert _volume("Overlord_Vol_03_2018_Retail_EPUB", OVERLORD2_RANK) == ("other", 3)
+
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("Overlord v02 (2016) (Digital) (danke-Empire)", ("match", None)),
+            ("Yen.Press-Overlord.Vol.02.2016.Retail.eBook-BitBook", ("match", None)),
+            ("Overlord 02 - The Dark Warrior (epub)", ("match", None)),
+            ("Overlord 02 (2016)", ("match", None)),
+            ("Overlord 02 2016 epub", ("match", None)),
+            ("Overlord 02 epub", ("match", None)),
+            ("Overlord 02", ("match", None)),
+            ("Overlord Book 3 EPUB", ("other", 3)),
+            ("Overlord Volume 10", ("other", 10)),
+        ],
+    )
+    def test_every_explicit_form(self, name, expected):
+        assert _volume(name, OVERLORD2_RANK) == expected
+
+    def test_another_numbered_expanse_book_is_another_volume(self):
+        name = "The Expanse Book 2 Caliban's War by James S. A. Corey EPUB"
+        assert _volume(name, LEVIATHAN_RANK) == ("other", 2)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "High School DxD [5] (epub)",
+            "High School DxD - 5 (epub)",
+            "High School DxD (epub)",
+            "Overlord 02 The Dark Warrior",
+        ],
+    )
+    def test_a_bare_number_is_not_volume_syntax(self, name):
+        identity = DXD5_RANK if "DxD" in name else OVERLORD2_RANK
+        assert _volume(name, identity) == ("unknown", None)
+
+    def test_a_page_count_is_not_another_volume(self):
+        for name in (
+            "The Expanse Leviathan Wakes [320] EPUB",
+            "The Expanse Leviathan Wakes - 451 pages EPUB",
+        ):
+            assert _volume(name, CALIBAN_RANK) == ("unknown", None)
+            # The page count does not veto the natural-title match either.
+            assert _volume(name, LEVIATHAN_RANK) == ("match", None)
+
+    def test_a_standalone_book_has_no_volume(self):
+        standalone = _ranking("The Housemaid", None, None)
+        assert _volume("The Housemaid Vol. 2 (epub)", standalone) == ("unknown", None)
+
+
+class TestRankingCollections:
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Overlord Vol. 2 Omnibus EPUB",
+            "Overlord Box Set Vol. 2",
+            "Overlord Boxed Set v02",
+            "Overlord The Complete Series Vol. 2",
+            "Overlord Collection Vol. 2",
+            "Overlord Trilogy Vol. 2",
+            "Overlord Duology v02",
+            "Overlord Quartet v02",
+            "Overlord Books 1-3",
+            "Overlord Vol. 1-3",
+            "Overlord Vols 2-4",
+            "Overlord Vol. 2 & 3",
+            "Overlord Vol. 2 and 3",
+            "Overlord v02-v03",
+            "Overlord Vol. 2, 3",
+            "Overlord Vol. 2 Vol. 3",
+            "Overlord 1-3 (epub)",
+        ],
+    )
+    def test_collection_evidence_is_unknown(self, name):
+        assert _volume(name, OVERLORD2_RANK) == ("unknown", None)
+
+    def test_contributor_separators_are_not_a_bundle(self):
+        for name in (
+            "Leviathan Wakes 2nd edition EPUB",
+            "Leviathan Wakes James S. A. Corey & Daniel Abraham EPUB",
+            "Leviathan Wakes James S. A. Corey &amp; Daniel Abraham EPUB",
+            "Leviathan Wakes Corey / Abraham + Bonus EPUB",
+        ):
+            assert _volume(name, LEVIATHAN_RANK) == ("match", None)
+
+    def test_the_same_number_twice_is_one_volume(self):
+        assert _volume("Overlord Vol. 2 [Overlord 02]", OVERLORD2_RANK) == ("match", None)
+
+
+class TestRankingNaturalTitles:
+    def test_the_title_words_name_the_book(self):
+        assert _volume("Leviathan Wakes (The Expanse #1) epub", LEVIATHAN_RANK) == (
+            "match",
+            None,
+        )
+        assert _volume("James S A Corey - Leviathan Wakes (epub)", LEVIATHAN_RANK) == (
+            "match",
+            None,
+        )
+
+    def test_explicit_syntax_naming_another_number_is_not_the_book(self):
+        assert _volume("Leviathan Wakes #2 epub", LEVIATHAN_RANK) == ("unknown", None)
+
+    def test_another_title_in_the_series_is_not_the_book(self):
+        assert _volume("The Expanse - Calibans War (epub)", LEVIATHAN_RANK) == ("unknown", None)
+
+    def test_a_title_made_of_series_words_never_matches_by_title(self):
+        hunger = _ranking("The Hunger Games", "The Hunger Games", 1)
+        assert _volume("The Hunger Games (epub)", hunger) == ("unknown", None)
+        assert _volume("The Hunger Games #1 (epub)", hunger) == ("match", None)
+
+
+class TestRankingMedium:
+    def test_episodes_in_a_light_novel_title_is_not_video(self):
+        match = _classify(
+            "Overlord Vol. 2: Episodes of the Kingdom EPUB", OVERLORD2_RANK, formats=["epub"]
+        )
+        assert (match.medium, match.compatible) == ("ebook", True)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Yen.Press-Overlord.Vol.02.Manga.2022.Hybrid.Comic.eBook-BitBook",
+            "Yen.Press-Overlord.The.Undead.King.Oh.Vol.02.2022.Hybrid.Comic.eBook-BitBook",
+            "Overlord Vol. 2 (Graphic Novel) (epub)",
+        ],
+    )
+    def test_manga_names_are_an_incompatible_comic(self, name):
+        match = _classify(name, OVERLORD2_RANK)
+        assert (match.medium, match.compatible) == ("comic", False)
+
+    def test_a_comic_is_compatible_with_a_comic_request(self):
+        manga2 = _ranking("Overlord (Manga), Vol. 2", "Overlord (Manga)", 2)
+        match = _classify("Yen.Press-Overlord.Vol.02.Manga.2022.Hybrid.Comic.eBook", manga2)
+        assert (match.medium, match.compatible, match.volume) == ("comic", True, "match")
+
+    def test_a_cbz_declared_clean_title_is_a_comic(self):
+        match = _classify("Overlord v02", OVERLORD2_RANK, formats=["cbz"])
+        assert (match.medium, match.compatible) == ("comic", False)
+
+    def test_an_audiobook_category_clean_title_is_audio(self):
+        match = _classify("Overlord v02", OVERLORD2_RANK, content_type="audiobook")
+        assert (match.medium, match.compatible) == ("audio", False)
+
+    def test_a_declared_audio_format_is_audio(self):
+        for fmt in ("m4b", "MP3", "m4a", "flac", "aac"):
+            assert _classify("Overlord v02", OVERLORD2_RANK, formats=[fmt]).medium == "audio"
+
+    def test_a_declared_format_beats_name_words(self):
+        match = _classify("Overlord Manga Vol. 2", OVERLORD2_RANK, formats=["m4b"])
+        assert match.medium == "audio"
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Overlord S02E05 1080p WEB-DL x264",
+            "Overlord.2160p.BDRip.HEVC",
+            "Overlord 720p h.264 mkv",
+            "Overlord.480p.WEBRip.avi",
+            "Overlord x265 mp4",
+        ],
+    )
+    def test_technical_video_markers_are_video(self, name):
+        match = _classify(name, OVERLORD2_RANK)
+        assert (match.medium, match.compatible) == ("video", False)
+
+    def test_audio_words_in_the_name(self):
+        for name in ("Overlord Vol 2 [ENG / M4B]", "Overlord v02 MP3", "Overlord Audiobook v02"):
+            assert _classify(name, OVERLORD2_RANK).medium == "audio"
+
+    def test_a_medium_word_that_is_the_books_own_title_word_does_not_count(self):
+        manga_guide = _ranking("The Manga Guide to Physics", None, None)
+        assert _classify("The Manga Guide to Physics (epub)", manga_guide).medium == "unknown"
+        mp3_book = _ranking("MP3 Players For Dummies", None, None)
+        assert _classify("MP3 Players For Dummies", mp3_book).medium == "unknown"
+
+    def test_ebook_evidence(self):
+        assert _classify("Overlord v02", OVERLORD2_RANK, formats=["epub"]).medium == "ebook"
+        assert _classify("Overlord v02", OVERLORD2_RANK, content_type="book").medium == "ebook"
+        assert _classify("Overlord v02", OVERLORD2_RANK, content_type="ebook").medium == "ebook"
+        assert _classify("Overlord v02", OVERLORD2_RANK).medium == "unknown"
+        assert _classify("Overlord v02", OVERLORD2_RANK).compatible is True
+
+
+class TestRankingAuthorAndFanMarker:
+    def test_an_author_conflict_downgrades_a_match(self):
+        name = "Overlord v02 (epub)"
+        assert _classify(name, OVERLORD2_RANK, author="Kugane Maruyama").volume == "match"
+        assert _classify(name, OVERLORD2_RANK, author="Someone Else").volume == "unknown"
+
+    def test_an_author_conflict_leaves_another_volume_alone(self):
+        match = _classify("Overlord v03 (epub)", OVERLORD2_RANK, author="Someone Else")
+        assert (match.volume, match.other_volume) == ("other", 3)
+
+    def test_a_missing_author_is_neutral(self):
+        for author in (None, "", "   ", 42):
+            assert _classify("Overlord v02", OVERLORD2_RANK, author=author).volume == "match"
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "High School DxD Vol 5 Baka-Tsuki",
+            "High School DxD Vol 5 (Baka Tsuki)",
+            "High School DxD Vol 5 [Fan TL]",
+            "High School DxD Vol 5 fan translation",
+            "High School DxD Vol 5 fan-translated",
+            "High School DxD Vol 5 Scanlation",
+        ],
+    )
+    def test_the_fan_marker(self, name):
+        assert _classify(name, DXD5_RANK).fan_marker is True
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "High School DxD, Vol. 5: Hellcat of the Underworld Training Camp by Ichiei Ishibumi [ENG / EPUB]",
+            "High School DxD Vol 5 Retail",
+            "High School DxD Vol 5 fantastic translation",
+        ],
+    )
+    def test_no_fan_marker(self, name):
+        assert _classify(name, DXD5_RANK).fan_marker is False
+
+
+class TestRankingJunk:
+    @pytest.mark.parametrize("name", [None, "", "   ", 5, object(), ["Overlord v02"]])
+    def test_a_junk_name_is_fully_unknown(self, name):
+        assert _classify(name, OVERLORD2_RANK, formats=["m4b"]) == ReleaseMatch(
+            "unknown", None, "unknown", compatible=True, fan_marker=False
+        )
+
+    @pytest.mark.parametrize("formats", [None, 5, "epub", [None, 3, object()]])
+    def test_junk_formats_are_ignored(self, formats):
+        match = _classify("Overlord v02", OVERLORD2_RANK, formats=formats)
+        assert (match.volume, match.medium) == ("match", "unknown")
+
+    @pytest.mark.parametrize("identity", [None, "Overlord", 5])
+    def test_no_usable_identity_decides_no_volume(self, identity):
+        match = _classify("Overlord v02 (epub)", identity, content_type=7)
+        assert match.volume == "unknown"
+        assert match.medium == "unknown"
+
+    def test_the_payload_is_versioned(self):
+        assert _classify("Overlord v03", OVERLORD2_RANK).to_payload() == {
+            "v": 1,
+            "volume": "other",
+            "other_volume": 3,
+            "medium": "unknown",
+            "compatible": True,
+            "fan_marker": False,
+        }
+
+    def test_classify_release_never_raises_on_a_hostile_identity(self):
+        hostile = RankingIdentity(series_key="(", position=2, title_tokens=("(",))
+        assert _classify("Overlord ( v02", hostile).volume in {"match", "unknown"}
+
+
+class TestRankingReviewFocus:
+    """Inputs the spec implies but its test list does not name (plan Review Focus)."""
+
+    @pytest.mark.parametrize("author", ["Unknown", "unknown", "Various", "Anonymous", "N/A"])
+    def test_a_placeholder_author_is_missing_not_a_conflict(self, author):
+        # IRC's parser sets "Unknown" when a line has no "Author - Title" split.
+        assert _classify("Overlord v02 (epub)", OVERLORD2_RANK, author=author).volume == "match"
+
+    @pytest.mark.parametrize(
+        "author", ["Maruyama Kugane", "Kugane Maruyama, so-bin", "MARUYAMA, Kugane", "K. Maruyama"]
+    )
+    def test_name_order_and_extra_contributors_are_not_a_conflict(self, author):
+        assert _classify("Overlord v02 (epub)", OVERLORD2_RANK, author=author).volume == "match"
+
+    def test_initials_alone_do_not_count_as_a_shared_author(self):
+        corey = _ranking("Leviathan Wakes", "The Expanse", 1, ("James S. A. Corey",))
+        match = _classify("Leviathan Wakes (epub)", corey, author="S. A. Smith")
+        assert match.volume == "unknown"
+
+    def test_escaped_names_and_version_tags_make_no_volume_or_bundle(self):
+        assert _volume("Overlord Vol. 2 (v1.1) (epub)", OVERLORD2_RANK) == ("match", None)
+        assert _volume("Overlord Vol. 2 [v2.0] Kugane &amp; so-bin", OVERLORD2_RANK) == (
+            "match",
+            None,
+        )
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "High School DxD Vol. 5.5 (epub)",
+            "High School DxD Vol. 5a (epub)",
+            "High School DxD v05.5 (epub)",
+            "High School DxD #5.5",
+        ],
+    )
+    def test_a_fractional_or_lettered_volume_is_unknown(self, name):
+        assert _volume(name, DXD5_RANK) == ("unknown", None)
+
+    def test_a_year_after_the_volume_is_not_a_fraction(self):
+        name = "Seven.Seas-High.School.DxD.Vol.05.2016.Retail.eBook-BitBook"
+        assert _volume(name, DXD5_RANK) == ("match", None)
+
+
+class TestRankingReviewFindings:
+    """Cases from the Codex review of the plan (2026-10-08)."""
+
+    @pytest.mark.parametrize("name", ["Overlord Vol 2.125 (epub)", "Overlord Vol 3.141 (epub)"])
+    def test_any_decimal_suffix_is_not_a_whole_volume(self, name):
+        assert _volume(name, OVERLORD2_RANK) == ("unknown", None)
+
+    @pytest.mark.parametrize("name", ["Overlord Vol.02.2016 (epub)", "Overlord Vol 2 2016 (epub)"])
+    def test_a_year_after_the_volume_keeps_it_whole(self, name):
+        assert _volume(name, OVERLORD2_RANK) == ("match", None)
+
+    @pytest.mark.parametrize("name", ["Overlord Vol 2/3 (epub)", "Overlord Vol 2 / 3 (epub)"])
+    def test_a_slash_between_volume_numbers_is_a_collection(self, name):
+        assert _volume(name, OVERLORD2_RANK) == ("unknown", None)
+
+    def test_a_slash_between_contributors_is_harmless(self):
+        name = "Overlord Vol. 2 Kugane Maruyama / so-bin (epub)"
+        assert _volume(name, OVERLORD2_RANK) == ("match", None)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Leviathan Wakes & Calibans War EPUB",
+            "Leviathan Wakes and Calibans War EPUB",
+            "Leviathan Wakes / Calibans War EPUB",
+            "Leviathan Wakes + Calibans War EPUB",
+            "Leviathan Wakes &amp; Calibans War EPUB",
+            "Corey & Abraham - Leviathan Wakes & Calibans War (epub)",
+        ],
+    )
+    def test_a_conjunction_joining_another_title_is_unknown(self, name):
+        assert _volume(name, LEVIATHAN_RANK) == ("unknown", None)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Leviathan Wakes James S. A. Corey & Daniel Abraham EPUB",
+            "Leviathan Wakes & James S. A. Corey (epub)",
+            "Daniel Abraham & James S. A. Corey - Leviathan Wakes (epub)",
+            "Leviathan Wakes & EPUB",
+        ],
+    )
+    def test_a_conjunction_before_a_contributor_or_nothing_is_harmless(self, name):
+        assert _volume(name, LEVIATHAN_RANK) == ("match", None)
+
+    def test_volume_zero_is_never_another_volume(self):
+        match = _classify("Overlord Vol 0 [MP3]", OVERLORD2_RANK)
+        assert (match.volume, match.other_volume, match.medium) == ("unknown", None, "audio")
+        assert match.to_payload()["other_volume"] is None
+
+    def test_a_requested_volume_zero_still_matches(self):
+        prequel = _ranking("Overlord (Light Novel), Vol. 0: Prologue", OL, 0)
+        assert _volume("Overlord Vol. 0 Prologue (epub)", prequel) == ("match", None)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Overlord Vol. 2 ISBN 978-1-9753-0123-4 (epub)",
+            "Overlord v02 (2016-05-24) (epub)",
+            "Overlord Vol. 2 [1-2 MB] (epub)",
+        ],
+    )
+    def test_isbns_dates_and_sizes_are_not_volume_ranges(self, name):
+        assert _volume(name, OVERLORD2_RANK) == ("match", None)
+
+    def test_a_series_number_range_is_still_a_collection(self):
+        assert _volume("The Expanse 1-3 Leviathan Wakes (epub)", LEVIATHAN_RANK) == (
+            "unknown",
+            None,
+        )
+
+    def test_a_shared_given_name_is_not_the_same_author(self):
+        match = _classify("Leviathan Wakes (epub)", LEVIATHAN_RANK, author="James Patterson")
+        assert match.volume == "unknown"
+
+    @pytest.mark.parametrize(
+        "author", ["Corey, James S A", "James S. A. Corey", "J. S. A. Corey & Daniel Abraham"]
+    )
+    def test_the_same_surname_is_the_same_author(self, author):
+        assert _classify("Leviathan Wakes (epub)", LEVIATHAN_RANK, author=author).volume == "match"
+
+    def test_reordered_names_are_the_same_author(self):
+        reordered = _classify("Overlord v02 (epub)", OVERLORD2_RANK, author="Maruyama Kugane")
+        assert reordered.volume == "match"
+
+    def test_an_author_field_holding_the_series_name_is_not_an_author(self):
+        assert _classify("Overlord - Volume 2.epub", OVERLORD2_RANK, author="Overlord").volume == (
+            "match"
+        )
+
+    @pytest.mark.parametrize("sep", [" ", ".", "-", "_", ""])
+    def test_fan_tl_and_baka_tsuki_with_any_separator(self, sep):
+        assert _classify(f"DxD Vol 5 [Fan{sep}TL]", DXD5_RANK).fan_marker is True
+        assert _classify(f"DxD Vol 5 Baka{sep}Tsuki", DXD5_RANK).fan_marker is True
+
+    @pytest.mark.parametrize("sep", [" ", ".", "-", "_"])
+    def test_fan_translation_with_any_separator(self, sep):
+        assert _classify(f"DxD Vol 5 fan{sep}translation", DXD5_RANK).fan_marker is True
+        assert _classify(f"DxD Vol 5 fan{sep}translated", DXD5_RANK).fan_marker is True
+
+    @pytest.mark.parametrize(
+        "identity",
+        [
+            RankingIdentity(series_key=None, position="2", title_tokens=None, authors=None),  # type: ignore[arg-type]
+            RankingIdentity(
+                series_key="Overlord",
+                position=True,  # type: ignore[arg-type]
+                title_tokens=("overlord", None, 3),  # type: ignore[arg-type]
+                authors=(None, 5, "Kugane Maruyama"),  # type: ignore[arg-type]
+                title_names_volume=None,  # type: ignore[arg-type]
+                book_is_comic="yes",  # type: ignore[arg-type]
+            ),
+            RankingIdentity(series_key="Overlord", position=-1, title_tokens="overlord"),  # type: ignore[arg-type]
+        ],
+    )
+    def test_a_malformed_identity_never_raises(self, identity):
+        for author in (None, "Someone Else", "Kugane Maruyama"):
+            match = _classify(
+                "Yen.Press-Overlord.Vol.02.Manga.2022.Hybrid.Comic.eBook-BitBook",
+                identity,
+                author=author,
+            )
+            assert match.volume == "unknown"
+            assert (match.medium, match.compatible) == ("comic", False)
+
+    def test_malformed_tokens_and_authors_are_dropped_not_fatal(self):
+        identity = RankingIdentity(
+            series_key="The Expanse",
+            position=1,
+            title_tokens=("leviathan", None, "wakes", 7),  # type: ignore[arg-type]
+            title_names_volume=False,
+            authors=("James S. A. Corey", None),  # type: ignore[arg-type]
+        )
+        match = _classify("Leviathan Wakes (epub)", identity, author="Corey, James")
+        assert match.volume == "match"

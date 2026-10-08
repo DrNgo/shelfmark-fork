@@ -18,10 +18,10 @@ import math
 import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
 
 # Medium labels no release name carries. "(Manga)" is a different adaptation, so it stays.
 _MEDIUM_LABEL_RE = re.compile(r"\s*\((?:light\s+novel|novel|ln)\)", re.IGNORECASE)
@@ -464,3 +464,414 @@ def any_identity_hit(
         )
     except TypeError:
         return False
+
+
+# --- Release ranking --------------------------------------------------------------------
+#
+# A classifier separate from ``is_identity_hit``: that predicate only decides when the
+# fallback ladder may stop, and keeps its own, deliberately broader rules. This one decides
+# how the release list is ordered, so it acts only on strong, explicit evidence: a release
+# moves up only when it names this volume in explicit volume syntax, and down only when a
+# declared format or category says it is another medium, or explicit volume syntax names
+# another volume. Anything ambiguous is "unknown", which keeps today's order.
+
+RELEASE_MATCH_VERSION = 1
+
+type Volume = Literal["match", "other", "unknown"]
+type Medium = Literal["ebook", "comic", "audio", "video", "unknown"]
+
+_AUDIO_FORMATS = frozenset({"m4b", "mp3", "m4a", "flac", "aac"})
+_COMIC_FORMATS = frozenset({"cbz", "cbr", "cb7"})
+_EBOOK_FORMATS = frozenset({"epub", "mobi", "azw3", "pdf"})
+# Prowlarr and Newznab report an ebook category as "book"; the other sources say "ebook".
+_EBOOK_CONTENT_TYPES = frozenset({"ebook", "book"})
+_ALL_FORMATS = _AUDIO_FORMATS | _COMIC_FORMATS | _EBOOK_FORMATS
+_FORMAT_TOKENS = "|".join(sorted(_ALL_FORMATS))
+
+# Technical video markers only: plain words such as "episode" say nothing about the medium
+# ("Overlord Vol. 2: Episodes of the Kingdom" is a light novel).
+_RANK_VIDEO_RE = re.compile(
+    r"\b(?:2160p|1080p|720p|480p|x264|x265|h\.?264|h\.?265|hevc|mkv|mp4|avi"
+    r"|bdrip|web-?dl|webrip|s\d{1,2}e\d{1,3})\b",
+    re.IGNORECASE,
+)
+_RANK_AUDIO_WORD_RE = re.compile(r"\b(?:m4b|mp3|audiobook)\b", re.IGNORECASE)
+_RANK_COMIC_WORD_RE = re.compile(r"\b(?:manga|comics?|graphic[\s.-]+novels?)\b", re.IGNORECASE)
+# Matched after "_" became a space, so "Fan_TL" and "Baka_Tsuki" count too.
+_FAN_MARKER_RE = re.compile(
+    r"\b(?:fan[\s.-]?tl|fan[\s.-]translation|fan[\s.-]translated|baka[\s.-]?tsuki"
+    r"|scanlation)\b",
+    re.IGNORECASE,
+)
+
+# Numbers that are never volumes, masked before any volume parsing: ISBNs, dates and file
+# sizes ("978-1-9753-0...", "2016-05-24", "1-2 MB", "620.5 MB").
+_RANK_NOISE_RES = (
+    re.compile(r"\b97[89](?:[\s-]?\d){10}\b"),
+    re.compile(r"\b(?:19|20)\d{2}-\d{1,2}-\d{1,2}\b"),
+    re.compile(
+        r"\b\d+(?:[.,]\d+)?(?:\s*(?:-|–|to)\s*\d+(?:[.,]\d+)?)?\s*(?:[kmgt]i?b|bytes?)\b",
+        re.IGNORECASE,
+    ),
+)
+
+# Explicit volume syntax: "Vol N", "Vol. N", "Volume N", "Vols N", "vNN", "#N", "Book N"
+# (with ".", "_", " " or "-" as separators; "_" is a space by the time these run). N is
+# one to three digits; bare "[N]" and "- N" are not volume syntax here.
+_RANK_VOLUME_RES = (
+    re.compile(r"\bvol(?:ume)?s?\b\.?[\s.-]*(\d{1,3})(?!\d)", re.IGNORECASE),
+    re.compile(r"\bv(\d{1,3})(?!\d)", re.IGNORECASE),
+    re.compile(r"#(\d{1,3})(?!\d)"),
+    re.compile(r"\bbook[\s.-]+(\d{1,3})(?!\d)", re.IGNORECASE),
+)
+# A number that is not a whole volume: a decimal suffix of any length ("2.5", "2.125") or
+# a letter suffix ("5a"). A four-digit year after a dot ("Vol.02.2016") is not a decimal.
+# Ambiguous, so the release's volume is unknown.
+_RANK_PARTIAL_VOLUME_RE = re.compile(r"\.(?!(?:19|20)\d{2}(?!\d))\d+|[^\W\d_]")
+# A range or list separator between two volume numbers: "5-6", "5 & 6", "5 to 7", "2/3".
+_RANK_RANGE_SEPARATOR = r"\s*(?:[-–—~&+,/]|\bto\b|\band\b|\bthrough\b)\s*"
+# A second volume right after the first: "5-6", "5 & 6", "v05-v07", "1, 2", "2 / 3".
+_RANK_VOLUME_LIST_RE = re.compile(
+    _RANK_RANGE_SEPARATOR + r"(?:vol(?:ume)?s?\b\.?\s*|v|#|book\s+)?\d{1,3}(?![\d.]|[^\W\d_])",
+    re.IGNORECASE,
+)
+# Collection evidence: several books in one release. Separators between names ("Corey &
+# Abraham", "Author / Illustrator") are not; numbers count only in volume context.
+_RANK_COLLECTION_RE = re.compile(
+    r"\b(?:omnibus|box(?:ed)?[\s.-]*set|complete[\s.-]+series|collection|trilogy|duology"
+    r"|quartet)\b"
+    r"|\bbooks[\s.-]*\d{1,3}" + _RANK_RANGE_SEPARATOR + r"\d{1,3}(?!\d)",
+    re.IGNORECASE,
+)
+# A conjunction right after the requested title: "Leviathan Wakes & Caliban's War".
+_RANK_CONJUNCTION_RE = re.compile(r"\s*(?:&|\+|/|\band\b)\s*", re.IGNORECASE)
+# Where a run of title-like words ends: a bracket, a parenthesis or " - ".
+_RANK_SEGMENT_END_RE = re.compile(r"[\[\](){}]|\s-\s")
+# Author names that say nothing about who wrote the book.
+_PLACEHOLDER_AUTHORS = frozenset({"unknown", "various", "anonymous", "n/a", "na", "none"})
+# Separators between contributors in one author field ("Corey, James S A" is split too:
+# each side is then compared on its own).
+_AUTHOR_SPLIT_RE = re.compile(r"\s*(?:[,;&+/]|\band\b)\s*", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class RankingIdentity:
+    """The requested book, as the release ranking sees it (one per request)."""
+
+    series_key: str = ""
+    position: int | None = None
+    title_tokens: tuple[str, ...] = ()
+    title_names_volume: bool = True
+    book_is_comic: bool = False
+    authors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ReleaseMatch:
+    """How one release relates to the requested book (see ``classify_release``)."""
+
+    volume: Volume
+    other_volume: int | None  # set only when volume == "other"; never 0
+    medium: Medium
+    compatible: bool  # the medium suits the requested book
+    fan_marker: bool  # the name explicitly says fan translation
+
+    def to_payload(self) -> dict[str, object]:
+        """The versioned ``extra["release_match"]`` value the frontend parses."""
+        return {
+            "v": RELEASE_MATCH_VERSION,
+            "volume": self.volume,
+            "other_volume": self.other_volume,
+            "medium": self.medium,
+            "compatible": self.compatible,
+            "fan_marker": self.fan_marker,
+        }
+
+
+_UNKNOWN_MATCH = ReleaseMatch("unknown", None, "unknown", compatible=True, fan_marker=False)
+
+
+def is_comic_book(title: object, series_name: object) -> bool:
+    """Whether the requested book is itself a manga or comic (word-bounded, so not "Comical")."""
+    title_text = title if isinstance(title, str) else ""
+    series_text = series_name if isinstance(series_name, str) else ""
+    return _RANK_COMIC_WORD_RE.search(f"{title_text} {series_text}") is not None
+
+
+def _clean_strings(values: object) -> tuple[str, ...]:
+    if not isinstance(values, (list, tuple)):
+        return ()
+    return tuple(v for v in values if isinstance(v, str) and v.strip())
+
+
+def build_ranking_identity(
+    *,
+    title: object,
+    current_query: object,
+    series_name: object,
+    series_position: object,
+    authors: object,
+) -> RankingIdentity:
+    """The ranking identity, resolved exactly as the ladder resolves series and position."""
+    search_identity = build_search_identity(
+        title=title,
+        current_query=current_query,
+        series_name=series_name,
+        series_position=series_position,
+    )
+    return RankingIdentity(
+        series_key=search_identity.series_key,
+        position=search_identity.position,
+        title_tokens=search_identity.title_tokens,
+        title_names_volume=search_identity.title_names_volume,
+        book_is_comic=is_comic_book(title, series_name),
+        authors=_clean_strings(authors),
+    )
+
+
+def _sanitize_identity(identity: object) -> RankingIdentity:
+    """A well-typed copy of ``identity``: junk fields become their empty defaults."""
+    if not isinstance(identity, RankingIdentity):
+        return RankingIdentity()
+    position = identity.position
+    if isinstance(position, bool) or not isinstance(position, int) or position < 0:
+        position = None
+    series_key = identity.series_key if isinstance(identity.series_key, str) else ""
+    return RankingIdentity(
+        series_key=series_key,
+        position=position,
+        title_tokens=tuple(t.casefold() for t in _clean_strings(identity.title_tokens)),
+        title_names_volume=identity.title_names_volume is not False,
+        book_is_comic=identity.book_is_comic is True,
+        authors=_clean_strings(identity.authors),
+    )
+
+
+def _declared_formats(formats: object) -> set[str]:
+    if not isinstance(formats, (list, tuple)):
+        return set()
+    return {f.strip().casefold() for f in formats if isinstance(f, str) and f.strip()}
+
+
+def _name_word_counts(pattern: re.Pattern[str], text: str, own_tokens: set[str]) -> bool:
+    """Whether ``pattern`` finds a word in ``text`` that is not one of the book's own words."""
+    for match in pattern.finditer(text):
+        words = set(_tokens(match.group(0)))
+        if not words <= own_tokens:
+            return True
+    return False
+
+
+def _medium(text: str, formats: set[str], content_type: str, own_tokens: set[str]) -> Medium:
+    if content_type == "audiobook" or formats & _AUDIO_FORMATS:
+        return "audio"
+    if formats & _COMIC_FORMATS:
+        return "comic"
+    if _RANK_VIDEO_RE.search(text):
+        return "video"
+    if _name_word_counts(_RANK_AUDIO_WORD_RE, text, own_tokens):
+        return "audio"
+    if _name_word_counts(_RANK_COMIC_WORD_RE, text, own_tokens):
+        return "comic"
+    if formats & _EBOOK_FORMATS or content_type in _EBOOK_CONTENT_TYPES:
+        return "ebook"
+    return "unknown"
+
+
+def _series_volume_res(series_tokens: tuple[str, ...]) -> list[re.Pattern[str]]:
+    if not series_tokens:
+        return []
+    last = re.escape(series_tokens[-1])
+    return [
+        # "[Overlord 02]" (and "[Overlord - Volume 02]", which "Volume" already covers).
+        re.compile(rf"\b{last}(?:\s+|[.-])(\d{{1,3}})\s*\]"),
+        # "Overlord 02" followed by " - ", "]", "(", a year, a format or the end. One
+        # separator only: "High School DxD - 5" is a bare "- N", not volume syntax.
+        re.compile(
+            rf"\b{last}(?:\s+|[.-])(\d{{1,3}})(?=\s+-\s|\s*\]|\s*\(|[\s.-]+(?:19|20)\d{{2}}(?!\d)"
+            rf"|[\s.-]+(?:{_FORMAT_TOKENS})\b|\s*$)"
+        ),
+    ]
+
+
+def _explicit_volumes(text: str, series_tokens: tuple[str, ...]) -> set[int] | None:
+    """Volume numbers ``text`` names in explicit syntax; None when one is not a whole volume."""
+    numbers: set[int] = set()
+    for pattern in [*_RANK_VOLUME_RES, *_series_volume_res(series_tokens)]:
+        for match in pattern.finditer(text):
+            if _RANK_PARTIAL_VOLUME_RE.match(text, match.end(1)):
+                return None
+            numbers.add(int(match.group(1)))
+    return numbers
+
+
+def _has_volume_list(text: str, series_tokens: tuple[str, ...]) -> bool:
+    """A range or list of volume numbers right after a volume marker or the series name."""
+    patterns = list(_RANK_VOLUME_RES)
+    if series_tokens:
+        last = re.escape(series_tokens[-1])
+        patterns.append(re.compile(rf"\b{last}(?:\s+|[.-])(\d{{1,3}})(?!\d)"))
+    for pattern in patterns:
+        for match in pattern.finditer(text):
+            if _RANK_VOLUME_LIST_RE.match(text, match.end(1)):
+                return True
+    return False
+
+
+def _token_spans(text: str) -> list[tuple[str, int]]:
+    return [(m.group(0), m.end()) for m in _TOKEN_RE.finditer(text)]
+
+
+def _title_joined_to_more(text: str, title_tokens: list[str], authors: tuple[str, ...]) -> bool:
+    """Whether a conjunction joins the requested title to further title-like words.
+
+    "Leviathan Wakes & Caliban's War" names two books. Not when the words after the
+    conjunction are a requested author ("Leviathan Wakes & James S. A. Corey"), or when the
+    conjunction sits in an author segment that a " - " closes.
+    """
+    wanted = set(title_tokens)
+    seen: set[str] = set()
+    end = None
+    for token, token_end in _token_spans(text):
+        if token in wanted:
+            seen.add(token)
+            if seen == wanted:
+                end = token_end
+                break
+    if end is None:
+        return False
+    conjunction = _RANK_CONJUNCTION_RE.match(text, end)
+    if conjunction is None:
+        return False
+    rest = text[conjunction.end() :]
+    segment_end = _RANK_SEGMENT_END_RE.search(rest)
+    if segment_end is not None and segment_end.group(0).strip() == "-":
+        return False
+    segment = rest[: segment_end.start()] if segment_end is not None else rest
+    words = [t for t in _tokens(segment) if t not in _ALL_FORMATS and not t.isdigit()]
+    if not words:
+        return False
+    author_tokens = [set(_tokens(author)) for author in authors]
+    return not any(set(words) <= tokens for tokens in author_tokens)
+
+
+def _volume(text: str, identity: RankingIdentity) -> tuple[Volume, int | None]:
+    if not identity.series_key or identity.position is None:
+        return "unknown", None
+    key_tokens = significant_tokens(identity.series_key)
+    if _RANK_COLLECTION_RE.search(text) or _has_volume_list(text, key_tokens):
+        return "unknown", None
+    numbers = _explicit_volumes(text, key_tokens)
+    if numbers is None or len(numbers) > 1:
+        return "unknown", None
+
+    present = set(_tokens(text))
+    has_key = bool(key_tokens) and all(token in present for token in key_tokens)
+    if numbers and has_key:
+        (number,) = numbers
+        if number == identity.position:
+            return "match", None
+        # A volume 0 is a prequel or an index page as often as a volume: not evidence.
+        return ("other", number) if number > 0 else ("unknown", None)
+
+    # A series book whose title names no volume ("Leviathan Wakes", The Expanse 1) is
+    # also named by its own title words, as long as no explicit volume names another
+    # number and no conjunction joins it to another title. Other numbers ("2nd edition",
+    # "451", a year) do not veto it.
+    if identity.title_names_volume or not numbers <= {identity.position}:
+        return "unknown", None
+    series_words = set(key_tokens)
+    title_tokens = [t for t in identity.title_tokens if t]
+    if (
+        title_tokens
+        and all(token in present for token in title_tokens)
+        and any(token not in series_words for token in title_tokens)
+        and not _title_joined_to_more(text, title_tokens, identity.authors)
+    ):
+        return "match", None
+    return "unknown", None
+
+
+def _surname_candidates(name: str) -> set[str]:
+    """Words of one contributor that may be a surname: the last and the first non-initial.
+
+    "Kugane Maruyama" and "Maruyama Kugane" both give {"kugane", "maruyama"}; initials
+    ("S. A.") never count.
+    """
+    words = [t for t in _tokens(name) if len(t) > 1]
+    return {words[0], words[-1]} if words else set()
+
+
+def _author_conflicts(release_author: object, identity: RankingIdentity) -> bool:
+    """True only when the release names a real author who is none of the requested ones.
+
+    Contributors are compared one by one: a release author agrees with a requested author
+    when one of its surname candidates is that author's surname (the last non-initial
+    word). A shared given name alone ("James Patterson" vs "James S. A. Corey") is not
+    agreement. An author field made only of the book's own words (an IRC "Overlord -
+    Volume 2" line puts the series where the author goes) is not an author.
+    """
+    if not isinstance(release_author, str):
+        return False
+    text = html.unescape(release_author)
+    if " ".join(text.split()).casefold() in _PLACEHOLDER_AUTHORS:
+        return False
+    own_words = set(identity.title_tokens) | set(significant_tokens(identity.series_key))
+    release_words = {t for t in _tokens(text) if len(t) > 1}
+    if not release_words or release_words <= own_words:
+        return False
+    surnames = set()
+    for author in identity.authors:
+        words = [t for t in _tokens(author) if len(t) > 1]
+        if words:
+            surnames.add(words[-1])
+    if not surnames:
+        return False
+    candidates = set().union(*(_surname_candidates(p) for p in _AUTHOR_SPLIT_RE.split(text)))
+    return not candidates & surnames
+
+
+def _ranking_text(name: str) -> str:
+    # Indexers send "&amp;" for "&"; a file version tag "(v2.0)" is not a volume; "_" is
+    # a separator in scene names; ISBNs, dates and sizes are never volume numbers.
+    text = _VERSION_TAG_RE.sub(" ", html.unescape(name)).replace("_", " ").casefold()
+    for pattern in _RANK_NOISE_RES:
+        text = pattern.sub(" ", text)
+    return text
+
+
+def classify_release(
+    *,
+    name: object,
+    formats: Sequence[object],
+    content_type: object,
+    release_author: object,
+    identity: RankingIdentity | None,
+) -> ReleaseMatch:
+    """Classify one release for the default "best match" sort. Pure and total.
+
+    ``name`` is the release name as the indexer gave it; ``formats`` the formats the
+    source declared (``release.format`` plus ``extra["formats"]``); ``content_type`` the
+    release's content type. Declared format and content type beat words in the name.
+    """
+    if not isinstance(name, str) or not name.strip():
+        return _UNKNOWN_MATCH
+    safe_identity = _sanitize_identity(identity)
+    text = _ranking_text(name)
+    declared = _declared_formats(formats)
+    kind = content_type.strip().casefold() if isinstance(content_type, str) else ""
+
+    medium = _medium(text, declared, kind, set(safe_identity.title_tokens))
+    compatible = medium in {"ebook", "unknown"} or (
+        medium == "comic" and safe_identity.book_is_comic
+    )
+    volume, other_volume = _volume(text, safe_identity)
+    if volume == "match" and _author_conflicts(release_author, safe_identity):
+        volume = "unknown"
+    return ReleaseMatch(
+        volume=volume,
+        other_volume=other_volume,
+        medium=medium,
+        compatible=compatible,
+        fan_marker=_FAN_MARKER_RE.search(text) is not None,
+    )
