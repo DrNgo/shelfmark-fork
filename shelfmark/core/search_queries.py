@@ -573,7 +573,6 @@ _NEUTRAL_WORDS = frozenset(
     }
 )  # fmt: skip
 _ORDINAL_RE = re.compile(r"\d+(?:st|nd|rd|th)")
-_RANK_BRACKET_RE = re.compile(r"[\[\](){}]")
 # Words in an IRC author slot that name no person: volume markers ("Vol", "v02"), numbers,
 # ordinals and "LN" / "Light Novel" ("!Bsk Overlord Vol 2 - The Dark Warrior.epub" puts the
 # series and volume where the author goes).
