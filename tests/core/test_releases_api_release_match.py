@@ -255,6 +255,42 @@ class TestIrcEvidence:
 
         assert releases[line]["extra"]["release_match"]["volume"] == "match"
 
+    @pytest.mark.parametrize(
+        "line",
+        [
+            # "Series Vol N - Subtitle": the detailed pattern takes "Overlord Vol 2" as the
+            # author. Volume markers, numbers, "LN" and publisher words are not an author.
+            "!Bsk Overlord Vol 2 - The Dark Warrior.epub",
+            "!Bsk Overlord v02 - The Dark Warrior.epub",
+            "!Bsk Overlord LN - Volume 2.epub",
+            "!Bsk Yen Press - Overlord Vol 2.epub",
+        ],
+    )
+    def test_a_series_and_volume_in_the_author_slot_is_not_an_author(
+        self, client, main_module, line
+    ):
+        releases = _search(
+            client,
+            main_module,
+            {"content_type": "ebook", "title": self.OVERLORD2},
+            book=self._overlord_book(),
+            irc_releases=[_irc_release(line)],
+        )
+
+        assert releases[line]["extra"]["release_match"]["volume"] == "match"
+
+    def test_a_real_author_before_a_series_volume_still_conflicts(self, client, main_module):
+        line = "!Bsk James Patterson - Overlord Vol 2.epub"
+        releases = _search(
+            client,
+            main_module,
+            {"content_type": "ebook", "title": self.OVERLORD2},
+            book=self._overlord_book(),
+            irc_releases=[_irc_release(line)],
+        )
+
+        assert releases[line]["extra"]["release_match"]["volume"] == "unknown"
+
     def test_a_detailed_author_still_conflicts(self, client, main_module):
         line = "!Bsk James Patterson - Overlord 02.epub ::INFO:: 1.1MB"
         releases = _search(

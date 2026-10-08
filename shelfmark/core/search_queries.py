@@ -571,6 +571,10 @@ _NEUTRAL_WORDS = frozenset(
 )  # fmt: skip
 _ORDINAL_RE = re.compile(r"\d+(?:st|nd|rd|th)")
 _RANK_BRACKET_RE = re.compile(r"[\[\](){}]")
+# Words in an IRC author slot that name no person: volume markers ("Vol", "v02"), numbers,
+# ordinals and "LN" / "Light Novel" ("!Bsk Overlord Vol 2 - The Dark Warrior.epub" puts the
+# series and volume where the author goes).
+_AUTHOR_NOISE_RE = re.compile(r"vols?|volumes?|v\d+|\d+|\d+(?:st|nd|rd|th)|ln|light|novels?")
 # Author names that say nothing about who wrote the book.
 _PLACEHOLDER_AUTHORS = frozenset({"unknown", "various", "anonymous", "n/a", "na", "none"})
 # Separators between contributors in one author field ("Corey, James S A" is split too:
@@ -909,8 +913,9 @@ def _author_conflicts(release_author: object, identity: RankingIdentity) -> bool
     Contributors are compared one by one: a release author agrees with a requested author
     when one of its surname candidates is that author's surname (the last non-initial
     word). A shared given name alone ("James Patterson" vs "James S. A. Corey") is not
-    agreement. An author field made only of the book's own words (an IRC "Overlord -
-    Volume 2" line puts the series where the author goes) is not an author.
+    agreement. An author field made only of the book's own words, volume markers, numbers,
+    "LN" and neutral publisher or edition words (an IRC "Overlord Vol 2 - The Dark Warrior"
+    line puts the series and volume where the author goes) is not an author.
     """
     if not isinstance(release_author, str):
         return False
@@ -918,7 +923,9 @@ def _author_conflicts(release_author: object, identity: RankingIdentity) -> bool
     if " ".join(text.split()).casefold() in _PLACEHOLDER_AUTHORS:
         return False
     own_words = set(identity.title_tokens) | set(significant_tokens(identity.series_key))
-    release_words = {t for t in _tokens(text) if len(t) > 1}
+    release_words = {
+        t for t in _tokens(text) if len(t) > 1 and not _AUTHOR_NOISE_RE.fullmatch(t)
+    } - _NEUTRAL_WORDS
     if not release_words or release_words <= own_words:
         return False
     surnames = set()
