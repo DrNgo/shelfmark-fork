@@ -1590,3 +1590,79 @@ class TestRankingReviewFindings:
         )
         match = _classify("Leviathan Wakes (epub)", identity, author="Corey, James")
         assert match.volume == "match"
+
+
+class TestRankingFixRound1:
+    """Controller rulings after the Task 1 review (2026-10-08)."""
+
+    NARNIA_RANK = _ranking("The Lion, the Witch and the Wardrobe", "The Chronicles of Narnia", 2)
+
+    def test_a_disagreeing_series_number_on_a_natural_title_is_unknown(self):
+        lion = "The Lion, the Witch and the Wardrobe (The Chronicles of Narnia #1) epub"
+        assert _volume(lion, self.NARNIA_RANK) == ("unknown", None)
+        assert _volume("Leviathan Wakes (The Expanse #2) epub", LEVIATHAN_RANK) == (
+            "unknown",
+            None,
+        )
+
+    def test_a_disagreeing_number_with_a_volume_naming_title_is_still_other(self):
+        assert _volume("High School DxD - Volume 25 [ENG / EPUB]", DXD5_RANK) == ("other", 25)
+
+    def test_cbz_name_tokens_are_a_comic(self):
+        for token in ("CBZ", "cbr", "CB7"):
+            match = _classify(f"High School DxD Vol 5 [ENG / {token}]", DXD5_RANK)
+            assert (match.medium, match.compatible) == ("comic", False)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Leviathan Wakes, Caliban's War",
+            "Leviathan Wakes; Caliban's War",
+            "Leviathan Wakes - Calibans War - Abaddons Gate",
+            "Leviathan Wakes | Calibans War",
+            "Calibans War & Leviathan Wakes EPUB",
+            "Calibans War, Leviathan Wakes EPUB",
+        ],
+    )
+    def test_two_title_bundles_are_unknown(self, name):
+        assert _volume(name, LEVIATHAN_RANK) == ("unknown", None)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "James S A Corey - Leviathan Wakes",
+            "Leviathan Wakes - James S. A. Corey (epub)",
+            "Leviathan Wakes, 2011, epub",
+            "Leviathan Wakes, James S. A. Corey, epub",
+            "[Orbit] - Leviathan Wakes",
+        ],
+    )
+    def test_separators_before_authors_formats_and_numbers_are_harmless(self, name):
+        assert _volume(name, LEVIATHAN_RANK) == ("match", None)
+
+    @pytest.mark.parametrize(
+        "author",
+        ["Kugane Maruyama (Author)", "Kugane Maruyama (Author), so-bin (Illustrator)"],
+    )
+    def test_role_annotations_are_stripped(self, author):
+        assert _classify("Overlord v02 (epub)", OVERLORD2_RANK, author=author).volume == "match"
+        other = _classify("Overlord v02 (epub)", OVERLORD2_RANK, author="Someone Else (Translator)")
+        assert other.volume == "unknown"
+
+    def test_bracketed_revision_tags_are_not_volumes(self):
+        assert _volume("Overlord Vol. 3 [v2] (epub)", OVERLORD2_RANK) == ("other", 3)
+        assert _volume("Overlord Vol. 3 (v2) (epub)", OVERLORD2_RANK) == ("other", 3)
+        assert _volume("Overlord Vol. 3 [v1.0] (epub)", OVERLORD2_RANK) == ("other", 3)
+        assert _volume("Overlord v2 (epub)", OVERLORD2_RANK) == ("match", None)
+
+    def test_apostrophes_are_folded_in_titles_and_names(self):
+        assert _volume("Caliban's War (epub)", CALIBAN_RANK) == ("match", None)
+        assert _volume("The Expanse - Calibans War (epub)", CALIBAN_RANK) == ("match", None)
+        assert _volume("The Expanse - Caliban’s War (epub)", CALIBAN_RANK) == ("match", None)
+
+    @pytest.mark.parametrize(
+        "name",
+        ["DxD Vol 5 fan translations", "DxD Vol 5 Scanlations", "DxD Vol 5 [Fan-Translations]"],
+    )
+    def test_fan_marker_plurals(self, name):
+        assert _classify(name, DXD5_RANK).fan_marker is True

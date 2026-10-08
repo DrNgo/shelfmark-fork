@@ -496,11 +496,13 @@ _RANK_VIDEO_RE = re.compile(
     re.IGNORECASE,
 )
 _RANK_AUDIO_WORD_RE = re.compile(r"\b(?:m4b|mp3|audiobook)\b", re.IGNORECASE)
-_RANK_COMIC_WORD_RE = re.compile(r"\b(?:manga|comics?|graphic[\s.-]+novels?)\b", re.IGNORECASE)
+_RANK_COMIC_WORD_RE = re.compile(
+    r"\b(?:manga|comics?|graphic[\s.-]+novels?|cbz|cbr|cb7)\b", re.IGNORECASE
+)
 # Matched after "_" became a space, so "Fan_TL" and "Baka_Tsuki" count too.
 _FAN_MARKER_RE = re.compile(
-    r"\b(?:fan[\s.-]?tl|fan[\s.-]translation|fan[\s.-]translated|baka[\s.-]?tsuki"
-    r"|scanlation)\b",
+    r"\b(?:fan[\s.-]?tl|fan[\s.-]translations?|fan[\s.-]translated|baka[\s.-]?tsuki"
+    r"|scanlations?)\b",
     re.IGNORECASE,
 )
 
@@ -547,6 +549,18 @@ _RANK_COLLECTION_RE = re.compile(
 _RANK_CONJUNCTION_RE = re.compile(r"\s*(?:&|\+|/|\band\b)\s*", re.IGNORECASE)
 # Where a run of title-like words ends: a bracket, a parenthesis or " - ".
 _RANK_SEGMENT_END_RE = re.compile(r"[\[\](){}]|\s-\s")
+# A revision tag in brackets, "[v2]" or "(v1.0)": not a volume. A bare "v2" is.
+_RANK_REVISION_TAG_RE = re.compile(r"[(\[]\s*v\d+(?:\.\d+)*\s*[)\]]", re.IGNORECASE)
+# A contributor role after a name: "Kugane Maruyama (Author)".
+_AUTHOR_ROLE_RE = re.compile(
+    r"\(\s*(?:author|illustrator|translator|artist|editor|narrator)s?\s*\)", re.IGNORECASE
+)
+# A separator that can join two titles in one release name, after or before a title.
+_RANK_TITLE_SEPARATOR = r"(?:\s*[,;|&+/]\s*|\s+-\s+|\s*\band\b\s*)"
+_RANK_TITLE_SEPARATOR_RE = re.compile(_RANK_TITLE_SEPARATOR)
+_RANK_TITLE_SEPARATOR_END_RE = re.compile(_RANK_TITLE_SEPARATOR + r"$")
+_PAGE_WORDS = frozenset({"page", "pages"})
+_RANK_BRACKET_RE = re.compile(r"[\[\](){}]")
 # Author names that say nothing about who wrote the book.
 _PLACEHOLDER_AUTHORS = frozenset({"unknown", "various", "anonymous", "n/a", "na", "none"})
 # Separators between contributors in one author field ("Corey, James S A" is split too:
@@ -598,6 +612,11 @@ def is_comic_book(title: object, series_name: object) -> bool:
     return _RANK_COMIC_WORD_RE.search(f"{title_text} {series_text}") is not None
 
 
+def _fold(text: str) -> str:
+    """Drop apostrophes so "Caliban's" and "Calibans" tokenise alike (ranking only)."""
+    return text.replace("'", "").replace("\u2019", "").replace("\u2018", "")
+
+
 def _clean_strings(values: object) -> tuple[str, ...]:
     if not isinstance(values, (list, tuple)):
         return ()
@@ -614,9 +633,9 @@ def build_ranking_identity(
 ) -> RankingIdentity:
     """The ranking identity, resolved exactly as the ladder resolves series and position."""
     search_identity = build_search_identity(
-        title=title,
-        current_query=current_query,
-        series_name=series_name,
+        title=_fold(title) if isinstance(title, str) else title,
+        current_query=_fold(current_query) if isinstance(current_query, str) else current_query,
+        series_name=_fold(series_name) if isinstance(series_name, str) else series_name,
         series_position=series_position,
     )
     return RankingIdentity(
@@ -636,14 +655,14 @@ def _sanitize_identity(identity: object) -> RankingIdentity:
     position = identity.position
     if isinstance(position, bool) or not isinstance(position, int) or position < 0:
         position = None
-    series_key = identity.series_key if isinstance(identity.series_key, str) else ""
+    series_key = _fold(identity.series_key) if isinstance(identity.series_key, str) else ""
     return RankingIdentity(
         series_key=series_key,
         position=position,
-        title_tokens=tuple(t.casefold() for t in _clean_strings(identity.title_tokens)),
+        title_tokens=tuple(_fold(t.casefold()) for t in _clean_strings(identity.title_tokens)),
         title_names_volume=identity.title_names_volume is not False,
         book_is_comic=identity.book_is_comic is True,
-        authors=_clean_strings(identity.authors),
+        authors=tuple(_fold(a) for a in _clean_strings(identity.authors)),
     )
 
 
@@ -718,41 +737,67 @@ def _has_volume_list(text: str, series_tokens: tuple[str, ...]) -> bool:
     return False
 
 
-def _token_spans(text: str) -> list[tuple[str, int]]:
-    return [(m.group(0), m.end()) for m in _TOKEN_RE.finditer(text)]
+def _token_spans(text: str) -> list[tuple[str, int, int]]:
+    return [(m.group(0), m.start(), m.end()) for m in _TOKEN_RE.finditer(text)]
 
 
-def _title_joined_to_more(text: str, title_tokens: list[str], authors: tuple[str, ...]) -> bool:
-    """Whether a conjunction joins the requested title to further title-like words.
+def _title_words(segment: str, own_words: frozenset[str]) -> list[str]:
+    """Title-like words of ``segment``: not formats, numbers, page counts or series words."""
+    skip = _ALL_FORMATS | _PAGE_WORDS | _STOPWORDS | own_words
+    return [t for t in _tokens(segment) if t not in skip and not t.isdigit()]
 
-    "Leviathan Wakes & Caliban's War" names two books. Not when the words after the
-    conjunction are a requested author ("Leviathan Wakes & James S. A. Corey"), or when the
-    conjunction sits in an author segment that a " - " closes.
+
+def _title_joined_to_more(
+    text: str, title_tokens: list[str], authors: tuple[str, ...], own_words: frozenset[str]
+) -> bool:
+    """Whether a separator joins the requested title to further title-like words.
+
+    "Leviathan Wakes & Caliban's War" and "Caliban's War, Leviathan Wakes" name two books.
+    The separators are ",", ";", "|", " - " and the conjunctions "&", "+", "/", "and". Not
+    when the other words are a requested author's ("Leviathan Wakes & James S. A. Corey",
+    "James S. A. Corey - Leviathan Wakes"), or only format words, numbers and years. After
+    the title a conjunction in a segment that a " - " closes is an author segment.
     """
     wanted = set(title_tokens)
     seen: set[str] = set()
-    end = None
-    for token, token_end in _token_spans(text):
+    start = end = None
+    for token, token_start, token_end in _token_spans(text):
         if token in wanted:
+            if token not in seen:
+                start = token_start if start is None else min(start, token_start)
             seen.add(token)
             if seen == wanted:
                 end = token_end
                 break
-    if end is None:
-        return False
-    conjunction = _RANK_CONJUNCTION_RE.match(text, end)
-    if conjunction is None:
-        return False
-    rest = text[conjunction.end() :]
-    segment_end = _RANK_SEGMENT_END_RE.search(rest)
-    if segment_end is not None and segment_end.group(0).strip() == "-":
-        return False
-    segment = rest[: segment_end.start()] if segment_end is not None else rest
-    words = [t for t in _tokens(segment) if t not in _ALL_FORMATS and not t.isdigit()]
-    if not words:
+    if start is None or end is None:
         return False
     author_tokens = [set(_tokens(author)) for author in authors]
-    return not any(set(words) <= tokens for tokens in author_tokens)
+
+    separator = _RANK_TITLE_SEPARATOR_RE.match(text, end)
+    if separator is not None:
+        rest = text[separator.end() :]
+        segment_end = _RANK_SEGMENT_END_RE.search(rest)
+        closed_by_dash = segment_end is not None and segment_end.group(0).strip() == "-"
+        conjunction = _RANK_CONJUNCTION_RE.fullmatch(separator.group(0)) is not None
+        if not (conjunction and closed_by_dash):
+            segment = rest[: segment_end.start()] if segment_end is not None else rest
+            words = _title_words(segment, own_words)
+            if words and not any(set(words) <= tokens for tokens in author_tokens):
+                return True
+
+    before = _RANK_TITLE_SEPARATOR_END_RE.search(text, 0, start)
+    if before is not None:
+        preceding = _RANK_BRACKET_RE.split(text[: before.start()])[-1]
+        words = _title_words(preceding, own_words)
+        known = set().union(*author_tokens)
+        if words and not set(words) & known:
+            return True
+    return False
+
+
+def _names_whole_title(present: set[str], identity: RankingIdentity) -> bool:
+    title_tokens = [t for t in identity.title_tokens if t]
+    return bool(title_tokens) and all(token in present for token in title_tokens)
 
 
 def _volume(text: str, identity: RankingIdentity) -> tuple[Volume, int | None]:
@@ -772,7 +817,13 @@ def _volume(text: str, identity: RankingIdentity) -> tuple[Volume, int | None]:
         if number == identity.position:
             return "match", None
         # A volume 0 is a prequel or an index page as often as a volume: not evidence.
-        return ("other", number) if number > 0 else ("unknown", None)
+        if number == 0:
+            return "unknown", None
+        # A natural-title book named in full: a series number that disagrees is reading
+        # order against publication order, not another volume.
+        if not identity.title_names_volume and _names_whole_title(present, identity):
+            return "unknown", None
+        return "other", number
 
     # A series book whose title names no volume ("Leviathan Wakes", The Expanse 1) is
     # also named by its own title words, as long as no explicit volume names another
@@ -783,10 +834,9 @@ def _volume(text: str, identity: RankingIdentity) -> tuple[Volume, int | None]:
     series_words = set(key_tokens)
     title_tokens = [t for t in identity.title_tokens if t]
     if (
-        title_tokens
-        and all(token in present for token in title_tokens)
+        _names_whole_title(present, identity)
         and any(token not in series_words for token in title_tokens)
-        and not _title_joined_to_more(text, title_tokens, identity.authors)
+        and not _title_joined_to_more(text, title_tokens, identity.authors, frozenset(key_tokens))
     ):
         return "match", None
     return "unknown", None
@@ -813,7 +863,7 @@ def _author_conflicts(release_author: object, identity: RankingIdentity) -> bool
     """
     if not isinstance(release_author, str):
         return False
-    text = html.unescape(release_author)
+    text = _AUTHOR_ROLE_RE.sub(" ", _fold(html.unescape(release_author)))
     if " ".join(text.split()).casefold() in _PLACEHOLDER_AUTHORS:
         return False
     own_words = set(identity.title_tokens) | set(significant_tokens(identity.series_key))
@@ -834,7 +884,9 @@ def _author_conflicts(release_author: object, identity: RankingIdentity) -> bool
 def _ranking_text(name: str) -> str:
     # Indexers send "&amp;" for "&"; a file version tag "(v2.0)" is not a volume; "_" is
     # a separator in scene names; ISBNs, dates and sizes are never volume numbers.
-    text = _VERSION_TAG_RE.sub(" ", html.unescape(name)).replace("_", " ").casefold()
+    text = _VERSION_TAG_RE.sub(" ", html.unescape(name))
+    text = _RANK_REVISION_TAG_RE.sub(" ", text)
+    text = _fold(text).replace("_", " ").casefold()
     for pattern in _RANK_NOISE_RES:
         text = pattern.sub(" ", text)
     return text
