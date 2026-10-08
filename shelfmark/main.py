@@ -1060,8 +1060,12 @@ def _release_match_payload(release: Release, identity: RankingIdentity) -> dict[
     irc = irc_ranking_evidence(extra.get("full_line")) if release.source == "irc" else None
     if irc is not None:
         name, release_author = irc
-    elif not isinstance(name, str) or not name.strip():
-        name = release.title
+    else:
+        if release.source == "irc":
+            # No usable result line: the parser's author is a guess, so it counts as missing.
+            release_author = None
+        if not isinstance(name, str) or not name.strip():
+            name = release.title
     extra_formats = extra.get("formats")
     formats = [release.format, *(extra_formats if isinstance(extra_formats, list) else ())]
     return classify_release(
@@ -3291,13 +3295,16 @@ def api_releases() -> Response | tuple[Response, int]:
             # manual queries keep today's order. Built after the title override, so the
             # identity is the book the modal asked about.
             if content_type == "ebook" and not manual_query:
-                ranking_identity = build_ranking_identity(
-                    title=book.title,
-                    current_query=book.search_title or book.title,
-                    series_name=book.series_name,
-                    series_position=book.series_position,
-                    authors=book.authors,
-                )
+                try:
+                    ranking_identity = build_ranking_identity(
+                        title=book.title,
+                        current_query=book.search_title or book.title,
+                        series_name=book.series_name,
+                        series_position=book.series_position,
+                        authors=book.authors,
+                    )
+                except Exception as exc:  # noqa: BLE001 - ranking must never fail the search
+                    logger.debug("Release match identity failed for %s: %s", book.provider_id, exc)
 
         # Determine which release sources to search
         if source_query_filters is not None or source_filter:

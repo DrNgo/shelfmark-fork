@@ -267,6 +267,20 @@ class TestIrcEvidence:
 
         assert releases[line]["extra"]["release_match"]["volume"] == "unknown"
 
+    def test_a_release_without_a_result_line_ignores_the_parsers_author(self, client, main_module):
+        release = _irc_release()
+        release.extra["full_line"] = ""
+        release.extra["author"] = "James Patterson"
+
+        releases = _search(
+            client,
+            main_module,
+            {"content_type": "ebook", "title": DXD5_TITLE},
+            irc_releases=[release],
+        )
+
+        assert releases[release.source_id]["extra"]["release_match"]["volume"] == "match"
+
 
 class TestNoAnnotation:
     def test_an_audiobook_search_carries_no_release_match(self, client, main_module):
@@ -322,3 +336,27 @@ class TestFailureTolerance:
 
         assert "release_match" not in releases["p-25"]["extra"]
         assert releases[IRC_LINE]["extra"]["release_match"]["volume"] == "match"
+
+
+class TestHardening:
+    def test_the_sources_release_objects_are_not_mutated(self, client, main_module):
+        irc = _irc_release()
+
+        releases = _search(
+            client,
+            main_module,
+            {"content_type": "ebook", "title": DXD5_TITLE},
+            irc_releases=[irc],
+        )
+        assert all("release_match" in r["extra"] for r in releases.values())
+
+        assert "release_match" not in irc.extra
+
+    def test_an_identity_failure_means_no_annotation_not_a_failed_request(
+        self, client, main_module
+    ):
+        with patch.object(main_module, "build_ranking_identity", side_effect=RuntimeError("boom")):
+            releases = _search(client, main_module, {"content_type": "ebook", "title": DXD5_TITLE})
+
+        assert releases
+        assert all("release_match" not in r["extra"] for r in releases.values())
