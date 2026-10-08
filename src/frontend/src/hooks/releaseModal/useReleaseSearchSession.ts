@@ -31,7 +31,6 @@ import {
   startRequest,
   supersedeRequests,
   tabNeedsFetch,
-  usesBookReleaseCache,
 } from './releaseSearchSession.helpers';
 
 interface ReleaseModalTabInfo {
@@ -265,8 +264,10 @@ export function useReleaseSearchSession(
       const indexersParam =
         useFilters && supportsIndexerFilter && indexerFilter.length > 0 ? indexerFilter : undefined;
 
-      if (!expandSearch && usesBookReleaseCache(requestContext)) {
-        const cached = getCachedReleases(provider, bookId, tabName, contentType);
+      // Every query context has its own cache entry: a manual query's (unannotated)
+      // results never stand in for the automatic search, and both stay cached.
+      if (!expandSearch) {
+        const cached = getCachedReleases(provider, bookId, tabName, contentType, requestContext);
         if (cached) {
           displayedContextRef.current[tabName] = requestContext;
           setReleasesBySource((prev) => ({ ...prev, [tabName]: cached }));
@@ -306,8 +307,8 @@ export function useReleaseSearchSession(
         if (action === 'discard') {
           return;
         }
-        if (!expandSearch && usesBookReleaseCache(requestContext)) {
-          setCachedReleases(provider, bookId, tabName, contentType, response);
+        if (!expandSearch) {
+          setCachedReleases(provider, bookId, tabName, contentType, requestContext, response);
         }
         displayedContextRef.current[tabName] = requestContext;
         setReleasesBySource((prev) => ({
@@ -502,6 +503,7 @@ export function useReleaseSearchSession(
   // Make `nextQuery` the applied query ('' for the automatic search) and search the active
   // tab in it. Every tab's list, error and loading flag is cleared and every request still
   // in flight is superseded, so another tab refetches in the new context when activated.
+  // Only the new context's cache entries are refreshed; other contexts' entries are kept.
   const switchQueryContext = useCallback(
     (nextQuery: string) => {
       if (!book.provider || !book.provider_id || !activeTab) {
@@ -509,7 +511,7 @@ export function useReleaseSearchSession(
       }
 
       for (const tab of allTabs) {
-        invalidateCachedReleases(book.provider, book.provider_id, tab.name, contentType);
+        invalidateCachedReleases(book.provider, book.provider_id, tab.name, contentType, nextQuery);
       }
 
       supersedeRequests(requestSeqRef.current);
@@ -552,7 +554,13 @@ export function useReleaseSearchSession(
     const supportsIndexerFilter =
       releasesBySource[activeTab]?.column_config?.supported_filters?.includes('indexer') ?? false;
 
-    invalidateCachedReleases(book.provider, book.provider_id, activeTab, contentType);
+    invalidateCachedReleases(
+      book.provider,
+      book.provider_id,
+      activeTab,
+      contentType,
+      queryContext(appliedManualQueryRef.current),
+    );
     setExpandedBySource((prev) => {
       const next = { ...prev };
       delete next[activeTab];

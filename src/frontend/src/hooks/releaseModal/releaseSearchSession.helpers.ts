@@ -9,17 +9,6 @@ export function queryContext(appliedManualQuery: string | undefined): string {
   return appliedManualQuery?.trim() ?? '';
 }
 
-/**
- * Whether a search in this context may read and write the book's normal cache entry.
- *
- * A manual query's results are the user's own words and carry no `release_match`, so
- * they are never stored under (or served from) the book's entry: reopening the book
- * always shows a normal, annotated search.
- */
-export function usesBookReleaseCache(context: string): boolean {
-  return context === '';
-}
-
 type ReleaseResponseAction = 'discard' | 'merge' | 'replace';
 
 /**

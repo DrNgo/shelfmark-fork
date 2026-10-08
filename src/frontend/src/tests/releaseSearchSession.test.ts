@@ -14,7 +14,6 @@ import {
   startRequest,
   supersedeRequests,
   tabNeedsFetch,
-  usesBookReleaseCache,
 } from '../hooks/releaseModal/releaseSearchSession.helpers';
 import type { Release, ReleasesResponse } from '../types';
 import {
@@ -64,9 +63,11 @@ function malformed(id: string, extra: unknown): Release {
 }
 
 const KEY = ['hardcover', 'dxd5', 'prowlarr', 'ebook'] as const;
+const MANUAL = 'dxd volume 5';
 
 afterEach(() => {
-  invalidateCachedReleases(...KEY);
+  invalidateCachedReleases(...KEY, '');
+  invalidateCachedReleases(...KEY, MANUAL);
 });
 
 describe('query context and the book cache', () => {
@@ -76,9 +77,18 @@ describe('query context and the book cache', () => {
     expect(queryContext(' dxd volume 5 ')).toBe('dxd volume 5');
   });
 
-  it('uses the book cache only for the automatic search', () => {
-    expect(usesBookReleaseCache('')).toBe(true);
-    expect(usesBookReleaseCache('dxd volume 5')).toBe(false);
+  it('keeps a separate cache entry for every query context', () => {
+    const automatic = response([annotated('a', matchPayload('match'))]);
+    const manual = response([plain('m')]);
+    setCachedReleases(...KEY, '', automatic);
+    setCachedReleases(...KEY, MANUAL, manual);
+
+    expect(getCachedReleases(...KEY, '')).toBe(automatic);
+    expect(getCachedReleases(...KEY, MANUAL)).toBe(manual);
+
+    invalidateCachedReleases(...KEY, MANUAL);
+    expect(getCachedReleases(...KEY, MANUAL)).toBeNull();
+    expect(getCachedReleases(...KEY, '')).toBe(automatic);
   });
 });
 
@@ -241,24 +251,21 @@ describe('mergeExpandedReleases', () => {
 
 describe('manual search, reopen, expand', () => {
   it('shows no stale or unannotated mix', () => {
-    const store = (context: string, data: ReleasesResponse) => {
-      if (usesBookReleaseCache(context)) setCachedReleases(...KEY, data);
-    };
-
-    // 1. Open the book: an annotated response is cached under the book.
-    store('', response([annotated('a', matchPayload('match'))]));
-    // 2. Manual search: every tab's entry is invalidated, and the unannotated manual
-    //    response is not written back under the book.
-    invalidateCachedReleases(...KEY);
-    store('dxd volume 5', response([plain('a'), plain('m')]));
-    // 3. Reopen: no manual results come back from the cache, so the modal searches again.
-    expect(getCachedReleases(...KEY)).toBeNull();
+    // 1. Open the book: an annotated response is cached under the automatic context.
     const reopened = response([
       annotated('a', matchPayload('match')),
       annotated('b', matchPayload('other', 6)),
     ]);
-    store('', reopened);
-    expect(getCachedReleases(...KEY)).toBe(reopened);
+    setCachedReleases(...KEY, '', reopened);
+    // 2. Manual search: only the manual context's entry is refreshed, and the unannotated
+    //    manual response is cached under its own context, never under the automatic one.
+    invalidateCachedReleases(...KEY, MANUAL);
+    const manual = response([plain('a'), plain('m')]);
+    setCachedReleases(...KEY, MANUAL, manual);
+    // 3. Reopen: the automatic search comes back annotated from the cache, and a modal
+    //    that opens on the manual query (defaultShowManualQuery) hits that query's entry.
+    expect(getCachedReleases(...KEY, '')).toBe(reopened);
+    expect(getCachedReleases(...KEY, MANUAL)).toBe(manual);
     // 4. Expand: duplicates take the incoming match data; new rows arrive annotated.
     const action = releaseResponseAction({
       expandSearch: true,
@@ -289,23 +296,18 @@ describe('useReleaseSearchSession uses the helpers', () => {
   );
 
   it('calls the extracted decisions instead of reimplementing them', () => {
-    for (const call of [
-      'queryContext(',
-      'usesBookReleaseCache(requestContext)',
-      'releaseResponseAction(',
-      'applyReleaseResponse(',
-    ]) {
+    for (const call of ['queryContext(', 'releaseResponseAction(', 'applyReleaseResponse(']) {
       expect(hook).toContain(call);
     }
     expect(hook).not.toContain('seenIds');
     expect(hook).not.toMatch(/new Set\(existing\.releases/);
   });
 
-  it('writes the cache only behind the cache decision', () => {
+  it('writes the cache under the request context, never for an expansion', () => {
     const writes = hook.match(/setCachedReleases\(/g) ?? [];
     expect(writes).toHaveLength(1);
     expect(hook).toMatch(
-      /if \(!expandSearch && usesBookReleaseCache\(requestContext\)\) \{\s*setCachedReleases\(/,
+      /if \(!expandSearch\) \{\s*setCachedReleases\(provider, bookId, tabName, contentType, requestContext, response\)/,
     );
   });
 
@@ -314,12 +316,20 @@ describe('useReleaseSearchSession uses the helpers', () => {
     expect(hook).not.toMatch(/manualQueryOverride \?\? manualQuery\)/);
   });
 
-  it('reads and writes the book cache only behind the cache decision', () => {
-    const decisions = hook.match(/usesBookReleaseCache\(requestContext\)/g) ?? [];
-    expect(decisions.length).toBeGreaterThanOrEqual(2);
+  it('reads the cache under the request context', () => {
     expect(hook).toMatch(
-      /if \(!expandSearch && usesBookReleaseCache\(requestContext\)\) \{\s*const cached = getCachedReleases\(/,
+      /if \(!expandSearch\) \{\s*const cached = getCachedReleases\(provider, bookId, tabName, contentType, requestContext\)/,
     );
+  });
+
+  it('refreshes only the next context on a switch, and the current one on a filter change', () => {
+    expect(hook).toContain(
+      'invalidateCachedReleases(book.provider, book.provider_id, tab.name, contentType, nextQuery)',
+    );
+    expect(hook).toMatch(
+      /invalidateCachedReleases\(\s*book\.provider,\s*book\.provider_id,\s*activeTab,\s*contentType,\s*queryContext\(appliedManualQueryRef\.current\),?\s*\)/,
+    );
+    expect(hook.match(/invalidateCachedReleases\(/g) ?? []).toHaveLength(2);
   });
 
   it('clears loading and errors only for the newest request', () => {
