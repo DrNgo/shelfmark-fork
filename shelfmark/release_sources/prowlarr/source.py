@@ -569,10 +569,14 @@ def _prowlarr_result_to_release(
     unrecognized_formats: list[str] = []
     formats_display: str | None = None
     language_detected: str | None = None
+    # The indexer's own name for the release, kept when bookTitle replaces it: release
+    # ranking reads volume and format words from the name the indexer gave.
+    release_name: str | None = None
     if enable_format_detection:
         book_title = str(result.get("bookTitle") or "").strip()
         if book_title:
             title = book_title
+            release_name = str(raw_title)
 
         formats, unrecognized_formats = _split_mam_formats(str(raw_title or ""))
         format_detected = formats[0] if formats else None
@@ -626,6 +630,7 @@ def _prowlarr_result_to_release(
             "grabs": result.get("grabs"),
             "author": result.get("author"),
             "book_title": result.get("bookTitle"),
+            "release_name": release_name,
             "indexer_flags": indexer_flags,
             "vip": is_vip,
             "freeleech": is_freeleech,
