@@ -1,5 +1,6 @@
 import type { Book, Release, ReleasesResponse } from '../types';
 import { isRecord } from './objectHelpers';
+import { parseReleaseMatch } from './releaseMatch';
 
 function normalizeMatchText(value: string): string {
   return value
@@ -165,24 +166,45 @@ function getTitleMatchScore(title: string, titleCandidate: string): number {
   return score;
 }
 
+// Tier bonuses exceed today's best score (exact title 10000 plus author 1500), so the
+// tier decides and today's score orders releases within a tier.
+const MATCH_TIER_BONUS = 20000;
+
+function getMatchTierBonus(release: Release): number {
+  const match = parseReleaseMatch(release.extra);
+  if (!match) return 0;
+  if (match.volume === 'other' || !match.compatible) return -MATCH_TIER_BONUS;
+  if (match.volume === 'match') return MATCH_TIER_BONUS;
+  return 0;
+}
+
+function getBookMatchScore(
+  release: Release,
+  titleCandidates: string[],
+  authorCandidates: string[],
+): number {
+  // Without title candidates today's order stands (inside each tier).
+  if (titleCandidates.length === 0) return 0;
+  return (
+    titleCandidates.reduce(
+      (best, candidate) => Math.max(best, getTitleMatchScore(release.title, candidate)),
+      0,
+    ) + (hasAuthorMatch(release, authorCandidates) ? 1500 : 0)
+  );
+}
+
 export function sortReleasesByBookMatch(
   releases: Release[],
   titleCandidates: string[],
   authorCandidates: string[],
 ): Release[] {
-  if (titleCandidates.length === 0) {
-    return releases;
-  }
-
+  // Each score is computed once per release, never inside the comparator.
   return releases
     .map((release, index) => ({
       release,
       index,
       score:
-        titleCandidates.reduce(
-          (best, candidate) => Math.max(best, getTitleMatchScore(release.title, candidate)),
-          0,
-        ) + (hasAuthorMatch(release, authorCandidates) ? 1500 : 0),
+        getMatchTierBonus(release) + getBookMatchScore(release, titleCandidates, authorCandidates),
     }))
     .toSorted((a, b) => {
       const scoreDiff = b.score - a.score;

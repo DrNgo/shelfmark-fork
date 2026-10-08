@@ -1479,6 +1479,50 @@ class TestUnrecognizedFormatOnRelease:
         assert release.extra["unrecognized_formats"] is None
 
 
+class TestReleaseNameKeptWhenBookTitleReplacesIt:
+    """Ranking reads the name the indexer gave, which MAM's bookTitle would otherwise hide."""
+
+    RAW = "High School DxD, Vol. 5: Hellcat of the Underworld Training Camp by Ichiei Ishibumi [ENG / M4B]"
+    BOOK_TITLE = "High School DxD, Vol. 5: Hellcat of the Underworld Training Camp"
+
+    def _result(self, **overrides) -> dict:
+        result = {
+            "title": self.RAW,
+            "bookTitle": self.BOOK_TITLE,
+            "guid": "https://www.myanonamouse.net/t/1",
+            "indexer": "MyAnonamouse",
+            "indexerId": 1,
+            "protocol": "torrent",
+            "size": 1000,
+            "seeders": 5,
+            "leechers": 0,
+            "categories": [{"id": 7020}],
+        }
+        result.update(overrides)
+        return result
+
+    def test_the_raw_name_is_kept_when_the_title_is_substituted(self):
+        from shelfmark.release_sources.prowlarr.source import _prowlarr_result_to_release
+
+        release = _prowlarr_result_to_release(self._result(), "ebook", enable_format_detection=True)
+
+        assert release.title == self.BOOK_TITLE
+        assert release.extra["release_name"] == self.RAW
+
+    def test_no_release_name_when_the_title_is_not_substituted(self):
+        from shelfmark.release_sources.prowlarr.source import _prowlarr_result_to_release
+
+        plain = _prowlarr_result_to_release(self._result(), "ebook")
+        no_book_title = _prowlarr_result_to_release(
+            self._result(bookTitle="  "), "ebook", enable_format_detection=True
+        )
+
+        assert plain.title == self.RAW
+        assert plain.extra["release_name"] is None
+        assert no_book_title.title == self.RAW
+        assert no_book_title.extra["release_name"] is None
+
+
 class TestProwlarrStaleIndexerSelection:
     """Indexers removed or disabled in Prowlarr must not be searched (#1283)."""
 

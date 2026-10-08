@@ -93,6 +93,7 @@ It is pure and total: junk input gives `ReleaseMatch("unknown", None, "unknown",
   - `<series> NN` immediately followed by ` - `, `]`, `(`, a 4-digit year, a format token or the end of the name
 
   Here `<series>` means the last token of the series key, and N is 1–3 digits with no fraction or letter suffix. Bare `[N]`, `- N` and page or edition numbers are not volume syntax for ranking.
+- **Short series key:** when the series name has a colon, the part before it ("Mushoku Tensei" of "Mushoku Tensei: Jobless Reincarnation") is a second key, if it has a significant token and differs from the full key; a name carrying either key's tokens carries the series key, and `<series>` may be either key's last token.
 - **Collection evidence:** checked before `match` or `other`, and gives `unknown`:
   - `omnibus`, `box set`/`boxed set`, `complete series`, `collection`, `trilogy`/`duology`/`quartet`, `books N-M`
   - any range or list of volume numbers
@@ -175,7 +176,7 @@ Only the default "best match" sort changes, and the score is still computed once
 ### 7. Cache and expanded searches
 
 - **Problem:** the frontend release cache is keyed by provider, book, source and content type (`releaseCache.ts:14`). Expanded searches keep existing rows and drop duplicate incoming IDs (`useReleaseSearchSession.ts:281-290`).
-- **Cache:** a manual-query response is not written to the book's normal cache entry, so reopening the book never shows unannotated manual results.
+- **Cache:** the cache key includes the query context (`''` for the automatic search, else the applied manual query), so a manual-query response never overwrites the book's automatic entry and reopening the book never shows unannotated manual results; both stay cached, a modal that opens on its default manual query hits that query's entry, and a context switch refreshes only the entries of the context it switches to.
 - **Merging:** when an expanded response returns a release ID already shown, the incoming `extra.release_match` replaces the old one.
 
 ## Error handling
@@ -244,3 +245,5 @@ Ships with #4 (already on local main, 496e2f7) in one Shelfmark release via
 |---|---|
 | Natural-title bundles | A conjunction joining the requested title to further title words ("Leviathan Wakes & Caliban's War") is `unknown`; "Leviathan Wakes James S. A. Corey & Daniel Abraham" stays `match` (revision 5 amended) |
 | Invalid `other_volume` | The backend never emits `other_volume` 0; the frontend parser downgrades an invalid `other_volume` to an `unknown` volume and keeps medium, compatibility and fan marker (§5 amended) |
+| Final review: pre-colon short series key accepted | The part of a series name before a colon is a second series key for ranking ("Mushoku Tensei Vol. 3" matches "Mushoku Tensei: Jobless Reincarnation" vol 3); a series name without a colon gets no shortened key (§2 amended) |
+| Final review: cache keyed by query context | Every query context caches under its own key instead of manual responses going uncached; the automatic entry is never written by a manual search (§7 amended) |

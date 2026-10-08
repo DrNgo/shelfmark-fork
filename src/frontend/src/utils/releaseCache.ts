@@ -1,7 +1,9 @@
 import type { ReleasesResponse } from '../types';
 
 // Module-level cache for release search results
-// Key format: `${provider}:${provider_id}:${source}:${contentType}`
+// Key format: `${provider}:${provider_id}:${source}:${contentType}:${queryContext}`, where
+// the query context is '' for the automatic search, else the applied manual query: manual
+// and automatic responses never share an entry, and both stay cached.
 // This persists across modal open/close cycles
 const releaseCache = new Map<string, ReleasesResponse>();
 
@@ -10,8 +12,9 @@ function getCacheKey(
   providerId: string,
   source: string,
   contentType: string,
+  context: string,
 ): string {
-  return `${provider}:${providerId}:${source}:${contentType}`;
+  return `${provider}:${providerId}:${source}:${contentType}:${context}`;
 }
 
 // Default cache TTL (5 minutes) - sources can override via column_config.cache_ttl_seconds
@@ -23,8 +26,9 @@ export function getCachedReleases(
   providerId: string,
   source: string,
   contentType: string,
+  context: string,
 ): ReleasesResponse | null {
-  const key = getCacheKey(provider, providerId, source, contentType);
+  const key = getCacheKey(provider, providerId, source, contentType, context);
   const timestamp = cacheTimestamps.get(key);
   const cached = releaseCache.get(key);
 
@@ -53,9 +57,10 @@ export function setCachedReleases(
   providerId: string,
   source: string,
   contentType: string,
+  context: string,
   data: ReleasesResponse,
 ): void {
-  const key = getCacheKey(provider, providerId, source, contentType);
+  const key = getCacheKey(provider, providerId, source, contentType, context);
   releaseCache.set(key, data);
   cacheTimestamps.set(key, Date.now());
 }
@@ -65,8 +70,9 @@ export function invalidateCachedReleases(
   providerId: string,
   source: string,
   contentType: string,
+  context: string,
 ): void {
-  const key = getCacheKey(provider, providerId, source, contentType);
+  const key = getCacheKey(provider, providerId, source, contentType, context);
   releaseCache.delete(key);
   cacheTimestamps.delete(key);
 }

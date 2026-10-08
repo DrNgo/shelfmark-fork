@@ -131,3 +131,33 @@ def test_parse_results_file_uses_book_format_settings_for_ebooks(monkeypatch):
     results = parser.parse_results_file(content, content_type="ebook")
 
     assert [result.format for result in results] == ["epub"]
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (
+            "!Bsk Kugane Maruyama - Overlord 02 - The Dark Warrior.epub ::INFO:: 1.1MB",
+            ("Kugane Maruyama - Overlord 02 - The Dark Warrior.epub", "Kugane Maruyama"),
+        ),
+        # Series-prefix layout: the parser's "author" is really the series.
+        ("!Bsk Overlord - Volume 2.epub", ("Overlord - Volume 2.epub", "Overlord")),
+        # Authorless layout: only the fallback pattern matches, so there is no author.
+        ("!Bsk Overlord Vol 2.epub ::INFO:: 1.1MB", ("Overlord Vol 2.epub", None)),
+        (
+            "!Ook Andy Weir - Project Hail Mary (2021) Audiobook ::INFO:: 620.5MB",
+            ("Andy Weir - Project Hail Mary (2021) Audiobook", None),
+        ),
+        (
+            "!Bsk Ichiei Ishibumi - DxD v05.epub ::INFO:: 1.2MB ::HASH:: abc123",
+            ("Ichiei Ishibumi - DxD v05.epub", "Ichiei Ishibumi"),
+        ),
+    ],
+)
+def test_ranking_evidence_is_the_line_without_command_and_metadata(line, expected):
+    assert parser.ranking_evidence(line) == expected
+
+
+@pytest.mark.parametrize("line", [None, 5, "", "   ", "no command here", "!Bsk", "!Bsk   "])
+def test_ranking_evidence_needs_a_result_line(line):
+    assert parser.ranking_evidence(line) is None
