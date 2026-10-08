@@ -459,6 +459,16 @@ export interface Release {
   extra?: Record<string, unknown>; // Source-specific metadata
 }
 
+// How a release matches the requested book: `extra.release_match` (version 1), set by
+// /api/releases for ebook searches. Read it only through `parseReleaseMatch`.
+export interface ReleaseMatch {
+  volume: 'match' | 'other' | 'unknown';
+  other_volume: number | null; // set only when volume is 'other'
+  medium: 'ebook' | 'comic' | 'audio' | 'video' | 'unknown';
+  compatible: boolean; // the medium suits the requested book
+  fan_marker: boolean; // the release name says fan translation
+}
+
 // Search info returned by release sources
 export interface SourceSearchInfo {
   search_type: 'isbn' | 'title_author' | 'categories' | 'expanded' | 'manual' | 'query';

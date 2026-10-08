@@ -44,23 +44,17 @@ import {
 import { coverAspectForContentType } from '../utils/mediaType';
 import { getNestedValue, toComparableText, toStringValue } from '../utils/objectHelpers';
 import { toBookPlanPayload } from '../utils/packReview';
+import { sortReleasesForDisplay } from '../utils/releaseDisplaySort';
 import { getReleaseFormats } from '../utils/releaseFormats';
 import { INITIAL_ENTER_ANIMATION, nextEnterAnimation } from '../utils/releaseModalEnterAnimation';
 import { buildReleaseDownloadPayload, type ReleaseDownloadOptions } from '../utils/releasePayload';
-import {
-  getBookTitleCandidates,
-  getBookAuthorCandidates,
-  sortReleasesByBookMatch,
-} from '../utils/releaseScoring';
 import type { SortState } from '../utils/releaseSort';
 import {
   getSavedSort,
   saveSort,
   clearSort,
   inferDefaultDirection,
-  sortReleases,
   FORMAT_SORT_KEY,
-  sortReleasesByFormat,
 } from '../utils/releaseSort';
 import { BookDownloadButton } from './BookDownloadButton';
 import { BookTargetDropdown } from './BookTargetDropdown';
@@ -1173,7 +1167,7 @@ const ReleaseModalSession = ({
     const selectedFormat = formatFilter.toLowerCase();
 
     // First, filter
-    let filtered = releases.filter((r) => {
+    const filtered = releases.filter((r) => {
       // Format filtering
       const releaseFormats = getReleaseFormats(r);
 
@@ -1209,19 +1203,14 @@ const ReleaseModalSession = ({
       return true;
     });
 
-    // Then, sort by explicit column/format, or default to book-title relevance with exact author boost
-    if (currentSort?.key === FORMAT_SORT_KEY && currentSort.value) {
-      filtered = sortReleasesByFormat(filtered, currentSort.value, currentSort.direction);
-    } else if (currentSort && allSortOptions.length > 0) {
-      filtered = sortReleases(filtered, currentSort.key, currentSort.direction);
-    } else {
-      const responseBook = releasesBySource[activeTab]?.book;
-      const titleCandidates = getBookTitleCandidates(book, responseBook);
-      const authorCandidates = getBookAuthorCandidates(book, responseBook);
-      filtered = sortReleasesByBookMatch(filtered, titleCandidates, authorCandidates);
-    }
-
-    return filtered;
+    // Then, sort by explicit column/format, or default to the tiered best-match sort
+    return sortReleasesForDisplay(
+      filtered,
+      currentSort,
+      allSortOptions.length > 0,
+      book,
+      releasesBySource[activeTab]?.book,
+    );
   }, [
     releasesBySource,
     activeTab,
