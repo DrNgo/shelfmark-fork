@@ -63,6 +63,7 @@ import { DropdownList } from './DropdownList';
 import { LanguageMultiSelect } from './LanguageMultiSelect';
 import { PackReviewPanel } from './PackReviewPanel';
 import { ReleaseCell } from './ReleaseCell';
+import { ReleaseMatchBadges } from './ReleaseMatchBadges';
 
 // Combined mode configuration for the ReleaseModal
 interface CombinedModeConfig {
@@ -470,7 +471,7 @@ const PhaseChip = ({
 };
 
 // Release row component with dynamic columns
-const ReleaseRow = ({
+export const ReleaseRow = ({
   release,
   index,
   onDownload,
@@ -574,6 +575,7 @@ const ReleaseRow = ({
               release.title
             )}
           </p>
+          <ReleaseMatchBadges release={release} />
           {author && <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">{author}</p>}
         </div>
 
@@ -626,6 +628,7 @@ const ReleaseRow = ({
               <span className="font-normal text-zinc-500 dark:text-zinc-400"> — {author}</span>
             )}
           </p>
+          <ReleaseMatchBadges release={release} compact />
           {/* Plugin-provided info line (format, size, indexer, seeders, etc.) */}
           {mobileColumns.length > 0 && (
             <div className="mt-1 flex items-center gap-1.5 text-[10px] text-zinc-500 dark:text-zinc-400">
