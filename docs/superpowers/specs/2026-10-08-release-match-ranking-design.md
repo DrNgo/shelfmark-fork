@@ -142,7 +142,7 @@ fractions, Part rules) match the ladder.
 
 ### 5. Ranking (`src/frontend/src/utils/releaseScoring.ts`)
 
-**One parser:** a shared `ReleaseMatch` TypeScript type and one runtime parser, `parseReleaseMatch(extra)`. It returns `null` on a wrong version, unknown enum values, or an `other_volume` that is not a positive integer. Scoring and badges both use it.
+**One parser:** a shared `ReleaseMatch` TypeScript type and one runtime parser, `parseReleaseMatch(extra)`. It returns `null` on a wrong version or unknown enum values. An `other_volume` that is not a positive integer (or one set when `volume` is not `other`) does not discard the payload: the volume becomes `unknown` and `medium`, `compatible` and `fan_marker` still apply. The backend never emits `other_volume` 0 (a volume-0 `other` is `unknown`). Scoring and badges both use it.
 
 Only the default "best match" sort changes, and the score is still computed once per release, outside the comparator:
 
@@ -227,7 +227,7 @@ Ships with #4 (already on local main, 496e2f7) in one Shelfmark release via
 | 1 | Original release name kept (`extra.release_name`); declared format, content type and author used, with precedence over name words |
 | 2 | Collection evidence is checked before match/other |
 | 3, 8 | Explicit volume syntax only (adds `#N`, `Book N`, underscores, bare series numbers in context); bare `[N]`/`- N` excluded |
-| 4, 5 | Natural-title rule for ranking without the number veto; contributor separators are not bundles |
+| 4, 5 | Natural-title rule for ranking without the number veto; contributor separators are not bundles, but a conjunction (`&`, `and`, `/`, `+`, `&amp;`) joining the requested title to further title words makes a natural-title release `unknown`, unless those words are a requested author or the conjunction sits in an author segment before ` - ` (amended after the plan review) |
 | 6, 7 | Technical markers only; bounded comic rule; medium separated from compatibility |
 | 9 | Author conflict blocks top tier |
 | 10 | Localized identities: out of scope, unmatched releases keep today's order |
@@ -237,3 +237,10 @@ Ships with #4 (already on local main, 496e2f7) in one Shelfmark release via
 | 14 | Versioned `release_match` key, typed parser, informational downstream |
 | 15 | No positive badges, badges outside the title clamp, `Fan TL?` with tooltip, no `Retail` badge |
 | 16 | Source-to-UI pipeline tests, counterexamples, cache flow, large-list smoke test |
+
+## Revisions after the plan review (2026-10-08)
+
+| Finding | Change |
+|---|---|
+| Natural-title bundles | A conjunction joining the requested title to further title words ("Leviathan Wakes & Caliban's War") is `unknown`; "Leviathan Wakes James S. A. Corey & Daniel Abraham" stays `match` (revision 5 amended) |
+| Invalid `other_volume` | The backend never emits `other_volume` 0; the frontend parser downgrades an invalid `other_volume` to an `unknown` volume and keeps medium, compatibility and fan marker (§5 amended) |

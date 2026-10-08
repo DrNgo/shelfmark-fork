@@ -4,11 +4,11 @@
 
 **Goal:** For ebook searches, the release modal's default "best match" sort puts the requested volume first and other volumes, manga/comic editions, audiobooks and video last, with small mismatch badges, acting only on strong explicit evidence so anything ambiguous keeps today's order.
 
-**Architecture:** A pure classifier, `classify_release`, in `shelfmark/core/search_queries.py` (separate from the ladder's `is_identity_hit`) reads each release's original name, declared formats, content type and structured author against a `RankingIdentity` built once per request with `build_search_identity`. `/api/releases` adds a versioned `extra["release_match"]` to every release of an ebook, metadata-provider, non-manual search (Prowlarr first keeps MAM's original name in `extra["release_name"]`). The frontend parses it once (`parseReleaseMatch`), adds a ±20000 tier bonus in `sortReleasesByBookMatch`, renders mismatch badges below the title clamp, keeps manual-query responses out of the book's cache, and refreshes match data on duplicate rows when an expanded search merges.
+**Architecture:** A pure classifier, `classify_release`, in `shelfmark/core/search_queries.py` (separate from the ladder's `is_identity_hit`) reads each release's original name, declared formats, content type and structured author against a `RankingIdentity` built once per request with `build_search_identity`. `/api/releases` adds a versioned `extra["release_match"]` to every release of an ebook, metadata-provider, non-manual search (Prowlarr first keeps MAM's original name in `extra["release_name"]`; IRC is classified on its original result line). The frontend parses it once (`parseReleaseMatch`), adds a ±20000 tier bonus in `sortReleasesByBookMatch` (reached through one extracted sort-path function), renders mismatch badges below the title clamp, and tracks each tab's query context so manual-query responses never enter the book's cache, expansions merge only into a list from the same context, and superseded responses are discarded.
 
 **Tech Stack:** Python 3.14 (Flask), uv, pytest (+xdist), Ruff 0.16.5 (pre-commit hook: ruff 0.15.10 via prek), BasedPyright, Vulture; React 19 + TypeScript 7, Vitest 4 (`react-dom/server` static rendering, no DOM environment), oxlint, oxfmt, knip; npm (`src/frontend/package-lock.json`).
 
-**Spec:** `docs/superpowers/specs/2026-10-08-release-match-ranking-design.md` (commit 571c879) — read it fully, including the "Revisions after Codex review" table, before any task. The spec is binding; the rulings below only fill its gaps.
+**Spec:** `docs/superpowers/specs/2026-10-08-release-match-ranking-design.md` — read it fully, including both revisions tables ("Revisions after Codex review" and "Revisions after the plan review"), before any task. The spec is binding; the rulings below only fill its gaps.
 
 ## Global Constraints
 
@@ -20,10 +20,10 @@
 - Endpoint failures: classification runs per release inside `try`/`except`; a failure is logged at DEBUG and leaves the key absent; it never fails the request. The key is informational: nothing downstream reads or persists it.
 - Frontend tiers (default sort only): top `+20000` (`match` and `compatible`), middle `0` (no parsed match, or `unknown` and `compatible`), bottom `-20000` (`other`, or not `compatible`). Scores are computed once per release, outside the comparator. Nothing is filtered; column sorts, the format sort, saved sorts and filters are unchanged.
 - Badges: `Vol N` (other), `Manga/Comic` (comic and not compatible), `Audiobook` (audio), `Video` (video); secondary `Fan TL?` with the tooltip "The release name says this is a fan translation". No positive badge. Badges sit on their own line below the title, outside the two-line clamp; compact (mobile) badges are plain text.
-- Cache: a manual-query response is never written to the book's cache entry; an expanded response's `extra.release_match` replaces the old one on duplicate release IDs.
+- Cache: a manual-query response is never written to the book's cache entry; an expanded response's `extra.release_match` replaces the old one on duplicate release IDs; an expansion merges only into a list from the same query context.
 - Python: bare `except A, B:` (PEP 758) is valid here — do not "fix" it.
 - Commits run the repo's prek hooks (ruff-check 0.15.10, ruff-format, oxfmt). Never pass `--no-verify`. Never push from a plan step.
-- Never contact Prowlarr, Hardcover or the cluster from a plan step except the user-gated Task 8.
+- Never contact Prowlarr, Hardcover or the cluster from a plan step except the user-gated Task 9.
 - Commits end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 
 ## Rulings on spec ambiguities
@@ -34,32 +34,37 @@ Binding for this plan; each is pinned by a test in the owning task.
 2. **Medium needs declared evidence to be `ebook`.** `Overlord Vol. 2: Episodes of the Kingdom EPUB` is tested with `formats=["epub"]` (spec rule 6: name words never make `ebook`). Without declared evidence the medium is `unknown`, which is equally compatible and shows no badge. Task 1 `test_episodes_in_a_light_novel_title_is_not_video`, `test_ebook_evidence`.
 3. **Ebook content type** is `"ebook"` or `"book"` (Prowlarr and Newznab label their ebook categories `"book"`); `"audiobook"` is audio; any other value (`"other"`, direct download's `"book (fiction)"`) is ignored and the declared format decides. Declared ebook formats are exactly `epub`, `mobi`, `azw3`, `pdf`.
 4. **Explicit volume syntax details.** `Vol`/`Volume`/`Vols` take `.`, space, `-` or (normalised) `_` separators; `vNN`, `#N`, `Book N`; `[<series> NN]` and `<series> NN` use **one** separator (a whitespace run, `.` or `-`), so `High School DxD - 5` is a bare `- N`, not syntax; `<series>` is the last significant token of the series key. N is 1–3 digits (0 allowed).
-5. **A partial number** (`Vol. 5.5`, `Vol. 5a`, `v05.5`, `#5.5`) makes the whole release's volume `unknown` rather than being ignored — ambiguity resolves to unknown. A dot followed by 1–2 digits is a fraction; `Vol.05.2016` (a year) is not. Task 1 Review Focus 3.
+5. **A partial number** (`Vol. 5.5`, `Vol 2.125`, `Vol. 5a`, `v05.5`, `#5.5`) makes the whole release's volume `unknown` rather than being ignored — ambiguity resolves to unknown. A dot followed by digits of any length is a decimal, except a four-digit year (`19xx`/`20xx`): `Vol.02.2016` and `Vol 2 2016` stay volume 2. Task 1 Review Focus 3, `TestRankingReviewFindings::test_any_decimal_suffix_is_not_a_whole_volume` / `::test_a_year_after_the_volume_keeps_it_whole`.
 6. **"More than one explicit volume number"** means distinct numbers; `Overlord Vol. 2 [Overlord 02]` is one volume.
-7. **Range/list collection evidence** also covers a range of two 1–3 digit numbers anywhere in the name (`-`, `–`, `—`, `~`, `&`, `+`, `to`, `and`), so `Overlord 1-3 (epub)` and `The Expanse 1-3 …` are `unknown`, and a list right after explicit syntax (`Vol. 2, 3`, `v02-v03`). Separators between *names* (no numbers on both sides) are not evidence, so per spec revision 5 `Leviathan Wakes & Caliban's War` can natural-match for ranking (the ladder still treats it as a bundle).
+7. **Range/list collection evidence counts only in volume context:** a second number joined by `-`, `–`, `—`, `~`, `&`, `+`, `,`, `/`, `to`, `and` or `through` right after a volume marker (`Vol. 2, 3`, `Vol 2/3`, `Vol 2 / 3`, `v02-v03`), after the series name (`Overlord 1-3`, `The Expanse 1-3 …`) or after `Books` (`Books 1-3`). Before any volume parsing the name is masked of ISBNs (`978…`/`979…`, 13 digits with optional separators), dates (`YYYY-M-D`) and sizes (`1-2 MB`, `620.5MB`), so those never read as ranges. Separators between *names* are not evidence (`Kugane Maruyama / so-bin`). The three Codex example names were not available to this plan; `test_isbns_dates_and_sizes_are_not_volume_ranges` uses one name per kind.
+7a. **Natural-title bundles** (spec revision 5, amended): a conjunction (`&`, `and`, `/`, `+`, `&amp;`) right after the requested title's words, followed by further title-like words, makes a natural-title release `unknown` (`Leviathan Wakes & Calibans War EPUB`). It stays `match` when those words are one requested author's tokens (`Leviathan Wakes & James S. A. Corey`), when nothing title-like follows (format words and numbers do not count), or when a ` - ` closes the segment (an author segment). A conjunction elsewhere is harmless (`Leviathan Wakes James S. A. Corey & Daniel Abraham EPUB` → `match`).
+7b. **Volume 0 is never `other`:** a release naming volume 0 for a request of another volume is `unknown` (its medium still counts: `Overlord Vol 0 [MP3]` → audio, unknown volume); a request for volume 0 still matches `Vol. 0`.
 8. **Own-title exclusion** (medium rules 4–5) uses `RankingIdentity.title_tokens`; a matched phrase counts only if one of its words is not a title word (`The Manga Guide to Physics` is not a comic release of itself). With no identity there is no exclusion.
-9. **Author conflict** compares word tokens of two or more characters (initials ignored). Placeholder authors (`Unknown`, `Various`, `Anonymous`, `N/A`, `NA`, `None`) are missing, not conflicting — IRC's parser writes `Unknown`. A conflict only downgrades `match`. Task 1 Review Focus 1.
-10. **Fan marker** words may be separated by space, `.`, `-` or `_`; `fan translated` (space) also counts; plurals do not.
-11. **Junk input.** A `name` that is not a non-blank string gives the spec's all-unknown result even if formats are declared; junk `formats`, `content_type` or `identity` are tolerated one by one (an `identity` that is not a `RankingIdentity` decides no volume and makes a comic incompatible).
+9. **Author conflict compares contributors one by one.** The release author field is split on `,`, `;`, `&`, `+`, `/` and `and`; each part's surname candidates are its first and last words of two or more characters (initials ignored), which covers `Surname, Given` and `Surname Given`. Each requested author's surname is its last word of two or more characters. The release agrees when any candidate is any requested surname; otherwise, with a real release author and at least one requested surname, it conflicts. A shared given name alone is not agreement (`James Patterson` vs `James S. A. Corey` → conflict; `Corey, James S A` → agree; `Maruyama Kugane` vs `Kugane Maruyama` → agree). Placeholder authors (`Unknown`, `Various`, `Anonymous`, `N/A`, `NA`, `None`) and an author field made only of the book's own title or series words (IRC's series-prefix layout puts `Overlord` where the author goes) are missing, not conflicting. A conflict only downgrades `match`. Task 1 Review Focus 1 and `TestRankingReviewFindings`.
+10. **Fan marker**, matched after `_` becomes a space: `fan[\s.-]?tl`, `fan[\s.-]translation`, `fan[\s.-]translated`, `baka[\s.-]?tsuki`, `scanlation`, case-insensitive on word boundaries (so `FanTL` and `BakaTsuki` count; plurals and `fantastic translation` do not).
+11. **Junk input.** A `name` that is not a non-blank string gives the spec's all-unknown result even if formats are declared; junk `formats`, `content_type` or `identity` are tolerated one by one (an `identity` that is not a `RankingIdentity` decides no volume and makes a comic incompatible). A `RankingIdentity` with malformed fields is sanitised first: a non-string `series_key` becomes `""`, a non-integer, boolean or negative `position` becomes `None`, non-string tokens and authors are dropped (a non-sequence becomes `()`), `title_names_volume` is `False` only when it is exactly `False`, `book_is_comic` is `True` only when exactly `True`.
 12. **Identity construction** lives in `build_ranking_identity(*, title, current_query, series_name, series_position, authors)` in `search_queries.py`, which calls `build_search_identity` with exactly the spec §3 arguments; `book_is_comic` is the bounded rule (`manga`, `comic(s)`, `graphic novel(s)` on word boundaries over title + series). `authors` keeps non-blank strings only.
-13. **Endpoint scope.** Annotation runs only in the metadata-provider branch (a registered provider, not `manual`, not a source-browse provider, not a query browse), when `content_type == "ebook"` and `manual_query` is empty; the identity is built right after `book.title = title_param`. Task 3 Review Focus 4.
+13. **Endpoint scope.** Annotation runs only in the metadata-provider branch (a registered provider, not `manual`, not a source-browse provider, not a query browse), when `content_type == "ebook"` and `manual_query` is empty; the identity is built right after `book.title = title_param`. Task 4 Review Focus 4.
 14. **Annotation is applied to the serialized dicts** (`asdict` copies), never to the `Release` objects a source may cache. A release whose serialized `extra` is not a dict gets `{}` only when it is annotated.
 15. **Failure logging** is `logger.debug("Release match classification failed for %s: %s", source_id, exc)` under `except Exception as exc:  # noqa: BLE001 - …`. With `exc_info=True` the project ruff (0.16.5) reports the `noqa` as unused (RUF100) while the commit hook's ruff (0.15.10) still reports BLE001 without it; this form passes both.
 16. **Prowlarr `release_name`** is always present in Prowlarr's `extra`: the raw indexer title when `bookTitle` replaced it, otherwise `None`. The endpoint uses it when it is a non-blank string, else `release.title`. Newznab never substitutes and is unchanged.
-17. **Frontend parser.** `v` must be the number `1`; when `volume` is `other`, `other_volume` must be a positive integer; otherwise it must be `null` (or absent). Consequence of the spec's "positive integer": a backend `other` with volume 0 parses as `null` (no tier, no badge).
+16a. **IRC evidence** (`irc.parser.ranking_evidence(full_line)`): for an `irc` release with an `extra.full_line` result line, the name is that line without the leading `!Bot ` command and the trailing `::INFO::`/`::HASH::` metadata (the file extension stays; it is a format token), and the author is the parser's author only when the detailed `Author - Title.format` pattern matched; a fallback split is a guess and counts as missing. `!Bsk Overlord - Volume 2.epub` is therefore `match` for Overlord 2 (the parser's "author" `Overlord` is the book's own words, ruling 9).
+17. **Frontend parser** (spec §5, amended): `v` must be the number `1`, `volume` and `medium` known values, `compatible` and `fan_marker` booleans, else `null`. An invalid `other_volume` (not a positive integer for `other`, or not `null`/absent for another volume) downgrades `volume` to `unknown` (`other_volume: null`) and keeps `medium`, `compatible` and `fan_marker`.
 18. **Tier precedence.** Bottom wins: `match` but not `compatible` (the right volume of the manga) is bottom. `unknown`+`compatible` and no parsed match are middle.
 19. **Empty title candidates:** the score is the tier alone, and ties keep input order.
 20. **Badge rendering.** The `Fan TL?` tooltip is a native `title` attribute (the mechanism the existing "Unsupported" format badge uses), in both layouts. Mismatch badges use the amber "Unsupported" style, `Fan TL?` the gray fallback style. Order: `Vol N`, `Manga/Comic`, `Audiobook`, `Video`, `Fan TL?`. "List and card rows" are `ReleaseRow`'s desktop grid and mobile layout (the only release-row renderings); compact badges are plain text separated by `·`, like the mobile info line. `ReleaseRow` is exported for the component test.
-21. **Cache reads too.** A manual-query search neither reads nor writes the book's cache entry (`usesBookReleaseCache`), so it can never show the book's cached results either. The hook's decisions are tested through extracted pure helpers (`releaseSearchSession.helpers.ts`), the repo's pattern for hooks (`useRequests.helpers.ts`), since the frontend has no DOM test environment.
-22. **Merge replacement is literal.** On a duplicate `source_id` the existing row keeps its place and data, but its `extra.release_match` becomes the incoming one, and is removed when the incoming row has none; new rows are appended in response order (as today).
+21. **Query context.** Each search has a context: `''` for the automatic search, else the *applied* manual query — the one last submitted with "Search" (`runManualSearch`), never the draft text in the field. Filters, tab switches and expansion use the applied query (until now they read the draft); the applied query starts as the default manual query only when `defaultShowManualQuery` is on (today's initial search) and resets with the book. A search reads and writes the book's cache entry only in the automatic context (`usesBookReleaseCache`).
+22. **Responses.** Per tab the hook keeps the context of the list on screen and a request sequence number. A response is discarded when a newer request for the tab started or the applied context changed while it was in flight (loading and errors are cleared only by the newest request); a book or content-type change supersedes every in-flight request. An expansion merges only when its context equals the displayed one; otherwise its response replaces the list.
+23. **Merge replacement is literal.** On a duplicate `source_id` the existing row keeps its place and data, but its `extra.release_match` becomes the incoming one, and is removed when the incoming row has none; new rows are appended in response order (as today). A non-object `extra` on either side is treated as `{}`.
+24. **Tested where it runs.** The hook calls `queryContext`, `usesBookReleaseCache`, `releaseResponseAction` and `applyReleaseResponse` from `releaseSearchSession.helpers.ts` (the repo's helpers-module pattern; the frontend has no DOM test environment), and a source check (`readFileSync` of the hook, as `mobileHomepageLayout.test.ts` does for CSS) fails if the hook stops calling them or reimplements the merge. `ReleaseModal` picks its sort path through `sortReleasesForDisplay` (new `utils/releaseDisplaySort.ts`), which the saved-sort tests exercise.
 
 ## Review Focus
 
 1. **A release whose author field is a placeholder or written differently** (IRC's `Unknown`, `Maruyama Kugane`, `Kugane Maruyama, so-bin`) → still the right volume, never demoted by the author-conflict rule. Tests: `TestRankingReviewFocus::test_a_placeholder_author_is_missing_not_a_conflict` and `::test_name_order_and_extra_contributors_are_not_a_conflict` in Task 1.
 2. **Indexer escaping and file version tags** (`&amp;`, `(v1.1)`, `[v2.0]`) → the volume is still read correctly, never `unknown` or another volume. Test: `TestRankingReviewFocus::test_escaped_names_and_version_tags_make_no_volume_or_bundle` in Task 1.
 3. **Half volumes and lettered volumes** (`Vol. 5.5`, `v05.5`, `Vol. 5a`) → never top tier for vol 5. Test: `TestRankingReviewFocus::test_a_fractional_or_lettered_volume_is_unknown` in Task 1.
-4. **The manual provider** (a user-typed title with no metadata) → no `release_match`, today's order. Test: `TestNoAnnotation::test_the_manual_provider_carries_no_release_match` in Task 3.
-5. **A mobile row with several mismatches** (another volume of the manga, fan-translated) → one readable plain-text line with no orphan separators. Test: `ReleaseMatchBadges > separates several compact badges without orphan separators` in Task 5.
+4. **The manual provider** (a user-typed title with no metadata) → no `release_match`, today's order. Test: `TestNoAnnotation::test_the_manual_provider_carries_no_release_match` in Task 4.
+5. **A mobile row with several mismatches** (another volume of the manga, fan-translated) → one readable plain-text line with no orphan separators. Test: `ReleaseMatchBadges > separates several compact badges without orphan separators` in Task 6.
 
 ## File Structure
 
@@ -67,23 +72,25 @@ Binding for this plan; each is pinned by a test in the owning task.
 |---|---|
 | `shelfmark/core/search_queries.py` | `RankingIdentity`, `ReleaseMatch`, `RELEASE_MATCH_VERSION`, `is_comic_book`, `build_ranking_identity`, `classify_release` and private helpers, appended after the ladder code (Task 1) |
 | `shelfmark/release_sources/prowlarr/source.py` | `_prowlarr_result_to_release` keeps `extra["release_name"]` when `bookTitle` replaces the title (Task 2) |
-| `shelfmark/main.py` | `_release_match_payload`, `_annotate_release_matches`; `/api/releases` builds the identity after the title override and annotates serialized releases (Task 3) |
-| `src/frontend/src/types/index.ts` | `ReleaseMatch` interface (Task 4) |
-| `src/frontend/src/utils/releaseMatch.ts` | **new** — `parseReleaseMatch` (Task 4) |
-| `src/frontend/src/utils/releaseScoring.ts` | tier bonus in `sortReleasesByBookMatch`, empty-candidates path (Task 4) |
-| `src/frontend/src/components/ReleaseMatchBadges.tsx` | **new** — mismatch and `Fan TL?` badges (Task 5) |
-| `src/frontend/src/components/ReleaseModal.tsx` | `ReleaseRow` exported; badges below the title in both layouts (Task 5) |
-| `src/frontend/src/hooks/releaseModal/releaseSearchSession.helpers.ts` | **new** — `usesBookReleaseCache`, `mergeExpandedReleases` (Task 6) |
-| `src/frontend/src/hooks/releaseModal/useReleaseSearchSession.ts` | uses the helpers for cache reads/writes and expanded merges (Task 6) |
-| `shelfmark/release_sources/irc/*`, `direct_download.py`, `newznab/*`, `is_identity_hit`, `releaseSort.ts`, `releaseCache.ts`, `releasePayload.ts` | **unchanged** |
-| Backend tests | `tests/core/test_search_queries.py` (Task 1), `tests/prowlarr/test_source.py` (Task 2), `tests/core/test_releases_api_release_match.py` (new, Task 3) |
-| Frontend tests | `src/frontend/src/tests/releaseMatch.test.ts`, `releaseScoring.test.ts` (new, Task 4), `releaseMatchBadges.test.tsx` (new, Task 5), `releaseSearchSession.test.ts` (new, Task 6) |
+| `shelfmark/release_sources/irc/parser.py` | `ranking_evidence(full_line)` — the original line and a trusted author for ranking (Task 3) |
+| `shelfmark/main.py` | `_release_match_payload` (IRC evidence, Prowlarr `release_name`), `_annotate_release_matches`; `/api/releases` builds the identity after the title override and annotates serialized releases (Task 4) |
+| `src/frontend/src/types/index.ts` | `ReleaseMatch` interface (Task 5) |
+| `src/frontend/src/utils/releaseMatch.ts` | **new** — `parseReleaseMatch` (Task 5) |
+| `src/frontend/src/utils/releaseScoring.ts` | tier bonus in `sortReleasesByBookMatch`, empty-candidates path (Task 5) |
+| `src/frontend/src/utils/releaseDisplaySort.ts` | **new** — `sortReleasesForDisplay`, the sort-path choice `ReleaseModal` used inline (Task 5) |
+| `src/frontend/src/components/ReleaseModal.tsx` | sorts through `sortReleasesForDisplay` (Task 5); `ReleaseRow` exported, badges below the title in both layouts (Task 6) |
+| `src/frontend/src/components/ReleaseMatchBadges.tsx` | **new** — mismatch and `Fan TL?` badges (Task 6) |
+| `src/frontend/src/hooks/releaseModal/releaseSearchSession.helpers.ts` | **new** — `queryContext`, `usesBookReleaseCache`, `releaseResponseAction`, `applyReleaseResponse`, `mergeExpandedReleases` (Task 7) |
+| `src/frontend/src/hooks/releaseModal/useReleaseSearchSession.ts` | applied manual query, per-tab displayed context and request sequence; uses the helpers for cache, discard, merge and replace (Task 7) |
+| `shelfmark/release_sources/irc/source.py`, `direct_download.py`, `newznab/*`, `is_identity_hit`, `releaseSort.ts`, `releaseCache.ts`, `releasePayload.ts` | **unchanged** |
+| Backend tests | `tests/core/test_search_queries.py` (Task 1), `tests/prowlarr/test_source.py` (Task 2), `tests/irc/test_parser.py` (Task 3), `tests/core/test_releases_api_release_match.py` (new, Task 4) |
+| Frontend tests | `src/frontend/src/tests/releaseMatch.test.ts`, `releaseScoring.test.ts`, `releaseDisplaySort.test.ts` (new, Task 5), `releaseMatchBadges.test.tsx` (new, Task 6), `releaseSearchSession.test.ts` (new, Task 7) |
 
 **Test-run notes (environment, not this feature):**
 - Set up once: `uv sync --all-extras` and `cd src/frontend && npm ci`.
 - `pytest` runs with `-n auto` by default (`pyproject.toml`). Run endpoint tests (`tests/core/test_releases_api_*.py`) without `tests/newznab` in the same invocation (`tests/newznab/conftest.py` stubs `flask_socketio`).
 - On a sandboxed macOS host `tests/core/test_search_deadline.py::test_html_get_page_will_not_start_a_bypass_on_a_spent_budget` can hang (it reaches the network); deselect it where noted.
-- Known pre-existing noise: 9 failures in `tests/config/test_entrypoint_permissions.py` on macOS; 4 BasedPyright errors at `shelfmark/main.py:2305-2308` on `main` (the same four lines move to `2346-2349` after Task 3 adds 41 lines above them); `npm run knip` exits 1 on `main` with 2 unused exports (`SEARCH_MODE`, `DISCOVER_ROWS_BY_PROVIDER`) and 27 unused exported types — record that list first (`cd src/frontend && npm run knip > /tmp/knip-main.txt`); after each frontend task the list must be identical apart from line numbers in `src/types/index.ts`.
+- Known pre-existing noise: 9 failures in `tests/config/test_entrypoint_permissions.py` on macOS; 4 BasedPyright errors at `shelfmark/main.py:2305-2308` on `main` (the same four lines move to `2353-2356` after Task 4 adds 48 lines above them); `npm run knip` exits 1 on `main` with 2 unused exports (`SEARCH_MODE`, `DISCOVER_ROWS_BY_PROVIDER`) and 27 unused exported types — record that list first (`cd src/frontend && npm run knip > /tmp/knip-main.txt`); after each frontend task the list must be identical apart from line numbers in `src/types/index.ts`.
 - Dry-run baseline on `main`: backend 3922 passed / 9 failed; frontend 363 tests.
 
 ---
@@ -101,7 +108,7 @@ Binding for this plan; each is pinned by a test in the owning task.
   - `@dataclass(frozen=True) class ReleaseMatch: volume: Literal["match", "other", "unknown"]; other_volume: int | None; medium: Literal["ebook", "comic", "audio", "video", "unknown"]; compatible: bool; fan_marker: bool` with `to_payload() -> dict[str, object]` returning `{"v": 1, "volume", "other_volume", "medium", "compatible", "fan_marker"}`
   - `is_comic_book(title: object, series_name: object) -> bool`
   - `build_ranking_identity(*, title: object, current_query: object, series_name: object, series_position: object, authors: object) -> RankingIdentity`
-  - `classify_release(*, name: object, formats: Sequence[object], content_type: object, release_author: object, identity: RankingIdentity | None) -> ReleaseMatch`
+  - `classify_release(*, name: object, formats: Sequence[object], content_type: object, release_author: object, identity: RankingIdentity | None) -> ReleaseMatch` (sanitises `identity`; never raises)
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -559,6 +566,143 @@ class TestRankingReviewFocus:
     def test_a_year_after_the_volume_is_not_a_fraction(self):
         name = "Seven.Seas-High.School.DxD.Vol.05.2016.Retail.eBook-BitBook"
         assert _volume(name, DXD5_RANK) == ("match", None)
+
+
+class TestRankingReviewFindings:
+    """Cases from the Codex review of the plan (2026-10-08)."""
+
+    @pytest.mark.parametrize("name", ["Overlord Vol 2.125 (epub)", "Overlord Vol 3.141 (epub)"])
+    def test_any_decimal_suffix_is_not_a_whole_volume(self, name):
+        assert _volume(name, OVERLORD2_RANK) == ("unknown", None)
+
+    @pytest.mark.parametrize("name", ["Overlord Vol.02.2016 (epub)", "Overlord Vol 2 2016 (epub)"])
+    def test_a_year_after_the_volume_keeps_it_whole(self, name):
+        assert _volume(name, OVERLORD2_RANK) == ("match", None)
+
+    @pytest.mark.parametrize("name", ["Overlord Vol 2/3 (epub)", "Overlord Vol 2 / 3 (epub)"])
+    def test_a_slash_between_volume_numbers_is_a_collection(self, name):
+        assert _volume(name, OVERLORD2_RANK) == ("unknown", None)
+
+    def test_a_slash_between_contributors_is_harmless(self):
+        name = "Overlord Vol. 2 Kugane Maruyama / so-bin (epub)"
+        assert _volume(name, OVERLORD2_RANK) == ("match", None)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Leviathan Wakes & Calibans War EPUB",
+            "Leviathan Wakes and Calibans War EPUB",
+            "Leviathan Wakes / Calibans War EPUB",
+            "Leviathan Wakes + Calibans War EPUB",
+            "Leviathan Wakes &amp; Calibans War EPUB",
+            "Corey & Abraham - Leviathan Wakes & Calibans War (epub)",
+        ],
+    )
+    def test_a_conjunction_joining_another_title_is_unknown(self, name):
+        assert _volume(name, LEVIATHAN_RANK) == ("unknown", None)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Leviathan Wakes James S. A. Corey & Daniel Abraham EPUB",
+            "Leviathan Wakes & James S. A. Corey (epub)",
+            "Daniel Abraham & James S. A. Corey - Leviathan Wakes (epub)",
+            "Leviathan Wakes & EPUB",
+        ],
+    )
+    def test_a_conjunction_before_a_contributor_or_nothing_is_harmless(self, name):
+        assert _volume(name, LEVIATHAN_RANK) == ("match", None)
+
+    def test_volume_zero_is_never_another_volume(self):
+        match = _classify("Overlord Vol 0 [MP3]", OVERLORD2_RANK)
+        assert (match.volume, match.other_volume, match.medium) == ("unknown", None, "audio")
+        assert match.to_payload()["other_volume"] is None
+
+    def test_a_requested_volume_zero_still_matches(self):
+        prequel = _ranking("Overlord (Light Novel), Vol. 0: Prologue", OL, 0)
+        assert _volume("Overlord Vol. 0 Prologue (epub)", prequel) == ("match", None)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Overlord Vol. 2 ISBN 978-1-9753-0123-4 (epub)",
+            "Overlord v02 (2016-05-24) (epub)",
+            "Overlord Vol. 2 [1-2 MB] (epub)",
+        ],
+    )
+    def test_isbns_dates_and_sizes_are_not_volume_ranges(self, name):
+        assert _volume(name, OVERLORD2_RANK) == ("match", None)
+
+    def test_a_series_number_range_is_still_a_collection(self):
+        assert _volume("The Expanse 1-3 Leviathan Wakes (epub)", LEVIATHAN_RANK) == (
+            "unknown",
+            None,
+        )
+
+    def test_a_shared_given_name_is_not_the_same_author(self):
+        match = _classify("Leviathan Wakes (epub)", LEVIATHAN_RANK, author="James Patterson")
+        assert match.volume == "unknown"
+
+    @pytest.mark.parametrize(
+        "author", ["Corey, James S A", "James S. A. Corey", "J. S. A. Corey & Daniel Abraham"]
+    )
+    def test_the_same_surname_is_the_same_author(self, author):
+        assert _classify("Leviathan Wakes (epub)", LEVIATHAN_RANK, author=author).volume == "match"
+
+    def test_reordered_names_are_the_same_author(self):
+        reordered = _classify("Overlord v02 (epub)", OVERLORD2_RANK, author="Maruyama Kugane")
+        assert reordered.volume == "match"
+
+    def test_an_author_field_holding_the_series_name_is_not_an_author(self):
+        assert _classify("Overlord - Volume 2.epub", OVERLORD2_RANK, author="Overlord").volume == (
+            "match"
+        )
+
+    @pytest.mark.parametrize("sep", [" ", ".", "-", "_", ""])
+    def test_fan_tl_and_baka_tsuki_with_any_separator(self, sep):
+        assert _classify(f"DxD Vol 5 [Fan{sep}TL]", DXD5_RANK).fan_marker is True
+        assert _classify(f"DxD Vol 5 Baka{sep}Tsuki", DXD5_RANK).fan_marker is True
+
+    @pytest.mark.parametrize("sep", [" ", ".", "-", "_"])
+    def test_fan_translation_with_any_separator(self, sep):
+        assert _classify(f"DxD Vol 5 fan{sep}translation", DXD5_RANK).fan_marker is True
+        assert _classify(f"DxD Vol 5 fan{sep}translated", DXD5_RANK).fan_marker is True
+
+    @pytest.mark.parametrize(
+        "identity",
+        [
+            RankingIdentity(series_key=None, position="2", title_tokens=None, authors=None),  # type: ignore[arg-type]
+            RankingIdentity(
+                series_key="Overlord",
+                position=True,  # type: ignore[arg-type]
+                title_tokens=("overlord", None, 3),  # type: ignore[arg-type]
+                authors=(None, 5, "Kugane Maruyama"),  # type: ignore[arg-type]
+                title_names_volume=None,  # type: ignore[arg-type]
+                book_is_comic="yes",  # type: ignore[arg-type]
+            ),
+            RankingIdentity(series_key="Overlord", position=-1, title_tokens="overlord"),  # type: ignore[arg-type]
+        ],
+    )
+    def test_a_malformed_identity_never_raises(self, identity):
+        for author in (None, "Someone Else", "Kugane Maruyama"):
+            match = _classify(
+                "Yen.Press-Overlord.Vol.02.Manga.2022.Hybrid.Comic.eBook-BitBook",
+                identity,
+                author=author,
+            )
+            assert match.volume == "unknown"
+            assert (match.medium, match.compatible) == ("comic", False)
+
+    def test_malformed_tokens_and_authors_are_dropped_not_fatal(self):
+        identity = RankingIdentity(
+            series_key="The Expanse",
+            position=1,
+            title_tokens=("leviathan", None, "wakes", 7),  # type: ignore[arg-type]
+            title_names_volume=False,
+            authors=("James S. A. Corey", None),  # type: ignore[arg-type]
+        )
+        match = _classify("Leviathan Wakes (epub)", identity, author="Corey, James")
+        assert match.volume == "match"
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -614,7 +758,8 @@ _COMIC_FORMATS = frozenset({"cbz", "cbr", "cb7"})
 _EBOOK_FORMATS = frozenset({"epub", "mobi", "azw3", "pdf"})
 # Prowlarr and Newznab report an ebook category as "book"; the other sources say "ebook".
 _EBOOK_CONTENT_TYPES = frozenset({"ebook", "book"})
-_FORMAT_TOKENS = "|".join(sorted(_AUDIO_FORMATS | _COMIC_FORMATS | _EBOOK_FORMATS))
+_ALL_FORMATS = _AUDIO_FORMATS | _COMIC_FORMATS | _EBOOK_FORMATS
+_FORMAT_TOKENS = "|".join(sorted(_ALL_FORMATS))
 
 # Technical video markers only: plain words such as "episode" say nothing about the medium
 # ("Overlord Vol. 2: Episodes of the Kingdom" is a light novel).
@@ -625,9 +770,22 @@ _RANK_VIDEO_RE = re.compile(
 )
 _RANK_AUDIO_WORD_RE = re.compile(r"\b(?:m4b|mp3|audiobook)\b", re.IGNORECASE)
 _RANK_COMIC_WORD_RE = re.compile(r"\b(?:manga|comics?|graphic[\s.-]+novels?)\b", re.IGNORECASE)
+# Matched after "_" became a space, so "Fan_TL" and "Baka_Tsuki" count too.
 _FAN_MARKER_RE = re.compile(
-    r"\b(?:baka[\s.-]tsuki|fan[\s.-]tl|fan[\s.-]translation|fan-translated|scanlation)\b",
+    r"\b(?:fan[\s.-]?tl|fan[\s.-]translation|fan[\s.-]translated|baka[\s.-]?tsuki"
+    r"|scanlation)\b",
     re.IGNORECASE,
+)
+
+# Numbers that are never volumes, masked before any volume parsing: ISBNs, dates and file
+# sizes ("978-1-9753-0...", "2016-05-24", "1-2 MB", "620.5 MB").
+_RANK_NOISE_RES = (
+    re.compile(r"\b97[89](?:[\s-]?\d){10}\b"),
+    re.compile(r"\b(?:19|20)\d{2}-\d{1,2}-\d{1,2}\b"),
+    re.compile(
+        r"\b\d+(?:[.,]\d+)?(?:\s*(?:-|–|to)\s*\d+(?:[.,]\d+)?)?\s*(?:[kmgt]i?b|bytes?)\b",
+        re.IGNORECASE,
+    ),
 )
 
 # Explicit volume syntax: "Vol N", "Vol. N", "Volume N", "Vols N", "vNN", "#N", "Book N"
@@ -639,26 +797,34 @@ _RANK_VOLUME_RES = (
     re.compile(r"#(\d{1,3})(?!\d)"),
     re.compile(r"\bbook[\s.-]+(\d{1,3})(?!\d)", re.IGNORECASE),
 )
-# A number that is not a whole volume: a fraction ("5.5" - not "05.2016", a year) or a
-# letter suffix ("5a"). Ambiguous, so the release's volume is unknown.
-_RANK_PARTIAL_VOLUME_RE = re.compile(r"\.\d{1,2}(?!\d)|[^\W\d_]")
-# A second volume right after the first: "5-6", "5 & 6", "5 to 7", "v05-v07", "1, 2".
+# A number that is not a whole volume: a decimal suffix of any length ("2.5", "2.125") or
+# a letter suffix ("5a"). A four-digit year after a dot ("Vol.02.2016") is not a decimal.
+# Ambiguous, so the release's volume is unknown.
+_RANK_PARTIAL_VOLUME_RE = re.compile(r"\.(?!(?:19|20)\d{2}(?!\d))\d+|[^\W\d_]")
+# A range or list separator between two volume numbers: "5-6", "5 & 6", "5 to 7", "2/3".
+_RANK_RANGE_SEPARATOR = r"\s*(?:[-–—~&+,/]|\bto\b|\band\b|\bthrough\b)\s*"
+# A second volume right after the first: "5-6", "5 & 6", "v05-v07", "1, 2", "2 / 3".
 _RANK_VOLUME_LIST_RE = re.compile(
-    r"\s*(?:[-–—~&+,]|\bto\b|\band\b|\bthrough\b)\s*"
-    r"(?:vol(?:ume)?s?\b\.?\s*|v|#|book\s+)?\d{1,3}(?![\d.]|[^\W\d_])",
+    _RANK_RANGE_SEPARATOR + r"(?:vol(?:ume)?s?\b\.?\s*|v|#|book\s+)?\d{1,3}(?![\d.]|[^\W\d_])",
     re.IGNORECASE,
 )
-# Collection evidence: several books in one release. Contributor separators on their own
-# ("Corey & Abraham", "Author / Illustrator") are not.
+# Collection evidence: several books in one release. Separators between names ("Corey &
+# Abraham", "Author / Illustrator") are not; numbers count only in volume context.
 _RANK_COLLECTION_RE = re.compile(
     r"\b(?:omnibus|box(?:ed)?[\s.-]*set|complete[\s.-]+series|collection|trilogy|duology"
     r"|quartet)\b"
-    r"|\bbooks[\s.-]*\d{1,3}\s*(?:[-–—~&+,]|\bto\b|\band\b|\bthrough\b)\s*\d{1,3}(?!\d)"
-    r"|(?<![\d.])\d{1,3}\s*(?:[-–—~&+]|\bto\b|\band\b)\s*\d{1,3}(?![\d.]|[^\W\d_])",
+    r"|\bbooks[\s.-]*\d{1,3}" + _RANK_RANGE_SEPARATOR + r"\d{1,3}(?!\d)",
     re.IGNORECASE,
 )
+# A conjunction right after the requested title: "Leviathan Wakes & Caliban's War".
+_RANK_CONJUNCTION_RE = re.compile(r"\s*(?:&|\+|/|\band\b)\s*", re.IGNORECASE)
+# Where a run of title-like words ends: a bracket, a parenthesis or " - ".
+_RANK_SEGMENT_END_RE = re.compile(r"[\[\](){}]|\s-\s")
 # Author names that say nothing about who wrote the book.
 _PLACEHOLDER_AUTHORS = frozenset({"unknown", "various", "anonymous", "n/a", "na", "none"})
+# Separators between contributors in one author field ("Corey, James S A" is split too:
+# each side is then compared on its own).
+_AUTHOR_SPLIT_RE = re.compile(r"\s*(?:[,;&+/]|\band\b)\s*", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -678,7 +844,7 @@ class ReleaseMatch:
     """How one release relates to the requested book (see ``classify_release``)."""
 
     volume: Volume
-    other_volume: int | None  # set only when volume == "other"
+    other_volume: int | None  # set only when volume == "other"; never 0
     medium: Medium
     compatible: bool  # the medium suits the requested book
     fan_marker: bool  # the name explicitly says fan translation
@@ -705,6 +871,12 @@ def is_comic_book(title: object, series_name: object) -> bool:
     return _RANK_COMIC_WORD_RE.search(f"{title_text} {series_text}") is not None
 
 
+def _clean_strings(values: object) -> tuple[str, ...]:
+    if not isinstance(values, (list, tuple)):
+        return ()
+    return tuple(v for v in values if isinstance(v, str) and v.strip())
+
+
 def build_ranking_identity(
     *,
     title: object,
@@ -720,14 +892,31 @@ def build_ranking_identity(
         series_name=series_name,
         series_position=series_position,
     )
-    author_list = authors if isinstance(authors, (list, tuple)) else ()
     return RankingIdentity(
         series_key=search_identity.series_key,
         position=search_identity.position,
         title_tokens=search_identity.title_tokens,
         title_names_volume=search_identity.title_names_volume,
         book_is_comic=is_comic_book(title, series_name),
-        authors=tuple(a for a in author_list if isinstance(a, str) and a.strip()),
+        authors=_clean_strings(authors),
+    )
+
+
+def _sanitize_identity(identity: object) -> RankingIdentity:
+    """A well-typed copy of ``identity``: junk fields become their empty defaults."""
+    if not isinstance(identity, RankingIdentity):
+        return RankingIdentity()
+    position = identity.position
+    if isinstance(position, bool) or not isinstance(position, int) or position < 0:
+        position = None
+    series_key = identity.series_key if isinstance(identity.series_key, str) else ""
+    return RankingIdentity(
+        series_key=series_key,
+        position=position,
+        title_tokens=tuple(t.casefold() for t in _clean_strings(identity.title_tokens)),
+        title_names_volume=identity.title_names_volume is not False,
+        book_is_comic=identity.book_is_comic is True,
+        authors=_clean_strings(identity.authors),
     )
 
 
@@ -762,23 +951,26 @@ def _medium(text: str, formats: set[str], content_type: str, own_tokens: set[str
     return "unknown"
 
 
-def _explicit_volumes(text: str, series_tokens: tuple[str, ...]) -> set[int] | None:
-    """Volume numbers ``text`` names in explicit syntax; None when one is not a whole volume."""
-    patterns = list(_RANK_VOLUME_RES)
-    if series_tokens:
-        last = re.escape(series_tokens[-1])
+def _series_volume_res(series_tokens: tuple[str, ...]) -> list[re.Pattern[str]]:
+    if not series_tokens:
+        return []
+    last = re.escape(series_tokens[-1])
+    return [
         # "[Overlord 02]" (and "[Overlord - Volume 02]", which "Volume" already covers).
-        patterns.append(re.compile(rf"\b{last}(?:\s+|[.-])(\d{{1,3}})\s*\]"))
+        re.compile(rf"\b{last}(?:\s+|[.-])(\d{{1,3}})\s*\]"),
         # "Overlord 02" followed by " - ", "]", "(", a year, a format or the end. One
         # separator only: "High School DxD - 5" is a bare "- N", not volume syntax.
-        patterns.append(
-            re.compile(
-                rf"\b{last}(?:\s+|[.-])(\d{{1,3}})(?=\s+-\s|\s*\]|\s*\(|[\s.-]+(?:19|20)\d{{2}}(?!\d)"
-                rf"|[\s.-]+(?:{_FORMAT_TOKENS})\b|\s*$)"
-            )
-        )
+        re.compile(
+            rf"\b{last}(?:\s+|[.-])(\d{{1,3}})(?=\s+-\s|\s*\]|\s*\(|[\s.-]+(?:19|20)\d{{2}}(?!\d)"
+            rf"|[\s.-]+(?:{_FORMAT_TOKENS})\b|\s*$)"
+        ),
+    ]
+
+
+def _explicit_volumes(text: str, series_tokens: tuple[str, ...]) -> set[int] | None:
+    """Volume numbers ``text`` names in explicit syntax; None when one is not a whole volume."""
     numbers: set[int] = set()
-    for pattern in patterns:
+    for pattern in [*_RANK_VOLUME_RES, *_series_volume_res(series_tokens)]:
         for match in pattern.finditer(text):
             if _RANK_PARTIAL_VOLUME_RE.match(text, match.end(1)):
                 return None
@@ -786,20 +978,62 @@ def _explicit_volumes(text: str, series_tokens: tuple[str, ...]) -> set[int] | N
     return numbers
 
 
-def _has_volume_list(text: str) -> bool:
-    for pattern in _RANK_VOLUME_RES:
+def _has_volume_list(text: str, series_tokens: tuple[str, ...]) -> bool:
+    """A range or list of volume numbers right after a volume marker or the series name."""
+    patterns = list(_RANK_VOLUME_RES)
+    if series_tokens:
+        last = re.escape(series_tokens[-1])
+        patterns.append(re.compile(rf"\b{last}(?:\s+|[.-])(\d{{1,3}})(?!\d)"))
+    for pattern in patterns:
         for match in pattern.finditer(text):
             if _RANK_VOLUME_LIST_RE.match(text, match.end(1)):
                 return True
     return False
 
 
+def _token_spans(text: str) -> list[tuple[str, int]]:
+    return [(m.group(0), m.end()) for m in _TOKEN_RE.finditer(text)]
+
+
+def _title_joined_to_more(text: str, title_tokens: list[str], authors: tuple[str, ...]) -> bool:
+    """Whether a conjunction joins the requested title to further title-like words.
+
+    "Leviathan Wakes & Caliban's War" names two books. Not when the words after the
+    conjunction are a requested author ("Leviathan Wakes & James S. A. Corey"), or when the
+    conjunction sits in an author segment that a " - " closes.
+    """
+    wanted = set(title_tokens)
+    seen: set[str] = set()
+    end = None
+    for token, token_end in _token_spans(text):
+        if token in wanted:
+            seen.add(token)
+            if seen == wanted:
+                end = token_end
+                break
+    if end is None:
+        return False
+    conjunction = _RANK_CONJUNCTION_RE.match(text, end)
+    if conjunction is None:
+        return False
+    rest = text[conjunction.end() :]
+    segment_end = _RANK_SEGMENT_END_RE.search(rest)
+    if segment_end is not None and segment_end.group(0).strip() == "-":
+        return False
+    segment = rest[: segment_end.start()] if segment_end is not None else rest
+    words = [t for t in _tokens(segment) if t not in _ALL_FORMATS and not t.isdigit()]
+    if not words:
+        return False
+    author_tokens = [set(_tokens(author)) for author in authors]
+    return not any(set(words) <= tokens for tokens in author_tokens)
+
+
 def _volume(text: str, identity: RankingIdentity) -> tuple[Volume, int | None]:
     if not identity.series_key or identity.position is None:
         return "unknown", None
-    if _RANK_COLLECTION_RE.search(text) or _has_volume_list(text):
-        return "unknown", None
     key_tokens = significant_tokens(identity.series_key)
+    if _RANK_COLLECTION_RE.search(text) or _has_volume_list(text, key_tokens):
+        return "unknown", None
     numbers = _explicit_volumes(text, key_tokens)
     if numbers is None or len(numbers) > 1:
         return "unknown", None
@@ -808,11 +1042,15 @@ def _volume(text: str, identity: RankingIdentity) -> tuple[Volume, int | None]:
     has_key = bool(key_tokens) and all(token in present for token in key_tokens)
     if numbers and has_key:
         (number,) = numbers
-        return ("match", None) if number == identity.position else ("other", number)
+        if number == identity.position:
+            return "match", None
+        # A volume 0 is a prequel or an index page as often as a volume: not evidence.
+        return ("other", number) if number > 0 else ("unknown", None)
 
     # A series book whose title names no volume ("Leviathan Wakes", The Expanse 1) is
     # also named by its own title words, as long as no explicit volume names another
-    # number. Other numbers ("2nd edition", "451", a year) do not veto it.
+    # number and no conjunction joins it to another title. Other numbers ("2nd edition",
+    # "451", a year) do not veto it.
     if identity.title_names_volume or not numbers <= {identity.position}:
         return "unknown", None
     series_words = set(key_tokens)
@@ -821,26 +1059,58 @@ def _volume(text: str, identity: RankingIdentity) -> tuple[Volume, int | None]:
         title_tokens
         and all(token in present for token in title_tokens)
         and any(token not in series_words for token in title_tokens)
+        and not _title_joined_to_more(text, title_tokens, identity.authors)
     ):
         return "match", None
     return "unknown", None
 
 
-def _author_tokens(text: str) -> set[str]:
-    return {token for token in _tokens(html.unescape(text)) if len(token) > 1}
+def _surname_candidates(name: str) -> set[str]:
+    """Words of one contributor that may be a surname: the last and the first non-initial.
+
+    "Kugane Maruyama" and "Maruyama Kugane" both give {"kugane", "maruyama"}; initials
+    ("S. A.") never count.
+    """
+    words = [t for t in _tokens(name) if len(t) > 1]
+    return {words[0], words[-1]} if words else set()
 
 
-def _author_conflicts(release_author: object, authors: tuple[str, ...]) -> bool:
-    """True only when the release names a real author sharing no word with the book's."""
+def _author_conflicts(release_author: object, identity: RankingIdentity) -> bool:
+    """True only when the release names a real author who is none of the requested ones.
+
+    Contributors are compared one by one: a release author agrees with a requested author
+    when one of its surname candidates is that author's surname (the last non-initial
+    word). A shared given name alone ("James Patterson" vs "James S. A. Corey") is not
+    agreement. An author field made only of the book's own words (an IRC "Overlord -
+    Volume 2" line puts the series where the author goes) is not an author.
+    """
     if not isinstance(release_author, str):
         return False
-    if " ".join(release_author.split()).casefold() in _PLACEHOLDER_AUTHORS:
+    text = html.unescape(release_author)
+    if " ".join(text.split()).casefold() in _PLACEHOLDER_AUTHORS:
         return False
-    release_tokens = _author_tokens(release_author)
-    wanted = set().union(*(_author_tokens(author) for author in authors)) if authors else set()
-    if not release_tokens or not wanted:
+    own_words = set(identity.title_tokens) | set(significant_tokens(identity.series_key))
+    release_words = {t for t in _tokens(text) if len(t) > 1}
+    if not release_words or release_words <= own_words:
         return False
-    return not release_tokens & wanted
+    surnames = set()
+    for author in identity.authors:
+        words = [t for t in _tokens(author) if len(t) > 1]
+        if words:
+            surnames.add(words[-1])
+    if not surnames:
+        return False
+    candidates = set().union(*(_surname_candidates(p) for p in _AUTHOR_SPLIT_RE.split(text)))
+    return not candidates & surnames
+
+
+def _ranking_text(name: str) -> str:
+    # Indexers send "&amp;" for "&"; a file version tag "(v2.0)" is not a volume; "_" is
+    # a separator in scene names; ISBNs, dates and sizes are never volume numbers.
+    text = _VERSION_TAG_RE.sub(" ", html.unescape(name)).replace("_", " ").casefold()
+    for pattern in _RANK_NOISE_RES:
+        text = pattern.sub(" ", text)
+    return text
 
 
 def classify_release(
@@ -859,18 +1129,17 @@ def classify_release(
     """
     if not isinstance(name, str) or not name.strip():
         return _UNKNOWN_MATCH
-    if not isinstance(identity, RankingIdentity):
-        identity = RankingIdentity()
-    # Indexers send "&amp;" for "&"; a file version tag "(v2.0)" is not a volume; "_" is
-    # a separator in scene names.
-    text = _VERSION_TAG_RE.sub(" ", html.unescape(name)).replace("_", " ").casefold()
+    safe_identity = _sanitize_identity(identity)
+    text = _ranking_text(name)
     declared = _declared_formats(formats)
     kind = content_type.strip().casefold() if isinstance(content_type, str) else ""
 
-    medium = _medium(text, declared, kind, set(identity.title_tokens))
-    compatible = medium in {"ebook", "unknown"} or (medium == "comic" and identity.book_is_comic)
-    volume, other_volume = _volume(text, identity)
-    if volume == "match" and _author_conflicts(release_author, identity.authors):
+    medium = _medium(text, declared, kind, set(safe_identity.title_tokens))
+    compatible = medium in {"ebook", "unknown"} or (
+        medium == "comic" and safe_identity.book_is_comic
+    )
+    volume, other_volume = _volume(text, safe_identity)
+    if volume == "match" and _author_conflicts(release_author, safe_identity):
         volume = "unknown"
     return ReleaseMatch(
         volume=volume,
@@ -884,7 +1153,7 @@ def classify_release(
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/core/test_search_queries.py -q -n0`
-Expected: PASS (298 passed — 189 existing ladder/predicate tests unchanged plus 109 new).
+Expected: PASS (340 passed — 189 existing ladder/predicate tests unchanged plus 151 new).
 
 - [ ] **Step 5: Lint and typecheck**
 
@@ -917,7 +1186,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: nothing new.
-- Produces: every Prowlarr `Release.extra` has `"release_name": str | None` — the raw indexer title when format detection replaced `title` with `bookTitle`, otherwise `None`. Task 3 classifies on it.
+- Produces: every Prowlarr `Release.extra` has `"release_name": str | None` — the raw indexer title when format detection replaced `title` with `bookTitle`, otherwise `None`. Task 4 classifies on it.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1053,14 +1322,123 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task 3: `/api/releases` annotates ebook releases with `extra.release_match`
+### Task 3: IRC ranking evidence — the original result line and a trusted author
 
 **Files:**
-- Modify: `shelfmark/main.py` (imports ~line 92 and the `TYPE_CHECKING` block ~line 109; new helpers after `_serialize_release` ~line 1047; `api_releases` ~lines 3174, 3237 and 3285)
+- Modify: `shelfmark/release_sources/irc/parser.py` (new code before the comment `# Words that mark an archive as holding an audiobook rather than an ebook. Multi-file`, ~line 195)
+- Test: `tests/irc/test_parser.py` (new tests appended at the end)
+
+**Interfaces:**
+- Consumes: `RESULT_LINE_REGEX` (existing, same module).
+- Produces: `ranking_evidence(full_line: object) -> tuple[str, str | None] | None` — `(name, author)` for a `!Bot …` result line: the line without the command and the trailing `::INFO::`/`::HASH::` metadata, and the detailed pattern's author or `None`; `None` for anything that is not a result line. Task 4 uses it for `irc` releases.
+
+- [ ] **Step 1: Write the failing tests**
+
+**Append** to the end of `tests/irc/test_parser.py` (after two blank lines):
+
+```python
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (
+            "!Bsk Kugane Maruyama - Overlord 02 - The Dark Warrior.epub ::INFO:: 1.1MB",
+            ("Kugane Maruyama - Overlord 02 - The Dark Warrior.epub", "Kugane Maruyama"),
+        ),
+        # Series-prefix layout: the parser's "author" is really the series.
+        ("!Bsk Overlord - Volume 2.epub", ("Overlord - Volume 2.epub", "Overlord")),
+        # Authorless layout: only the fallback pattern matches, so there is no author.
+        ("!Bsk Overlord Vol 2.epub ::INFO:: 1.1MB", ("Overlord Vol 2.epub", None)),
+        (
+            "!Ook Andy Weir - Project Hail Mary (2021) Audiobook ::INFO:: 620.5MB",
+            ("Andy Weir - Project Hail Mary (2021) Audiobook", None),
+        ),
+        (
+            "!Bsk Ichiei Ishibumi - DxD v05.epub ::INFO:: 1.2MB ::HASH:: abc123",
+            ("Ichiei Ishibumi - DxD v05.epub", "Ichiei Ishibumi"),
+        ),
+    ],
+)
+def test_ranking_evidence_is_the_line_without_command_and_metadata(line, expected):
+    assert parser.ranking_evidence(line) == expected
+
+
+@pytest.mark.parametrize("line", [None, 5, "", "   ", "no command here", "!Bsk", "!Bsk   "])
+def test_ranking_evidence_needs_a_result_line(line):
+    assert parser.ranking_evidence(line) is None
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `uv run pytest tests/irc/test_parser.py -q -n0`
+Expected: FAIL — 12 failed with `AttributeError: module 'shelfmark.release_sources.irc.parser' has no attribute 'ranking_evidence'`; the 16 existing tests pass.
+
+- [ ] **Step 3: Implement `ranking_evidence`**
+
+**Insert before** the line `# Words that mark an archive as holding an audiobook rather than an ebook. Multi-file` in `shelfmark/release_sources/irc/parser.py` (followed by two blank lines):
+
+```python
+# What release ranking reads from a result line: the line without the "!Bot" command and
+# the trailing "::INFO::"/"::HASH::" metadata.
+_RANKING_COMMAND_RE = re.compile(r"^!\S+\s+")
+_RANKING_TRAILER_RE = re.compile(r"\s+::(?:INFO|HASH)::.*$", re.IGNORECASE | re.DOTALL)
+
+
+def ranking_evidence(full_line: object) -> tuple[str, str | None] | None:
+    """The release name and author release ranking should use for a result line.
+
+    The name is the original line minus the bot command and the trailing metadata, so the
+    words the parser split off as "author" (often the series: "!Bot Overlord - Volume
+    2.epub") still count. The author is trusted only when the detailed
+    "Author - Title.format" pattern matched; the fallback split is a guess, so it is
+    reported as missing. None when ``full_line`` is not a result line.
+    """
+    if not isinstance(full_line, str):
+        return None
+    line = full_line.strip()
+    command = _RANKING_COMMAND_RE.match(line)
+    if command is None:
+        return None
+    name = _RANKING_TRAILER_RE.sub("", line[command.end() :]).strip()
+    if not name:
+        return None
+    detailed = RESULT_LINE_REGEX.match(line)
+    return name, detailed.group(2).strip() if detailed else None
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `uv run pytest tests/irc -q`
+Expected: PASS (64 passed)
+
+- [ ] **Step 5: Lint and typecheck**
+
+```bash
+uv run ruff check shelfmark tests
+uv run ruff format --check shelfmark tests
+uv run basedpyright shelfmark/release_sources/irc/parser.py
+```
+Expected: clean; `0 errors`.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add shelfmark/release_sources/irc/parser.py \
+  tests/irc/test_parser.py
+git commit -m "feat(irc): ranking evidence from the original result line
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 4: `/api/releases` annotates ebook releases with `extra.release_match`
+
+**Files:**
+- Modify: `shelfmark/main.py` (imports ~lines 92 and 102-110; new helpers after `_serialize_release` ~line 1047; `api_releases` ~lines 3174, 3237 and 3285)
 - Test: `tests/core/test_releases_api_release_match.py` (new)
 
 **Interfaces:**
-- Consumes: `build_ranking_identity`, `classify_release`, `RankingIdentity`, `ReleaseMatch.to_payload()` (Task 1); `extra["release_name"]` (Task 2); `_prowlarr_result_to_release`, `IRCReleaseSource._convert_to_releases`, `parse_result_line` (tests only).
+- Consumes: `build_ranking_identity`, `classify_release`, `RankingIdentity`, `ReleaseMatch.to_payload()` (Task 1); `extra["release_name"]` (Task 2); `irc.parser.ranking_evidence` (Task 3); `_prowlarr_result_to_release`, `IRCReleaseSource._convert_to_releases`, `parse_result_line` (tests only).
 - Produces: `_release_match_payload(release: Release, identity: RankingIdentity) -> dict[str, object]`; `_annotate_release_matches(releases_data: list[dict], releases: list[Release], identity: RankingIdentity) -> None`. Response contract for the frontend: each release dict's `extra.release_match` (Task 1's payload) on ebook, metadata-provider, non-manual searches only.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1149,10 +1527,10 @@ def _other_volume_release() -> Release:
     )
 
 
-def _irc_epub_release() -> Release:
+def _irc_release(line: str = IRC_LINE) -> Release:
     source = IRCReleaseSource()
     source._online_servers = set()
-    result = parse_result_line(IRC_LINE)
+    result = parse_result_line(line)
     assert result is not None
     return source._convert_to_releases([result], content_type="ebook")[0]
 
@@ -1190,10 +1568,16 @@ def _dxd5_book(title: str = DXD5_TITLE) -> BookMetadata:
     )
 
 
-def _search(client, main_module, query: dict[str, str], book: BookMetadata | None = None):
+def _search(
+    client,
+    main_module,
+    query: dict[str, str],
+    book: BookMetadata | None = None,
+    irc_releases: list[Release] | None = None,
+):
     sources = {
         "prowlarr": _Source([_mam_m4b_release(), _other_volume_release()]),
-        "irc": _Source([_irc_epub_release()]),
+        "irc": _Source(irc_releases if irc_releases is not None else [_irc_release()]),
     }
     with (
         patch.object(main_module, "get_auth_mode", return_value="none"),
@@ -1282,6 +1666,56 @@ class TestEbookSearchAnnotates:
         ]
 
 
+class TestIrcEvidence:
+    """IRC is classified on its original line, and only a detailed-pattern author counts."""
+
+    OVERLORD2 = "Overlord (Light Novel), Vol. 2: The Dark Warrior"
+
+    def _overlord_book(self) -> BookMetadata:
+        return BookMetadata(
+            provider="hardcover",
+            provider_id="ol2",
+            title=self.OVERLORD2,
+            search_title="The Dark Warrior",
+            authors=["Kugane Maruyama"],
+            series_name="Overlord (Light Novel)",
+            series_position=2,
+        )
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            # Series-prefix layout: the parser splits "Overlord" off as the author.
+            "!Bsk Overlord - Volume 2.epub",
+            # Authorless layout: only the fallback pattern matches.
+            "!Bsk Overlord Vol 2.epub ::INFO:: 1.1MB",
+            "!Bsk Kugane Maruyama - Overlord 02 - The Dark Warrior.epub ::INFO:: 1.1MB",
+        ],
+    )
+    def test_the_requested_volume_matches_in_every_layout(self, client, main_module, line):
+        releases = _search(
+            client,
+            main_module,
+            {"content_type": "ebook", "title": self.OVERLORD2},
+            book=self._overlord_book(),
+            irc_releases=[_irc_release(line)],
+        )
+
+        assert releases[line]["extra"]["release_match"]["volume"] == "match"
+
+    def test_a_detailed_author_still_conflicts(self, client, main_module):
+        line = "!Bsk James Patterson - Overlord 02.epub ::INFO:: 1.1MB"
+        releases = _search(
+            client,
+            main_module,
+            {"content_type": "ebook", "title": self.OVERLORD2},
+            book=self._overlord_book(),
+            irc_releases=[_irc_release(line)],
+        )
+
+        assert releases[line]["extra"]["release_match"]["volume"] == "unknown"
+
+
 class TestNoAnnotation:
     def test_an_audiobook_search_carries_no_release_match(self, client, main_module):
         releases = _search(client, main_module, {"content_type": "audiobook"})
@@ -1341,7 +1775,7 @@ class TestFailureTolerance:
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `uv run pytest tests/core/test_releases_api_release_match.py -q -n0`
-Expected: FAIL — 3 failed: `test_releases_from_two_sources_are_annotated` with `KeyError: 'release_match'`, `test_the_identity_comes_from_the_book_after_the_title_override` with `AttributeError: module 'shelfmark.main' has no attribute 'build_ranking_identity'`, `test_a_classifier_failure_leaves_only_that_release_unannotated` with `... has no attribute 'classify_release'`. The 3 `TestNoAnnotation` tests already pass on `main` and stay as pins.
+Expected: FAIL — 7 failed: `test_releases_from_two_sources_are_annotated` and the 4 `TestIrcEvidence` tests with `KeyError: 'release_match'`, `test_the_identity_comes_from_the_book_after_the_title_override` with `AttributeError: module 'shelfmark.main' has no attribute 'build_ranking_identity'`, `test_a_classifier_failure_leaves_only_that_release_unannotated` with `... has no attribute 'classify_release'`. The 3 `TestNoAnnotation` tests already pass on `main` and stay as pins.
 
 - [ ] **Step 3: Annotate in the endpoint**
 
@@ -1365,16 +1799,29 @@ from shelfmark.core.user_db import UserDB
 **Replace** in `shelfmark/main.py`:
 
 ```python
+from shelfmark.release_sources import (
+    BrowseRecord,
+    Release,
+    SourceUnavailableError,
+    get_source_display_name,
+)
+
 if TYPE_CHECKING:
-    from shelfmark.metadata_providers import BookMetadata, MetadataProvider
 ```
 
 with:
 
 ```python
+from shelfmark.release_sources import (
+    BrowseRecord,
+    Release,
+    SourceUnavailableError,
+    get_source_display_name,
+)
+from shelfmark.release_sources.irc.parser import ranking_evidence as irc_ranking_evidence
+
 if TYPE_CHECKING:
     from shelfmark.core.search_queries import RankingIdentity
-    from shelfmark.metadata_providers import BookMetadata, MetadataProvider
 ```
 
 **Replace** in `shelfmark/main.py`:
@@ -1399,8 +1846,14 @@ def _release_match_payload(release: Release, identity: RankingIdentity) -> dict[
     """Classify one release against the requested book for the default sort and badges."""
     extra = release.extra if isinstance(release.extra, dict) else {}
     # The indexer's own name when a source replaced the title (Prowlarr's MAM bookTitle).
-    name = extra.get("release_name")
-    if not isinstance(name, str) or not name.strip():
+    name: object = extra.get("release_name")
+    release_author: object = extra.get("author")
+    # IRC: the original result line, whose "author" may really be the series; the author
+    # counts only when the detailed "Author - Title.format" pattern matched.
+    irc = irc_ranking_evidence(extra.get("full_line")) if release.source == "irc" else None
+    if irc is not None:
+        name, release_author = irc
+    elif not isinstance(name, str) or not name.strip():
         name = release.title
     extra_formats = extra.get("formats")
     formats = [release.format, *(extra_formats if isinstance(extra_formats, list) else ())]
@@ -1408,7 +1861,7 @@ def _release_match_payload(release: Release, identity: RankingIdentity) -> dict[
         name=name,
         formats=formats,
         content_type=release.content_type,
-        release_author=extra.get("author"),
+        release_author=release_author,
         identity=identity,
     ).to_payload()
 
@@ -1499,10 +1952,10 @@ with:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/core/test_releases_api_release_match.py -q -n0`
-Expected: PASS (6 passed)
+Expected: PASS (10 passed)
 
 Run: `uv run pytest tests/core/test_releases_api_*.py -q`
-Expected: PASS (24 passed)
+Expected: PASS (28 passed)
 
 - [ ] **Step 5: Lint and typecheck**
 
@@ -1513,7 +1966,7 @@ uv run basedpyright
 uv run basedpyright tests --skipunannotated
 uv run vulture shelfmark
 ```
-Expected: ruff clean; BasedPyright only the 4 known `reportOptionalSubscript` errors, now at `shelfmark/main.py:2346-2349`; tests `0 errors`; vulture prints nothing.
+Expected: ruff clean; BasedPyright only the 4 known `reportOptionalSubscript` errors, now at `shelfmark/main.py:2353-2356`; tests `0 errors`; vulture prints nothing.
 
 - [ ] **Step 6: Commit**
 
@@ -1527,18 +1980,18 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task 4: Frontend — `ReleaseMatch` type, `parseReleaseMatch`, tiered default sort
+### Task 5: Frontend — `ReleaseMatch` type, `parseReleaseMatch`, tiered default sort, one sort-path function
 
 All paths below are relative to `src/frontend/`; run commands from there.
 
 **Files:**
-- Modify: `src/types/index.ts` (after `interface Release`, ~line 460), `src/utils/releaseScoring.ts` (imports; `sortReleasesByBookMatch`, end of file)
-- Create: `src/utils/releaseMatch.ts`
-- Test: `src/tests/releaseMatch.test.ts` (new), `src/tests/releaseScoring.test.ts` (new)
+- Modify: `src/types/index.ts` (after `interface Release`, ~line 460), `src/utils/releaseScoring.ts` (imports; `sortReleasesByBookMatch`, end of file), `src/components/ReleaseModal.tsx` (imports ~lines 47-64; `filteredReleases` ~lines 1179 and 1215-1227)
+- Create: `src/utils/releaseMatch.ts`, `src/utils/releaseDisplaySort.ts`
+- Test: `src/tests/releaseMatch.test.ts`, `src/tests/releaseScoring.test.ts`, `src/tests/releaseDisplaySort.test.ts` (all new)
 
 **Interfaces:**
-- Consumes: the Task 3 payload `extra.release_match = {v: 1, volume, other_volume, medium, compatible, fan_marker}`; `isRecord` from `utils/objectHelpers`.
-- Produces: `export interface ReleaseMatch { volume: 'match' | 'other' | 'unknown'; other_volume: number | null; medium: 'ebook' | 'comic' | 'audio' | 'video' | 'unknown'; compatible: boolean; fan_marker: boolean }` in `types/index.ts`; `parseReleaseMatch(extra: unknown): ReleaseMatch | null` in `utils/releaseMatch.ts` (Task 5 uses it); `sortReleasesByBookMatch(releases, titleCandidates, authorCandidates)` keeps its signature.
+- Consumes: the Task 4 payload `extra.release_match = {v: 1, volume, other_volume, medium, compatible, fan_marker}`; `isRecord` from `utils/objectHelpers`; `sortReleases`, `sortReleasesByFormat`, `FORMAT_SORT_KEY`, `SortState` from `utils/releaseSort` (unchanged).
+- Produces: `export interface ReleaseMatch { volume: 'match' | 'other' | 'unknown'; other_volume: number | null; medium: 'ebook' | 'comic' | 'audio' | 'video' | 'unknown'; compatible: boolean; fan_marker: boolean }` in `types/index.ts`; `parseReleaseMatch(extra: unknown): ReleaseMatch | null` in `utils/releaseMatch.ts` (Task 6 uses it); `sortReleasesByBookMatch(releases, titleCandidates, authorCandidates)` keeps its signature; `sortReleasesForDisplay(releases: Release[], currentSort: SortState | null, hasSortOptions: boolean, uiBook: Book | null, responseBook: ReleasesResponse['book'] | undefined): Release[]` in `utils/releaseDisplaySort.ts`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1604,18 +2057,32 @@ describe('parseReleaseMatch', () => {
     expect(parseReleaseMatch({ release_match: { ...valid, fan_marker: 1 } })).toBeNull();
   });
 
-  it('rejects an other volume that is not a positive integer', () => {
+  it('downgrades an invalid other volume to unknown and keeps the rest', () => {
     for (const otherVolume of [0, -1, 2.5, '3', null, undefined, Number.NaN]) {
       expect(
-        parseReleaseMatch({ release_match: { ...valid, other_volume: otherVolume } }),
-      ).toBeNull();
+        parseReleaseMatch({
+          release_match: { ...valid, other_volume: otherVolume, medium: 'audio', fan_marker: true },
+        }),
+      ).toEqual({
+        volume: 'unknown',
+        other_volume: null,
+        medium: 'audio',
+        compatible: true,
+        fan_marker: true,
+      });
     }
   });
 
-  it('rejects an other volume on a release that is not another volume', () => {
+  it('downgrades an other volume set on a release that is not another volume', () => {
     expect(
       parseReleaseMatch({ release_match: { ...valid, volume: 'match', other_volume: 3 } }),
-    ).toBeNull();
+    ).toEqual({
+      volume: 'unknown',
+      other_volume: null,
+      medium: 'ebook',
+      compatible: true,
+      fan_marker: false,
+    });
   });
 });
 ```
@@ -1627,7 +2094,6 @@ import { describe, expect, it } from 'vitest';
 
 import type { Release } from '../types';
 import { sortReleasesByBookMatch } from '../utils/releaseScoring';
-import { sortReleases } from '../utils/releaseSort';
 
 type Volume = 'match' | 'other' | 'unknown';
 
@@ -1756,22 +2222,8 @@ describe('sortReleasesByBookMatch tiers', () => {
     expect(ids(sortReleasesByBookMatch(releases, [], []))).toEqual(['z', 'a', 'm']);
   });
 
-  it('leaves a saved column sort alone', () => {
-    const releases = [
-      { ...release('small-match', 'A', matchPayload('match')), size_bytes: 10 },
-      { ...release('big-other', 'B', matchPayload('other')), size_bytes: 30 },
-      { ...release('mid-none', 'C'), size_bytes: 20 },
-    ];
-
-    expect(ids(sortReleases(releases, 'size_bytes', 'desc'))).toEqual([
-      'big-other',
-      'mid-none',
-      'small-match',
-    ]);
-  });
-
-  it('sorts 2000 releases reading each match payload once', () => {
-    let reads = 0;
+  it('scores 2000 releases once each, outside the comparator', () => {
+    const reads = { match: 0, title: 0, author: 0 };
     const volumes: Volume[] = ['match', 'other', 'unknown'];
     const releases: Release[] = Array.from({ length: 2000 }, (_, index) => {
       const payload = matchPayload(volumes[index % 3]);
@@ -1779,21 +2231,33 @@ describe('sortReleasesByBookMatch tiers', () => {
       Object.defineProperty(extra, 'release_match', {
         enumerable: true,
         get: () => {
-          reads += 1;
+          reads.match += 1;
           return payload;
         },
       });
-      return {
-        source: 'prowlarr',
-        source_id: `r-${index}`,
-        title: `High School DxD Vol ${index % 30}`,
-        extra,
-      };
+      Object.defineProperty(extra, 'author', {
+        enumerable: true,
+        get: () => {
+          reads.author += 1;
+          return 'Ichiei Ishibumi';
+        },
+      });
+      const item: Release = { source: 'prowlarr', source_id: `r-${index}`, title: '', extra };
+      Object.defineProperty(item, 'title', {
+        enumerable: true,
+        get: () => {
+          reads.title += 1;
+          return `High School DxD Vol ${index % 30}`;
+        },
+      });
+      return item;
     });
 
-    const sorted = sortReleasesByBookMatch(releases, CANDIDATES, []);
+    // One title candidate and one author candidate: each release's title and author are
+    // read exactly once by the scoring, however many comparisons the sort makes.
+    const sorted = sortReleasesByBookMatch(releases, CANDIDATES, ['ichiei ishibumi']);
 
-    expect(reads).toBe(2000);
+    expect(reads).toEqual({ match: 2000, title: 2000, author: 2000 });
     expect(sorted).toHaveLength(2000);
     expect(sorted.slice(0, 667).every((r) => Number(r.source_id.slice(2)) % 3 === 0)).toBe(true);
     expect(sorted.slice(-667).every((r) => Number(r.source_id.slice(2)) % 3 === 1)).toBe(true);
@@ -1801,10 +2265,92 @@ describe('sortReleasesByBookMatch tiers', () => {
 });
 ```
 
+**Create** `src/frontend/src/tests/releaseDisplaySort.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest';
+
+import type { Book, Release } from '../types';
+import { sortReleasesForDisplay } from '../utils/releaseDisplaySort';
+
+const book: Book = {
+  id: 'dxd5',
+  title: 'High School DxD Vol 5',
+  author: 'Ichiei Ishibumi',
+  provider: 'hardcover',
+  provider_id: 'dxd5',
+};
+
+function release(id: string, volume: 'match' | 'other', sizeBytes: number, format = 'epub') {
+  const payload = {
+    v: 1,
+    volume,
+    other_volume: volume === 'other' ? 25 : null,
+    medium: 'ebook',
+    compatible: true,
+    fan_marker: false,
+  };
+  const r: Release = {
+    source: 'prowlarr',
+    source_id: id,
+    title: 'High School DxD Vol 5',
+    format,
+    size_bytes: sizeBytes,
+    extra: { release_match: payload },
+  };
+  return r;
+}
+
+const releases = [
+  release('small-match', 'match', 10, 'pdf'),
+  release('big-other', 'other', 30),
+  release('mid-match', 'match', 20),
+];
+const ids = (list: Release[]): string[] => list.map((r) => r.source_id);
+
+describe('sortReleasesForDisplay', () => {
+  it('uses the tiered best-match sort without a chosen sort', () => {
+    expect(ids(sortReleasesForDisplay(releases, null, true, book, undefined))).toEqual([
+      'small-match',
+      'mid-match',
+      'big-other',
+    ]);
+  });
+
+  it('applies a saved column sort and ignores the tiers', () => {
+    const saved = { key: 'size_bytes', direction: 'desc' as const };
+
+    expect(ids(sortReleasesForDisplay(releases, saved, true, book, undefined))).toEqual([
+      'big-other',
+      'mid-match',
+      'small-match',
+    ]);
+  });
+
+  it('applies the format sort', () => {
+    const formatSort = { key: '_format_priority', direction: 'asc' as const, value: 'pdf' };
+
+    expect(ids(sortReleasesForDisplay(releases, formatSort, true, book, undefined))[0]).toBe(
+      'small-match',
+    );
+  });
+
+  it('falls back to best match when the source has no sortable columns', () => {
+    const saved = { key: 'size_bytes', direction: 'desc' as const };
+
+    expect(ids(sortReleasesForDisplay(releases, saved, false, book, undefined))).toEqual([
+      'small-match',
+      'mid-match',
+      'big-other',
+    ]);
+  });
+});
+```
+
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `npx vitest run src/tests/releaseMatch.test.ts src/tests/releaseScoring.test.ts`
-Expected: FAIL — `releaseMatch.test.ts`: `Cannot find module '../utils/releaseMatch'`; `releaseScoring.test.ts`: 4 failed (`lets the tier beat the title score`, `puts an incompatible unknown volume in the bottom tier`, `still orders by tier without title candidates`, `sorts 2000 releases reading each match payload once` — `expected +0 to be 2000`), 5 passed (today's order, malformed payload and saved sort already hold and stay as pins).
+Run: `npx vitest run src/tests/releaseMatch.test.ts src/tests/releaseScoring.test.ts src/tests/releaseDisplaySort.test.ts`
+Expected: FAIL — `releaseMatch.test.ts`: `Cannot find module '../utils/releaseMatch'`; `releaseDisplaySort.test.ts`: `Cannot find module '../utils/releaseDisplaySort'`; `releaseScoring.test.ts`: 4 failed (`lets the tier beat the title score`, `puts an incompatible unknown volume in the bottom tier`, `still orders by tier without title candidates`, and `scores 2000 releases once each, outside the comparator` with `expected { Object (match, title, ...) } to deeply equal { match: 2000, title: 2000, …(1) }`), 4 passed (today's order, input order and the malformed payload already hold and stay as pins).
 
 - [ ] **Step 3: Implement the type, the parser and the tiers**
 
@@ -1848,13 +2394,16 @@ const MEDIUMS: ReadonlySet<unknown> = new Set(['ebook', 'comic', 'audio', 'video
 
 const isVolume = (value: unknown): value is ReleaseMatch['volume'] => VOLUMES.has(value);
 const isMedium = (value: unknown): value is ReleaseMatch['medium'] => MEDIUMS.has(value);
+const isPositiveInteger = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isInteger(value) && value >= 1;
 
 /**
  * The release's `extra.release_match`, or null when it is missing or malformed.
  *
- * The one parser for ranking and badges: a wrong version, an unknown volume or medium,
- * non-boolean flags, or an `other_volume` that is not a positive integer (or is set on a
- * release that is not another volume) all give null, which means today's behaviour.
+ * The one parser for ranking and badges. A wrong version, an unknown volume or medium, or
+ * non-boolean flags give null, which means today's behaviour. An invalid `other_volume`
+ * (not a positive integer for another volume, or set on a release that is not another
+ * volume) only makes the volume unknown: the medium and flags still stand.
  */
 export function parseReleaseMatch(extra: unknown): ReleaseMatch | null {
   if (!isRecord(extra)) return null;
@@ -1868,13 +2417,13 @@ export function parseReleaseMatch(extra: unknown): ReleaseMatch | null {
   if (typeof compatible !== 'boolean' || typeof fanMarker !== 'boolean') return null;
 
   if (volume === 'other') {
-    if (typeof otherVolume !== 'number' || !Number.isInteger(otherVolume) || otherVolume < 1) {
-      return null;
+    if (isPositiveInteger(otherVolume)) {
+      return { volume, other_volume: otherVolume, medium, compatible, fan_marker: fanMarker };
     }
-    return { volume, other_volume: otherVolume, medium, compatible, fan_marker: fanMarker };
+  } else if (otherVolume == null) {
+    return { volume, other_volume: null, medium, compatible, fan_marker: fanMarker };
   }
-  if (otherVolume != null) return null;
-  return { volume, other_volume: null, medium, compatible, fan_marker: fanMarker };
+  return { volume: 'unknown', other_volume: null, medium, compatible, fan_marker: fanMarker };
 }
 ```
 
@@ -1980,19 +2529,152 @@ export function sortReleasesByBookMatch(
 }
 ```
 
+**Create** `src/frontend/src/utils/releaseDisplaySort.ts`:
+
+```ts
+import type { Book, Release, ReleasesResponse } from '../types';
+import {
+  getBookAuthorCandidates,
+  getBookTitleCandidates,
+  sortReleasesByBookMatch,
+} from './releaseScoring';
+import type { SortState } from './releaseSort';
+import { FORMAT_SORT_KEY, sortReleases, sortReleasesByFormat } from './releaseSort';
+
+/**
+ * The order the release modal shows: an explicit format sort, else an explicit (saved or
+ * chosen) column sort when the source has sortable columns, else the default best-match
+ * sort with its volume and medium tiers.
+ */
+export function sortReleasesForDisplay(
+  releases: Release[],
+  currentSort: SortState | null,
+  hasSortOptions: boolean,
+  uiBook: Book | null,
+  responseBook: ReleasesResponse['book'] | undefined,
+): Release[] {
+  if (currentSort?.key === FORMAT_SORT_KEY && currentSort.value) {
+    return sortReleasesByFormat(releases, currentSort.value, currentSort.direction);
+  }
+  if (currentSort && hasSortOptions) {
+    return sortReleases(releases, currentSort.key, currentSort.direction);
+  }
+  return sortReleasesByBookMatch(
+    releases,
+    getBookTitleCandidates(uiBook, responseBook),
+    getBookAuthorCandidates(uiBook, responseBook),
+  );
+}
+```
+
+Then route `ReleaseModal`'s sort through it:
+
+**Replace** in `src/frontend/src/components/ReleaseModal.tsx`:
+
+```tsx
+import { getReleaseFormats } from '../utils/releaseFormats';
+```
+
+with:
+
+```tsx
+import { sortReleasesForDisplay } from '../utils/releaseDisplaySort';
+import { getReleaseFormats } from '../utils/releaseFormats';
+```
+
+**Replace** in `src/frontend/src/components/ReleaseModal.tsx`:
+
+```tsx
+import { buildReleaseDownloadPayload, type ReleaseDownloadOptions } from '../utils/releasePayload';
+import {
+  getBookTitleCandidates,
+  getBookAuthorCandidates,
+  sortReleasesByBookMatch,
+} from '../utils/releaseScoring';
+import type { SortState } from '../utils/releaseSort';
+import {
+  getSavedSort,
+  saveSort,
+  clearSort,
+  inferDefaultDirection,
+  sortReleases,
+  FORMAT_SORT_KEY,
+  sortReleasesByFormat,
+} from '../utils/releaseSort';
+```
+
+with:
+
+```tsx
+import { buildReleaseDownloadPayload, type ReleaseDownloadOptions } from '../utils/releasePayload';
+import type { SortState } from '../utils/releaseSort';
+import {
+  getSavedSort,
+  saveSort,
+  clearSort,
+  inferDefaultDirection,
+  FORMAT_SORT_KEY,
+} from '../utils/releaseSort';
+```
+
+**Replace** in `src/frontend/src/components/ReleaseModal.tsx`:
+
+```tsx
+    // First, filter
+    let filtered = releases.filter((r) => {
+```
+
+with:
+
+```tsx
+    // First, filter
+    const filtered = releases.filter((r) => {
+```
+
+**Replace** in `src/frontend/src/components/ReleaseModal.tsx`:
+
+```tsx
+    // Then, sort by explicit column/format, or default to book-title relevance with exact author boost
+    if (currentSort?.key === FORMAT_SORT_KEY && currentSort.value) {
+      filtered = sortReleasesByFormat(filtered, currentSort.value, currentSort.direction);
+    } else if (currentSort && allSortOptions.length > 0) {
+      filtered = sortReleases(filtered, currentSort.key, currentSort.direction);
+    } else {
+      const responseBook = releasesBySource[activeTab]?.book;
+      const titleCandidates = getBookTitleCandidates(book, responseBook);
+      const authorCandidates = getBookAuthorCandidates(book, responseBook);
+      filtered = sortReleasesByBookMatch(filtered, titleCandidates, authorCandidates);
+    }
+
+    return filtered;
+```
+
+with:
+
+```tsx
+    // Then, sort by explicit column/format, or default to the tiered best-match sort
+    return sortReleasesForDisplay(
+      filtered,
+      currentSort,
+      allSortOptions.length > 0,
+      book,
+      releasesBySource[activeTab]?.book,
+    );
+```
+
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `npx vitest run src/tests/releaseMatch.test.ts src/tests/releaseScoring.test.ts`
-Expected: PASS (16 passed)
+Run: `npx vitest run src/tests/releaseMatch.test.ts src/tests/releaseScoring.test.ts src/tests/releaseDisplaySort.test.ts`
+Expected: PASS (19 passed)
 
 - [ ] **Step 5: Typecheck, lint, format, knip, full suite**
 
 ```bash
 npm run typecheck && npm run lint && npm run format:check
-npm run knip > /tmp/knip-task4.txt; diff /tmp/knip-main.txt /tmp/knip-task4.txt
+npm run knip > /tmp/knip-task5.txt; diff /tmp/knip-main.txt /tmp/knip-task5.txt
 npm run test:unit
 ```
-Expected: typecheck, lint and format clean; the knip diff shows only the `SourceSearchInfo` line moving from `src/types/index.ts:463` to `:473`; vitest 379 passed.
+Expected: typecheck, lint and format clean; the knip diff shows only the `SourceSearchInfo` line moving from `src/types/index.ts:463` to `:473`; vitest 382 passed.
 
 - [ ] **Step 6: Commit** (from the repository root)
 
@@ -2000,8 +2682,11 @@ Expected: typecheck, lint and format clean; the knip diff shows only the `Source
 git add src/frontend/src/types/index.ts \
   src/frontend/src/utils/releaseMatch.ts \
   src/frontend/src/utils/releaseScoring.ts \
+  src/frontend/src/utils/releaseDisplaySort.ts \
+  src/frontend/src/components/ReleaseModal.tsx \
   src/frontend/src/tests/releaseMatch.test.ts \
-  src/frontend/src/tests/releaseScoring.test.ts
+  src/frontend/src/tests/releaseScoring.test.ts \
+  src/frontend/src/tests/releaseDisplaySort.test.ts
 git commit -m "feat(releases): rank the default sort by volume and medium tiers
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
@@ -2009,7 +2694,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task 5: Mismatch badges and `Fan TL?` below the title, outside the clamp
+### Task 6: Mismatch badges and `Fan TL?` below the title, outside the clamp
 
 All paths below are relative to `src/frontend/`; run commands from there.
 
@@ -2019,7 +2704,7 @@ All paths below are relative to `src/frontend/`; run commands from there.
 - Test: `src/tests/releaseMatchBadges.test.tsx` (new)
 
 **Interfaces:**
-- Consumes: `parseReleaseMatch` (Task 4).
+- Consumes: `parseReleaseMatch` (Task 5).
 - Produces: `ReleaseMatchBadges({ release, compact? }: { release: Release; compact?: boolean })` (renders `null` when there is nothing to flag); `FAN_TL_TOOLTIP = 'The release name says this is a fan translation'`; `ReleaseRow` becomes a named export of `ReleaseModal.tsx` (props unchanged).
 
 - [ ] **Step 1: Write the failing tests**
@@ -2331,10 +3016,10 @@ Expected: PASS (8 passed)
 
 ```bash
 npm run typecheck && npm run lint && npm run format:check
-npm run knip > /tmp/knip-task5.txt; diff /tmp/knip-main.txt /tmp/knip-task5.txt
+npm run knip > /tmp/knip-task6.txt; diff /tmp/knip-main.txt /tmp/knip-task6.txt
 npm run test:unit
 ```
-Expected: clean (oxlint's `unicorn(consistent-function-scoping)` is why the test helpers live at module scope); knip diff only the `SourceSearchInfo` line number; vitest 387 passed.
+Expected: clean (oxlint's `unicorn(consistent-function-scoping)` is why the test helpers live at module scope); knip diff only the `SourceSearchInfo` line number; vitest 390 passed.
 
 - [ ] **Step 6: Commit** (from the repository root)
 
@@ -2349,28 +3034,33 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task 6: Manual results stay out of the book cache; expanded searches refresh match data
+### Task 7: Query context — manual results stay out of the book cache, expansions merge only within a context, superseded responses are dropped
 
 All paths below are relative to `src/frontend/`; run commands from there.
 
 **Files:**
 - Create: `src/hooks/releaseModal/releaseSearchSession.helpers.ts`
-- Modify: `src/hooks/releaseModal/useReleaseSearchSession.ts` (imports ~line 22; `fetchReleaseResults` cache read ~line 241 and response handling ~lines 268-295)
+- Modify: `src/hooks/releaseModal/useReleaseSearchSession.ts` (imports ~line 22; refs after `showManualQuery` ~line 158; `fetchReleaseResults` ~lines 225-310; the reset effect ~line 345; `runManualSearch` ~line 520)
 - Test: `src/tests/releaseSearchSession.test.ts` (new)
 
 **Interfaces:**
-- Consumes: `getCachedReleases`, `setCachedReleases`, `invalidateCachedReleases` (`utils/releaseCache.ts`, unchanged).
-- Produces: `usesBookReleaseCache(manualQuery: string | undefined): boolean`; `mergeExpandedReleases(existing: ReleasesResponse, incoming: ReleasesResponse): ReleasesResponse`.
+- Consumes: `getCachedReleases`, `setCachedReleases`, `invalidateCachedReleases` (`utils/releaseCache.ts`, unchanged); `isRecord` (`utils/objectHelpers`).
+- Produces: `queryContext(appliedManualQuery: string | undefined): string`; `usesBookReleaseCache(context: string): boolean`; `releaseResponseAction(options: { expandSearch: boolean; requestContext: string; currentContext: string; displayedContext: string | undefined; isLatestRequest: boolean }): 'discard' | 'merge' | 'replace'`; `applyReleaseResponse(existing: ReleasesResponse | null | undefined, response: ReleasesResponse, action: 'merge' | 'replace'): ReleasesResponse`; `mergeExpandedReleases(existing: ReleasesResponse, incoming: ReleasesResponse): ReleasesResponse`. The hook's public return value is unchanged.
 
 - [ ] **Step 1: Write the failing tests**
 
 **Create** `src/frontend/src/tests/releaseSearchSession.test.ts`:
 
 ```ts
+import { readFileSync } from 'node:fs';
+
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  applyReleaseResponse,
   mergeExpandedReleases,
+  queryContext,
+  releaseResponseAction,
   usesBookReleaseCache,
 } from '../hooks/releaseModal/releaseSearchSession.helpers';
 import type { Release, ReleasesResponse } from '../types';
@@ -2413,17 +3103,128 @@ function response(releases: Release[], title = 'High School DxD, Vol. 5'): Relea
   };
 }
 
+// A release whose `extra` is not an object, as an older or broken backend could send.
+function malformed(id: string, extra: unknown): Release {
+  const release: Release = { source: 'prowlarr', source_id: id, title: id };
+  Reflect.set(release, 'extra', extra);
+  return release;
+}
+
 const KEY = ['hardcover', 'dxd5', 'prowlarr', 'ebook'] as const;
 
 afterEach(() => {
   invalidateCachedReleases(...KEY);
 });
 
-describe('usesBookReleaseCache', () => {
-  it('is true only without a manual query', () => {
-    expect(usesBookReleaseCache(undefined)).toBe(true);
+describe('query context and the book cache', () => {
+  it('is the applied manual query, trimmed, or empty for the automatic search', () => {
+    expect(queryContext(undefined)).toBe('');
+    expect(queryContext('  ')).toBe('');
+    expect(queryContext(' dxd volume 5 ')).toBe('dxd volume 5');
+  });
+
+  it('uses the book cache only for the automatic search', () => {
     expect(usesBookReleaseCache('')).toBe(true);
     expect(usesBookReleaseCache('dxd volume 5')).toBe(false);
+  });
+});
+
+describe('releaseResponseAction', () => {
+  const base = {
+    expandSearch: false,
+    requestContext: '',
+    currentContext: '',
+    displayedContext: '',
+    isLatestRequest: true,
+  };
+
+  it('replaces the list with a normal search response', () => {
+    expect(releaseResponseAction(base)).toBe('replace');
+  });
+
+  it('merges an expansion only into a list from the same context', () => {
+    expect(releaseResponseAction({ ...base, expandSearch: true })).toBe('merge');
+    expect(
+      releaseResponseAction({
+        ...base,
+        expandSearch: true,
+        requestContext: 'dxd 5',
+        currentContext: 'dxd 5',
+        displayedContext: 'dxd 5',
+      }),
+    ).toBe('merge');
+  });
+
+  it('replaces instead of mixing automatic and manual rows', () => {
+    // Automatic list on screen, expansion of the applied manual query.
+    expect(
+      releaseResponseAction({
+        ...base,
+        expandSearch: true,
+        requestContext: 'dxd 5',
+        currentContext: 'dxd 5',
+        displayedContext: '',
+      }),
+    ).toBe('replace');
+    // Manual list on screen, expansion of the automatic search (after a reopen).
+    expect(releaseResponseAction({ ...base, expandSearch: true, displayedContext: 'dxd 5' })).toBe(
+      'replace',
+    );
+    // Nothing on screen yet.
+    expect(
+      releaseResponseAction({ ...base, expandSearch: true, displayedContext: undefined }),
+    ).toBe('replace');
+  });
+
+  it('discards a response superseded by a newer request or another context', () => {
+    expect(releaseResponseAction({ ...base, isLatestRequest: false })).toBe('discard');
+    expect(releaseResponseAction({ ...base, currentContext: 'dxd 5' })).toBe('discard');
+  });
+});
+
+describe('out-of-order completion', () => {
+  it('shows only the newest request, whatever order the responses arrive in', () => {
+    // The hook's bookkeeping for one tab: a sequence number per request, the applied
+    // context, and what is on screen.
+    let seq = 0;
+    let applied = '';
+    let shown: ReleasesResponse | undefined;
+    let displayed: string | undefined;
+    const start = (context: string) => ({ id: ++seq, context });
+    const arrive = (request: { id: number; context: string }, data: ReleasesResponse) => {
+      const action = releaseResponseAction({
+        expandSearch: false,
+        requestContext: request.context,
+        currentContext: applied,
+        displayedContext: displayed,
+        isLatestRequest: request.id === seq,
+      });
+      if (action === 'discard') return;
+      displayed = request.context;
+      shown = applyReleaseResponse(shown, data, action);
+    };
+
+    const automatic = start('');
+    applied = 'dxd 5';
+    const manual = start('dxd 5');
+    arrive(manual, response([plain('m')]));
+    arrive(automatic, response([annotated('a', matchPayload('match'))]));
+
+    expect(shown?.releases.map((r) => r.source_id)).toEqual(['m']);
+    expect(displayed).toBe('dxd 5');
+  });
+});
+
+describe('applyReleaseResponse', () => {
+  it('replaces, merges, and merges into nothing as a replace', () => {
+    const existing = response([plain('a')]);
+    const incoming = response([plain('b')]);
+
+    expect(applyReleaseResponse(existing, incoming, 'replace')).toBe(incoming);
+    expect(
+      applyReleaseResponse(existing, incoming, 'merge').releases.map((r) => r.source_id),
+    ).toEqual(['a', 'b']);
+    expect(applyReleaseResponse(undefined, incoming, 'merge')).toBe(incoming);
   });
 });
 
@@ -2451,15 +3252,6 @@ describe('mergeExpandedReleases', () => {
     });
   });
 
-  it('annotates a previously unannotated duplicate row', () => {
-    const merged = mergeExpandedReleases(
-      response([plain('a')]),
-      response([annotated('a', matchPayload('match'))]),
-    );
-
-    expect(merged.releases[0].extra?.release_match).toEqual(matchPayload('match'));
-  });
-
   it('drops a stale release match the incoming row no longer carries', () => {
     const merged = mergeExpandedReleases(
       response([annotated('a', matchPayload('match'))]),
@@ -2475,17 +3267,33 @@ describe('mergeExpandedReleases', () => {
 
     expect(merged.releases[0]).toBe(kept);
   });
+
+  it('survives malformed extras on either side', () => {
+    const merged = mergeExpandedReleases(
+      response([malformed('a', ['x']), malformed('b', null), malformed('c', undefined)]),
+      response([
+        annotated('a', matchPayload('match')),
+        malformed('b', ['release_match']),
+        malformed('c', 'release_match'),
+      ]),
+    );
+
+    expect(merged.releases.map((r) => r.extra)).toEqual([
+      { release_match: matchPayload('match') },
+      {},
+      {},
+    ]);
+  });
 });
 
 describe('manual search, reopen, expand', () => {
   it('shows no stale or unannotated mix', () => {
-    // The hook's decisions, in the order the modal makes them.
-    const store = (manualQuery: string | undefined, data: ReleasesResponse) => {
-      if (usesBookReleaseCache(manualQuery)) setCachedReleases(...KEY, data);
+    const store = (context: string, data: ReleasesResponse) => {
+      if (usesBookReleaseCache(context)) setCachedReleases(...KEY, data);
     };
 
     // 1. Open the book: an annotated response is cached under the book.
-    store(undefined, response([annotated('a', matchPayload('match'))]));
+    store('', response([annotated('a', matchPayload('match'))]));
     // 2. Manual search: every tab's entry is invalidated, and the unannotated manual
     //    response is not written back under the book.
     invalidateCachedReleases(...KEY);
@@ -2496,19 +3304,61 @@ describe('manual search, reopen, expand', () => {
       annotated('a', matchPayload('match')),
       annotated('b', matchPayload('other', 6)),
     ]);
-    store(undefined, reopened);
+    store('', reopened);
     expect(getCachedReleases(...KEY)).toBe(reopened);
     // 4. Expand: duplicates take the incoming match data; new rows arrive annotated.
-    const expanded = mergeExpandedReleases(
+    const action = releaseResponseAction({
+      expandSearch: true,
+      requestContext: '',
+      currentContext: '',
+      displayedContext: '',
+      isLatestRequest: true,
+    });
+    const expanded = applyReleaseResponse(
       reopened,
       response([annotated('b', matchPayload('other', 7)), annotated('c', matchPayload('unknown'))]),
+      action === 'discard' ? 'replace' : action,
     );
 
+    expect(action).toBe('merge');
     expect(expanded.releases.map((r) => [r.source_id, r.extra?.release_match])).toEqual([
       ['a', matchPayload('match')],
       ['b', matchPayload('other', 7)],
       ['c', matchPayload('unknown')],
     ]);
+  });
+});
+
+describe('useReleaseSearchSession uses the helpers', () => {
+  const hook = readFileSync(
+    new URL('../hooks/releaseModal/useReleaseSearchSession.ts', import.meta.url),
+    'utf8',
+  );
+
+  it('calls the extracted decisions instead of reimplementing them', () => {
+    for (const call of [
+      'queryContext(',
+      'usesBookReleaseCache(requestContext)',
+      'releaseResponseAction(',
+      'applyReleaseResponse(',
+    ]) {
+      expect(hook).toContain(call);
+    }
+    expect(hook).not.toContain('seenIds');
+    expect(hook).not.toMatch(/new Set\(existing\.releases/);
+  });
+
+  it('writes the cache only behind the cache decision', () => {
+    const writes = hook.match(/setCachedReleases\(/g) ?? [];
+    expect(writes).toHaveLength(1);
+    expect(hook).toMatch(
+      /if \(!expandSearch && usesBookReleaseCache\(requestContext\)\) \{\s*setCachedReleases\(/,
+    );
+  });
+
+  it('sends the applied manual query, never the draft text', () => {
+    expect(hook).toContain('queryContext(manualQueryOverride ?? appliedManualQueryRef.current)');
+    expect(hook).not.toMatch(/manualQueryOverride \?\? manualQuery\)/);
   });
 });
 ```
@@ -2524,21 +3374,64 @@ Expected: FAIL — `Cannot find module '../hooks/releaseModal/releaseSearchSessi
 
 ```ts
 import type { Release, ReleasesResponse } from '../../types';
+import { isRecord } from '../../utils/objectHelpers';
 
 /**
- * Whether a search may read and write the book's normal release-cache entry.
+ * The query context of a search: `''` for the automatic search, otherwise the applied
+ * manual query (the one last submitted, never the draft in the text field).
+ */
+export function queryContext(appliedManualQuery: string | undefined): string {
+  return appliedManualQuery?.trim() ?? '';
+}
+
+/**
+ * Whether a search in this context may read and write the book's normal cache entry.
  *
  * A manual query's results are the user's own words and carry no `release_match`, so
- * they are never stored under the book: reopening the book always shows a normal,
- * annotated search.
+ * they are never stored under (or served from) the book's entry: reopening the book
+ * always shows a normal, annotated search.
  */
-export function usesBookReleaseCache(manualQuery: string | undefined): boolean {
-  return !manualQuery;
+export function usesBookReleaseCache(context: string): boolean {
+  return context === '';
+}
+
+type ReleaseResponseAction = 'discard' | 'merge' | 'replace';
+
+/**
+ * What to do with a search response when it arrives.
+ *
+ * - `discard`: a newer request for the tab was started, or the query context changed
+ *   while this one was in flight.
+ * - `merge`: an expanded search whose context is the one the list is showing.
+ * - `replace`: anything else, including an expanded search over a list from another
+ *   context (it must not mix manual and automatic rows).
+ */
+export function releaseResponseAction(options: {
+  expandSearch: boolean;
+  requestContext: string;
+  currentContext: string;
+  displayedContext: string | undefined;
+  isLatestRequest: boolean;
+}): ReleaseResponseAction {
+  const { expandSearch, requestContext, currentContext, displayedContext, isLatestRequest } =
+    options;
+  if (!isLatestRequest || requestContext !== currentContext) return 'discard';
+  if (expandSearch && displayedContext === requestContext) return 'merge';
+  return 'replace';
+}
+
+/** The list to show after a `merge` or `replace` action. */
+export function applyReleaseResponse(
+  existing: ReleasesResponse | null | undefined,
+  response: ReleasesResponse,
+  action: 'merge' | 'replace',
+): ReleasesResponse {
+  return action === 'merge' && existing ? mergeExpandedReleases(existing, response) : response;
 }
 
 function withIncomingReleaseMatch(existing: Release, incoming: Release): Release {
-  const extra: Record<string, unknown> = { ...existing.extra };
-  if (incoming.extra !== undefined && 'release_match' in incoming.extra) {
+  const extra: Record<string, unknown> = isRecord(existing.extra) ? { ...existing.extra } : {};
+  if (isRecord(incoming.extra) && 'release_match' in incoming.extra) {
     extra.release_match = incoming.extra.release_match;
   } else {
     delete extra.release_match;
@@ -2580,7 +3473,43 @@ with:
 
 ```ts
 import { useDependencyEffect, useMountEffect } from '../useMountEffect';
-import { mergeExpandedReleases, usesBookReleaseCache } from './releaseSearchSession.helpers';
+import {
+  applyReleaseResponse,
+  queryContext,
+  releaseResponseAction,
+  usesBookReleaseCache,
+} from './releaseSearchSession.helpers';
+```
+
+**Replace** in `src/frontend/src/hooks/releaseModal/useReleaseSearchSession.ts`:
+
+```ts
+  const [showManualQuery, setShowManualQuery] = useState(defaultShowManualQuery);
+```
+
+with:
+
+```ts
+  const [showManualQuery, setShowManualQuery] = useState(defaultShowManualQuery);
+  // The manual query last submitted ('' for the automatic search), and per tab the query
+  // context of the list on screen and the newest request. Refs, because a response is
+  // checked against the values current when it arrives, not when it was requested.
+  const appliedManualQueryRef = useRef(defaultShowManualQuery ? defaultManualQuery : '');
+  const displayedContextRef = useRef<Record<string, string>>({});
+  const requestSeqRef = useRef<Record<string, number>>({});
+```
+
+**Replace** in `src/frontend/src/hooks/releaseModal/useReleaseSearchSession.ts`:
+
+```ts
+      const currentManualQuery = (manualQueryOverride ?? manualQuery).trim() || undefined;
+```
+
+with:
+
+```ts
+      const requestContext = queryContext(manualQueryOverride ?? appliedManualQueryRef.current);
+      const currentManualQuery = requestContext || undefined;
 ```
 
 **Replace** in `src/frontend/src/hooks/releaseModal/useReleaseSearchSession.ts`:
@@ -2588,18 +3517,46 @@ import { mergeExpandedReleases, usesBookReleaseCache } from './releaseSearchSess
 ```ts
       if (!expandSearch) {
         const cached = getCachedReleases(provider, bookId, tabName, contentType);
+        if (cached) {
+          setReleasesBySource((prev) => ({ ...prev, [tabName]: cached }));
 ```
 
 with:
 
 ```ts
-      if (!expandSearch && usesBookReleaseCache(currentManualQuery)) {
+      if (!expandSearch && usesBookReleaseCache(requestContext)) {
         const cached = getCachedReleases(provider, bookId, tabName, contentType);
+        if (cached) {
+          displayedContextRef.current[tabName] = requestContext;
+          setReleasesBySource((prev) => ({ ...prev, [tabName]: cached }));
 ```
 
 **Replace** in `src/frontend/src/hooks/releaseModal/useReleaseSearchSession.ts`:
 
 ```ts
+      setLoadingBySource((prev) => ({ ...prev, [tabName]: true }));
+      setErrorBySource((prev) => ({ ...prev, [tabName]: null }));
+
+      try {
+```
+
+with:
+
+```ts
+      const requestSeq = (requestSeqRef.current[tabName] ?? 0) + 1;
+      requestSeqRef.current[tabName] = requestSeq;
+      const isLatestRequest = () => requestSeqRef.current[tabName] === requestSeq;
+
+      setLoadingBySource((prev) => ({ ...prev, [tabName]: true }));
+      setErrorBySource((prev) => ({ ...prev, [tabName]: null }));
+
+      try {
+```
+
+**Replace** in `src/frontend/src/hooks/releaseModal/useReleaseSearchSession.ts`:
+
+```ts
+        if (expandSearch) {
           setReleasesBySource((prev) => {
             const existing = prev[tabName];
             if (!existing) {
@@ -2623,39 +3580,137 @@ with:
           setCachedReleases(provider, bookId, tabName, contentType, response);
           setReleasesBySource((prev) => ({ ...prev, [tabName]: response }));
         }
+
+        initializeIndexerFilterForTab(tabName, response);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to fetch releases';
+        setErrorBySource((prev) => ({ ...prev, [tabName]: message }));
+      } finally {
+        setLoadingBySource((prev) => ({ ...prev, [tabName]: false }));
+        clearSearchStatusForTab(tabName);
+      }
 ```
 
 with:
 
 ```ts
-          setReleasesBySource((prev) => {
-            const existing = prev[tabName];
-            if (!existing) {
-              return { ...prev, [tabName]: response };
-            }
-            return { ...prev, [tabName]: mergeExpandedReleases(existing, response) };
-          });
-        } else {
-          if (usesBookReleaseCache(currentManualQuery)) {
-            setCachedReleases(provider, bookId, tabName, contentType, response);
-          }
-          setReleasesBySource((prev) => ({ ...prev, [tabName]: response }));
+        const action = releaseResponseAction({
+          expandSearch,
+          requestContext,
+          currentContext: queryContext(appliedManualQueryRef.current),
+          displayedContext: displayedContextRef.current[tabName],
+          isLatestRequest: isLatestRequest(),
+        });
+        if (action === 'discard') {
+          return;
         }
+        if (!expandSearch && usesBookReleaseCache(requestContext)) {
+          setCachedReleases(provider, bookId, tabName, contentType, response);
+        }
+        displayedContextRef.current[tabName] = requestContext;
+        setReleasesBySource((prev) => ({
+          ...prev,
+          [tabName]: applyReleaseResponse(prev[tabName], response, action),
+        }));
+
+        initializeIndexerFilterForTab(tabName, response);
+      } catch (err) {
+        if (isLatestRequest()) {
+          const message = err instanceof Error ? err.message : 'Failed to fetch releases';
+          setErrorBySource((prev) => ({ ...prev, [tabName]: message }));
+        }
+      } finally {
+        if (isLatestRequest()) {
+          setLoadingBySource((prev) => ({ ...prev, [tabName]: false }));
+          clearSearchStatusForTab(tabName);
+        }
+      }
+```
+
+**Replace** in `src/frontend/src/hooks/releaseModal/useReleaseSearchSession.ts`:
+
+```ts
+      loadingBySource,
+      manualQuery,
+      releasesBySource,
+    ],
+  );
+  useMountEffect(() => {
+```
+
+with:
+
+```ts
+      loadingBySource,
+      releasesBySource,
+    ],
+  );
+  useMountEffect(() => {
+```
+
+**Replace** in `src/frontend/src/hooks/releaseModal/useReleaseSearchSession.ts`:
+
+```ts
+    indexerFilterInitializedRef.current = new Set<string>();
+    const nextInitialActiveTab
+```
+
+with:
+
+```ts
+    indexerFilterInitializedRef.current = new Set<string>();
+    // A new book or content type: back to the automatic search, and every response still
+    // in flight is superseded.
+    appliedManualQueryRef.current = defaultShowManualQuery ? defaultManualQuery : '';
+    displayedContextRef.current = {};
+    for (const tab of Object.keys(requestSeqRef.current)) {
+      requestSeqRef.current[tab] += 1;
+    }
+    const nextInitialActiveTab
+```
+
+**Replace** in `src/frontend/src/hooks/releaseModal/useReleaseSearchSession.ts`:
+
+```ts
+    setExpandedBySource({});
+    setErrorBySource({});
+    setReleasesBySource({});
+
+    void fetchReleaseResults(activeTab, {
+      force: true,
+      manualQueryOverride: manualSearchQuery,
+    });
+```
+
+with:
+
+```ts
+    setExpandedBySource({});
+    setErrorBySource({});
+    setReleasesBySource({});
+
+    // Submitting makes this the applied query: filters, tabs and expansion use it from now
+    // on, whatever the text field holds later.
+    appliedManualQueryRef.current = manualSearchQuery;
+    void fetchReleaseResults(activeTab, {
+      force: true,
+      manualQueryOverride: manualSearchQuery,
+    });
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npx vitest run src/tests/releaseSearchSession.test.ts`
-Expected: PASS (7 passed)
+Expected: PASS (17 passed)
 
 - [ ] **Step 5: Typecheck, lint, format, knip, full suite**
 
 ```bash
 npm run typecheck && npm run lint && npm run format:check
-npm run knip > /tmp/knip-task6.txt; diff /tmp/knip-main.txt /tmp/knip-task6.txt
+npm run knip > /tmp/knip-task7.txt; diff /tmp/knip-main.txt /tmp/knip-task7.txt
 npm run test:unit
 ```
-Expected: clean; knip diff only the `SourceSearchInfo` line number; vitest 394 passed.
+Expected: clean; knip diff only the `SourceSearchInfo` line number; vitest 407 passed.
 
 - [ ] **Step 6: Commit** (from the repository root)
 
@@ -2663,14 +3718,14 @@ Expected: clean; knip diff only the `SourceSearchInfo` line number; vitest 394 p
 git add src/frontend/src/hooks/releaseModal/releaseSearchSession.helpers.ts \
   src/frontend/src/hooks/releaseModal/useReleaseSearchSession.ts \
   src/frontend/src/tests/releaseSearchSession.test.ts
-git commit -m "fix(releases): keep manual results out of the book cache; refresh match data on expand
+git commit -m "fix(releases): track the query context of release results; refresh match data on expand
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 7: Full gates
+### Task 8: Full gates
 
 **Files:** none (verification only).
 
@@ -2688,7 +3743,7 @@ uv run basedpyright
 uv run basedpyright tests --skipunannotated
 uv run vulture shelfmark
 ```
-Expected: pytest — only the 9 known failures in `tests/config/test_entrypoint_permissions.py` (dry run: 4039 passed, 117 more than `main`); ruff clean (`418 files already formatted`); BasedPyright only the 4 known errors, at `shelfmark/main.py:2346-2349`; tests `0 errors`; vulture prints nothing. (Off a sandboxed host, also run without the `--deselect`.)
+Expected: pytest — only the 9 known failures in `tests/config/test_entrypoint_permissions.py` (dry run: 4097 passed, 175 more than `main`); ruff clean; BasedPyright only the 4 known errors, at `shelfmark/main.py:2353-2356`; tests `0 errors`; vulture prints nothing. (Off a sandboxed host, also run without the `--deselect`.)
 
 - [ ] **Step 2: Frontend gates** (`src/frontend`)
 
@@ -2696,20 +3751,20 @@ Expected: pytest — only the 9 known failures in `tests/config/test_entrypoint_
 npm run typecheck && npm run lint && npm run format:check && npm run test:unit
 npm run knip > /tmp/knip-final.txt; diff /tmp/knip-main.txt /tmp/knip-final.txt
 ```
-Expected: typecheck, lint, format clean; vitest 394 passed (31 more than `main`); knip exits 1 with exactly `main`'s findings — the diff shows only `SourceSearchInfo` at `src/types/index.ts:473` instead of `:463`.
+Expected: typecheck, lint, format clean; vitest 407 passed (44 more than `main`); knip exits 1 with exactly `main`'s findings — the diff shows only `SourceSearchInfo` at `src/types/index.ts:473` instead of `:463`.
 
 - [ ] **Step 3: Contract spot-check**
 
 ```bash
-grep -n '"release_match"\|"release_name"' shelfmark/main.py shelfmark/release_sources/prowlarr/source.py
+grep -n '"release_match"\|"release_name"\|irc_ranking_evidence(' shelfmark/main.py shelfmark/release_sources/prowlarr/source.py
 grep -n 'RELEASE_MATCH_VERSION = 1' shelfmark/core/search_queries.py src/frontend/src/utils/releaseMatch.ts
-git diff main --stat -- shelfmark/release_sources/irc shelfmark/release_sources/newznab shelfmark/release_sources/direct_download.py src/frontend/src/utils/releaseSort.ts src/frontend/src/utils/releaseCache.ts
+git diff main --stat -- shelfmark/release_sources/irc/source.py shelfmark/release_sources/newznab shelfmark/release_sources/direct_download.py src/frontend/src/utils/releaseSort.ts src/frontend/src/utils/releaseCache.ts
 ```
-Expected: the first prints the annotation and Prowlarr lines; the second prints one line per file; the third prints nothing (those files are unchanged).
+Expected: the first prints the annotation, IRC-evidence and Prowlarr lines; the second prints one line per file; the third prints nothing (those files are unchanged).
 
 ---
 
-### Task 8: Release and acceptance — USER-GATED, text only
+### Task 9: Release and acceptance — USER-GATED, text only
 
 Do not run any of this without the user's explicit OK for each push.
 
@@ -2718,13 +3773,14 @@ Do not run any of this without the user's explicit OK for each push.
 3. **UI acceptance** (spec "Acceptance") after the deploy: open High School DxD vol 5 and Overlord vol 2 with the **Default** sort and no format, language or indexer filter.
    - The right volume ranks above other volumes and manga, and those carry `Vol N` / `Manga/Comic` badges; a matching release carries none.
    - Choose a saved column sort (e.g. Size): it still applies, and badges still show.
-   - Run a manual search, close and reopen the book, expand the search: no unannotated manual rows reappear.
+   - Run a manual search, close and reopen the book, expand the search: no unannotated manual rows reappear; run a manual search and expand it: the manual rows are replaced or merged, never mixed with automatic rows.
 
 ---
 
 ## Self-review
 
-- **Spec coverage:** §1 evidence (original name, declared format, content type, structured author; precedence) → Tasks 1-3 (`release_name` Task 2; `_release_match_payload` Task 3); §2 classifier (medium rules 1-7, compatibility, bounded comic rule, explicit volume syntax, collection evidence, match/other, natural titles, author conflict, fan marker, totality) → Task 1; §3 identity → Task 1 `build_ranking_identity`, Task 3 `test_the_identity_comes_from_the_book_after_the_title_override`; §4 endpoint (when it applies, payload, audiobook/manual absent, per-release failure, informational) → Task 3; §5 ranking (one parser, tiers, dominance, empty candidates, no filtering, sorts unchanged, scores precomputed) → Task 4; §6 badges (outside the clamp, Fan TL? tooltip, no positive badge, compact text) → Task 5; §7 cache and merge → Task 6; Error handling → Tasks 1, 3, 4; Testing list → every named case has a test in Tasks 1-6 (source conversion: Task 2 and Task 3's MAM M4B and IRC cases); Acceptance and Rollout → Task 8.
+- **Spec coverage:** §1 evidence (original name, declared format, content type, structured author; precedence) → Tasks 1-4 (`release_name` Task 2; IRC line Task 3; `_release_match_payload` Task 4); §2 classifier (medium rules 1-7, compatibility, bounded comic rule, explicit volume syntax, collection evidence, match/other, natural titles incl. the amended bundle rule, author conflict, fan marker, totality) → Task 1; §3 identity → Task 1 `build_ranking_identity`, Task 4 `test_the_identity_comes_from_the_book_after_the_title_override`; §4 endpoint (when it applies, payload, audiobook/manual absent, per-release failure, informational) → Task 4; §5 ranking (one parser incl. the amended `other_volume` rule, tiers, dominance, empty candidates, no filtering, sorts unchanged, scores precomputed) → Task 5; §6 badges (outside the clamp, Fan TL? tooltip, no positive badge, compact text) → Task 6; §7 cache and merge → Task 7; Error handling → Tasks 1, 4, 5; Testing list → every named case has a test in Tasks 1-7 (source conversion: Task 2, Task 3 and Task 4's MAM M4B and IRC cases); Acceptance and Rollout → Task 9.
+- **Plan-review findings (Codex, on 507e053):** decimals and years → ruling 5, Task 1; `/` between volume numbers → ruling 7, Task 1; natural-title conjunctions → ruling 7a, Task 1 (spec revision 5 amended); volume 0 and the parser downgrade → rulings 7b and 17, Tasks 1 and 5 (spec §5 amended); volume-context ranges and masking → ruling 7, Task 1; per-contributor authors → ruling 9, Task 1; fan-marker separators → ruling 10, Task 1; malformed identities → ruling 11, Task 1; query context, applied query, discard → rulings 21-22, Task 7; malformed extras in the merge → ruling 23, Task 7; extracted orchestration and sort path → ruling 24, Tasks 5 and 7; IRC original line → ruling 16a, Tasks 3-4; scoring-boundary instrumentation → Task 5 `scores 2000 releases once each, outside the comparator`.
 - **Unchanged predicate:** `is_identity_hit`, `SearchIdentity` and their 189 tests are untouched (Task 1 adds code only after `any_identity_hit`).
-- **Type consistency:** `RankingIdentity`, `ReleaseMatch.to_payload()`, `build_ranking_identity`, `classify_release` (Task 1) are used with the same names and keywords in Task 3; the payload keys in Task 3 equal those `parseReleaseMatch` reads in Task 4; `parseReleaseMatch` feeds Tasks 4-5; `usesBookReleaseCache`/`mergeExpandedReleases` are defined and used in Task 6.
-- **Dry run:** every code block above was applied verbatim to a throwaway worktree of `main` at 571c879; each Step 2 failed for the stated reason and each Step 4-5 passed with the stated counts.
+- **Type consistency:** `RankingIdentity`, `ReleaseMatch.to_payload()`, `build_ranking_identity`, `classify_release` (Task 1) and `ranking_evidence` (Task 3) are used with the same names and keywords in Task 4; the payload keys in Task 4 equal those `parseReleaseMatch` reads in Task 5; `parseReleaseMatch` feeds Tasks 5-6; the Task 7 helpers are defined and used in Task 7 only.
+- **Dry run:** every code block above was applied verbatim to a throwaway worktree of `main` (with this plan and the amended spec); each Step 2 failed for the stated reason and each Step 4-5 passed with the stated counts.
