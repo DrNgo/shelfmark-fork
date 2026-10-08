@@ -545,21 +545,31 @@ _RANK_COLLECTION_RE = re.compile(
     r"|\bbooks[\s.-]*\d{1,3}" + _RANK_RANGE_SEPARATOR + r"\d{1,3}(?!\d)",
     re.IGNORECASE,
 )
-# A conjunction right after the requested title: "Leviathan Wakes & Caliban's War".
-_RANK_CONJUNCTION_RE = re.compile(r"\s*(?:&|\+|/|\band\b)\s*", re.IGNORECASE)
 # Where a run of title-like words ends: a bracket, a parenthesis or " - ".
 _RANK_SEGMENT_END_RE = re.compile(r"[\[\](){}]|\s-\s")
 # A revision tag in brackets, "[v2]" or "(v1.0)": not a volume. A bare "v2" is.
 _RANK_REVISION_TAG_RE = re.compile(r"[(\[]\s*v\d+(?:\.\d+)*\s*[)\]]", re.IGNORECASE)
-# A contributor role after a name: "Kugane Maruyama (Author)".
-_AUTHOR_ROLE_RE = re.compile(
-    r"\(\s*(?:author|illustrator|translator|artist|editor|narrator)s?\s*\)", re.IGNORECASE
-)
+# Any bracketed or parenthesised annotation in an author field: "(Author)", "[Autor]".
+_AUTHOR_ANNOTATION_RE = re.compile(r"\([^)]*\)|\[[^\]]*\]")
 # A separator that can join two titles in one release name, after or before a title.
 _RANK_TITLE_SEPARATOR = r"(?:\s*[,;|&+/]\s*|\s+-\s+|\s*\band\b\s*)"
 _RANK_TITLE_SEPARATOR_RE = re.compile(_RANK_TITLE_SEPARATOR)
 _RANK_TITLE_SEPARATOR_END_RE = re.compile(_RANK_TITLE_SEPARATOR + r"$")
+_ARTICLES = frozenset({"the", "a", "an"})
 _PAGE_WORDS = frozenset({"page", "pages"})
+# Words that decorate a release name without naming another book: edition and language
+# notes, number words, and publishers commonly prefixed to a title.
+_NEUTRAL_WORDS = frozenset(
+    {
+        "retail", "ebook", "kindle", "edition", "editions", "anniversary", "illustrated",
+        "unabridged", "abridged", "english", "eng", "en", "novel", "book", "books", "series",
+        "saga", "digital", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth",
+        "ninth", "tenth", "one", "two", "three", "four", "five", "six", "seven", "eight",
+        "nine", "ten", "orbit", "tor", "del", "rey", "yen", "press", "on", "seas", "peace",
+        "club", "penguin", "harpercollins", "scholastic", "bloomsbury",
+    }
+)  # fmt: skip
+_ORDINAL_RE = re.compile(r"\d+(?:st|nd|rd|th)")
 _RANK_BRACKET_RE = re.compile(r"[\[\](){}]")
 # Author names that say nothing about who wrote the book.
 _PLACEHOLDER_AUTHORS = frozenset({"unknown", "various", "anonymous", "n/a", "na", "none"})
@@ -612,9 +622,13 @@ def is_comic_book(title: object, series_name: object) -> bool:
     return _RANK_COMIC_WORD_RE.search(f"{title_text} {series_text}") is not None
 
 
+_APOSTROPHES = "'`\u00b4\u02bc\u2018\u2019"
+_FOLD_TABLE = str.maketrans("", "", _APOSTROPHES)
+
+
 def _fold(text: str) -> str:
-    """Drop apostrophes so "Caliban's" and "Calibans" tokenise alike (ranking only)."""
-    return text.replace("'", "").replace("\u2019", "").replace("\u2018", "")
+    """Drop apostrophe variants so "Caliban's" and "Calibans" tokenise alike (ranking only)."""
+    return text.translate(_FOLD_TABLE)
 
 
 def _clean_strings(values: object) -> tuple[str, ...]:
@@ -741,10 +755,55 @@ def _token_spans(text: str) -> list[tuple[str, int, int]]:
     return [(m.group(0), m.start(), m.end()) for m in _TOKEN_RE.finditer(text)]
 
 
-def _title_words(segment: str, own_words: frozenset[str]) -> list[str]:
-    """Title-like words of ``segment``: not formats, numbers, page counts or series words."""
-    skip = _ALL_FORMATS | _PAGE_WORDS | _STOPWORDS | own_words
-    return [t for t in _tokens(segment) if t not in skip and not t.isdigit()]
+def _title_words(
+    segment: str, own_words: frozenset[str], author_words: frozenset[str]
+) -> list[str]:
+    """Words of ``segment`` that could belong to another title.
+
+    Not: formats, numbers, ordinals, initials, page counts, stopwords, series-key words,
+    requested-author words and the neutral edition/language/publisher words.
+    """
+    skip = _ALL_FORMATS | _PAGE_WORDS | _STOPWORDS | _NEUTRAL_WORDS | own_words | author_words
+    return [
+        t
+        for t in _tokens(segment)
+        if t not in skip and len(t) > 1 and not t.isdigit() and not _ORDINAL_RE.fullmatch(t)
+    ]
+
+
+def _title_span(text: str, wanted: set[str]) -> tuple[int, int] | None:
+    """Where the requested title sits in ``text``: first completion, walked back to its start.
+
+    The span starts at the last occurrence of each title word before the first place all
+    of them have been seen (so a series name repeated in a bundle anchors on the right
+    copy) and takes the articles right before it ("The", "A", "An").
+    """
+    spans = _token_spans(text)
+    seen: set[str] = set()
+    last = None
+    for index, (token, _start, _end) in enumerate(spans):
+        if token in wanted:
+            seen.add(token)
+            if seen == wanted:
+                last = index
+                break
+    if last is None:
+        return None
+    collected: set[str] = set()
+    first = last
+    for index in range(last, -1, -1):
+        if spans[index][0] in wanted and spans[index][0] not in collected:
+            collected.add(spans[index][0])
+            first = index
+            if collected == wanted:
+                break
+    while (
+        first > 0
+        and spans[first - 1][0] in _ARTICLES
+        and not text[spans[first - 1][2] : spans[first][1]].strip()
+    ):
+        first -= 1
+    return spans[first][1], spans[last][2]
 
 
 def _title_joined_to_more(
@@ -754,43 +813,31 @@ def _title_joined_to_more(
 
     "Leviathan Wakes & Caliban's War" and "Caliban's War, Leviathan Wakes" name two books.
     The separators are ",", ";", "|", " - " and the conjunctions "&", "+", "/", "and". Not
-    when the other words are a requested author's ("Leviathan Wakes & James S. A. Corey",
-    "James S. A. Corey - Leviathan Wakes"), or only format words, numbers and years. After
-    the title a conjunction in a segment that a " - " closes is an author segment.
+    when the other words are only a requested author's, series words, formats, numbers,
+    edition or language notes or a publisher ("Orbit - Leviathan Wakes"). The segment on
+    either side is cut at a bracket or " - ", so an author prefix is never part of it. A
+    before-segment that names a requested author is an author credit and is left alone.
     """
-    wanted = set(title_tokens)
-    seen: set[str] = set()
-    start = end = None
-    for token, token_start, token_end in _token_spans(text):
-        if token in wanted:
-            if token not in seen:
-                start = token_start if start is None else min(start, token_start)
-            seen.add(token)
-            if seen == wanted:
-                end = token_end
-                break
-    if start is None or end is None:
+    span = _title_span(text, set(title_tokens))
+    if span is None:
         return False
-    author_tokens = [set(_tokens(author)) for author in authors]
+    start, end = span
+    author_words = frozenset(t for author in authors for t in _tokens(author))
 
     separator = _RANK_TITLE_SEPARATOR_RE.match(text, end)
     if separator is not None:
         rest = text[separator.end() :]
         segment_end = _RANK_SEGMENT_END_RE.search(rest)
-        closed_by_dash = segment_end is not None and segment_end.group(0).strip() == "-"
-        conjunction = _RANK_CONJUNCTION_RE.fullmatch(separator.group(0)) is not None
-        if not (conjunction and closed_by_dash):
-            segment = rest[: segment_end.start()] if segment_end is not None else rest
-            words = _title_words(segment, own_words)
-            if words and not any(set(words) <= tokens for tokens in author_tokens):
-                return True
+        segment = rest[: segment_end.start()] if segment_end is not None else rest
+        if _title_words(segment, own_words, author_words):
+            return True
 
     before = _RANK_TITLE_SEPARATOR_END_RE.search(text, 0, start)
     if before is not None:
-        preceding = _RANK_BRACKET_RE.split(text[: before.start()])[-1]
-        words = _title_words(preceding, own_words)
-        known = set().union(*author_tokens)
-        if words and not set(words) & known:
+        preceding = _RANK_SEGMENT_END_RE.split(text[: before.start()])[-1]
+        if _title_words(preceding, own_words, author_words) and not (
+            set(_tokens(preceding)) & author_words
+        ):
             return True
     return False
 
@@ -821,7 +868,11 @@ def _volume(text: str, identity: RankingIdentity) -> tuple[Volume, int | None]:
             return "unknown", None
         # A natural-title book named in full: a series number that disagrees is reading
         # order against publication order, not another volume.
-        if not identity.title_names_volume and _names_whole_title(present, identity):
+        if (
+            not identity.title_names_volume
+            and _names_whole_title(present, identity)
+            and any(token not in key_tokens for token in identity.title_tokens)
+        ):
             return "unknown", None
         return "other", number
 
@@ -863,7 +914,7 @@ def _author_conflicts(release_author: object, identity: RankingIdentity) -> bool
     """
     if not isinstance(release_author, str):
         return False
-    text = _AUTHOR_ROLE_RE.sub(" ", _fold(html.unescape(release_author)))
+    text = _AUTHOR_ANNOTATION_RE.sub(" ", _fold(html.unescape(release_author)))
     if " ".join(text.split()).casefold() in _PLACEHOLDER_AUTHORS:
         return False
     own_words = set(identity.title_tokens) | set(significant_tokens(identity.series_key))

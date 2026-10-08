@@ -1666,3 +1666,119 @@ class TestRankingFixRound1:
     )
     def test_fan_marker_plurals(self, name):
         assert _classify(name, DXD5_RANK).fan_marker is True
+
+
+MISTBORN1_RANK = _ranking("The Final Empire", "Mistborn", 1, ("Brandon Sanderson",))
+MISTBORN_BARE_RANK = _ranking("Mistborn", "Mistborn", 1, ("Brandon Sanderson",))
+LWW_RANK = _ranking(
+    "The Lion, the Witch and the Wardrobe", "The Chronicles of Narnia", 2, ("C. S. Lewis",)
+)
+HP2_RANK = _ranking(
+    "Harry Potter and the Chamber of Secrets", "Harry Potter", 2, ("J. K. Rowling",)
+)
+DUNE_RANK = _ranking("Dune", "Dune Chronicles", 1, ("Frank Herbert",))
+
+
+class TestRankingFixRound2:
+    """Scoped re-review findings (2026-10-08, round 2)."""
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "The Well of Ascension, The Final Empire",
+            "The Well of Ascension & The Final Empire",
+            "The Well of Ascension / The Final Empire",
+            "The Well of Ascension and The Final Empire",
+            "Brandon Sanderson - The Hero of Ages; The Final Empire (epub)",
+        ],
+    )
+    def test_before_side_anchors_on_the_leading_article(self, name):
+        assert _volume(name, MISTBORN1_RANK) == ("unknown", None)
+
+    def test_before_side_with_an_article_title(self):
+        name = "The Magician's Nephew, The Lion, the Witch and the Wardrobe"
+        assert _volume(name, LWW_RANK) == ("unknown", None)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "James S. A. Corey - Caliban's War, Leviathan Wakes",
+            "James S. A. Corey - Caliban's War & Leviathan Wakes",
+            "Corey - Caliban's War, Leviathan Wakes",
+        ],
+    )
+    def test_the_before_segment_stops_at_a_dash(self, name):
+        assert _volume(name, LEVIATHAN_RANK) == ("unknown", None)
+
+    def test_a_series_titled_book_anchors_on_the_full_title_phrase(self):
+        name = "Harry Potter and the Philosopher's Stone, Harry Potter and the Chamber of Secrets"
+        assert _volume(name, HP2_RANK) == ("unknown", None)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Leviathan Wakes - Retail",
+            "Leviathan Wakes - English",
+            "Leviathan Wakes - eng",
+            "Leviathan Wakes - Unabridged",
+            "Leviathan Wakes - Kindle Edition",
+            "Leviathan Wakes - Second Edition",
+            "Leviathan Wakes - 10th Anniversary Edition",
+            "Leviathan Wakes - A Novel",
+            "Leviathan Wakes, A Novel",
+            "Leviathan Wakes - Book One",
+            "Leviathan Wakes - Expanse Series",
+            "Leviathan Wakes - J.S.A. Corey",
+            "eBook - Leviathan Wakes",
+            "EN - Leviathan Wakes",
+            "Orbit - Leviathan Wakes",
+            "Expanse Series - Leviathan Wakes",
+            "The Expanse Book One - Leviathan Wakes",
+            "Yen Press - Leviathan Wakes",
+            "Del Rey, Leviathan Wakes",
+        ],
+    )
+    def test_neutral_segments_are_not_another_title(self, name):
+        assert _volume(name, LEVIATHAN_RANK) == ("match", None)
+
+    def test_a_neutral_segment_after_a_series_titled_book(self):
+        name = "Harry Potter and the Chamber of Secrets - Illustrated Edition"
+        assert _volume(name, HP2_RANK) == ("match", None)
+
+    def test_a_closing_dash_no_longer_excuses_a_conjoined_title(self):
+        name = "Leviathan Wakes and Caliban's War - James S. A. Corey"
+        assert _volume(name, LEVIATHAN_RANK) == ("unknown", None)
+        name = "Leviathan Wakes James S. A. Corey & Daniel Abraham EPUB"
+        assert _volume(name, LEVIATHAN_RANK) == ("match", None)
+
+    @pytest.mark.parametrize(
+        ("name", "identity", "expected"),
+        [
+            ("Dune Messiah (Dune Chronicles #2) - Frank Herbert", DUNE_RANK, 2),
+            ("Children of Dune (Dune Chronicles #3)", DUNE_RANK, 3),
+            ("Mistborn 2 - The Well of Ascension", MISTBORN_BARE_RANK, 2),
+        ],
+    )
+    def test_a_series_word_title_still_names_another_volume(self, name, identity, expected):
+        assert _volume(name, identity) == ("other", expected)
+
+    def test_dune_with_a_bare_series_name(self):
+        dune = _ranking("Dune", "Dune", 1, ("Frank Herbert",))
+        assert _volume("Dune 2 - Dune Messiah", dune) == ("other", 2)
+
+    @pytest.mark.parametrize(
+        "author",
+        [
+            "Kugane Maruyama [Author]",
+            "Kugane Maruyama (Autor)",
+            "Kugane Maruyama (Original Author)",
+        ],
+    )
+    def test_any_bracketed_author_annotation_is_dropped(self, author):
+        assert _classify("Overlord v02 (epub)", OVERLORD2_RANK, author=author).volume == "match"
+
+    @pytest.mark.parametrize("mark", ["`", "´", "ʼ", "‘", "’", "'"])
+    def test_apostrophe_variants_fold_in_names_and_identity(self, mark):
+        assert _volume(f"Caliban{mark}s War (epub)", CALIBAN_RANK) == ("match", None)
+        folded = _ranking(f"Caliban{mark}s War", "The Expanse", 2)
+        assert _volume("Calibans War (epub)", folded) == ("match", None)
