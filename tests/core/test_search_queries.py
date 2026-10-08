@@ -213,15 +213,14 @@ MEASURED_BOOKS = [
             DXD,
             5,
         ),
-        f"{DXD}, Vol. 5: Hellcat of the Underworld Training Camp",
+        # No subtitle: today's query is the full title with "(Light Novel)" removed,
+        # which is also the cleaned-title rung, so that rung is not sent twice.
+        "High School DxD Vol. 5 Hellcat of the Underworld Training Camp",
         [
             "High School DxD Vol. 5",
             "High School DxD v05",
             "Hellcat of the Underworld Training Camp",
             "High School DxD Volume 05",
-            # Today's query is sent uncleaned ("(Light Novel), Vol. 5:"), so the
-            # cleaned full title is a different request and stays.
-            "High School DxD Vol. 5 Hellcat of the Underworld Training Camp",
         ],
     ),
     (
@@ -233,40 +232,39 @@ MEASURED_BOOKS = [
             DXD,
             6,
         ),
-        f"{DXD}, Vol. 6: Holy Behind the Gymnasium",
+        # No subtitle: today's query is the full title with "(Light Novel)" removed,
+        # which is also the cleaned-title rung, so that rung is not sent twice.
+        "High School DxD Vol. 6 Holy Behind the Gymnasium",
         [
             "High School DxD Vol. 6",
             "High School DxD v06",
             "Holy Behind the Gymnasium",
             "High School DxD Volume 06",
-            # Today's query is sent uncleaned ("(Light Novel), Vol. 6:"), so the
-            # cleaned full title is a different request and stays.
-            "High School DxD Vol. 6 Holy Behind the Gymnasium",
         ],
     ),
     (
         _endpoint_book(1282767, f"{SH}, Vol. 3", None, ["Aneko Yusagi"], SH, 3),
-        f"{SH}, Vol. 3",
+        # Today's query is the cleaned title, which is also rung 1.
+        "The Rising of the Shield Hero Vol. 3",
         [
-            "The Rising of the Shield Hero Vol. 3",
             "The Rising of the Shield Hero v03",
             "The Rising of the Shield Hero Volume 03",
         ],
     ),
     (
         _endpoint_book(1283002, f"{SH}, Vol. 8", None, ["Aneko Yusagi"], SH, 8),
-        f"{SH}, Vol. 8",
+        # Today's query is the cleaned title, which is also rung 1.
+        "The Rising of the Shield Hero Vol. 8",
         [
-            "The Rising of the Shield Hero Vol. 8",
             "The Rising of the Shield Hero v08",
             "The Rising of the Shield Hero Volume 08",
         ],
     ),
     (
         _endpoint_book(1561928, f"{SH}, Vol. 15", "The Manga Companion", ["Aneko Yusagi"], SH, 15),
-        f"{SH}, Vol. 15",
+        # Today's query is the cleaned title, which is also rung 1.
+        "The Rising of the Shield Hero Vol. 15",
         [
-            "The Rising of the Shield Hero Vol. 15",
             "The Rising of the Shield Hero v15",
             "The Rising of the Shield Hero Volume 15",
         ],

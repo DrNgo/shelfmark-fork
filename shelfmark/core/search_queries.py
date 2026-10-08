@@ -67,6 +67,11 @@ def clean_query(text: object) -> str:
     return " ".join(re.sub(r"[:,]", " ", without_labels).split())
 
 
+def has_medium_label(text: object) -> bool:
+    """Whether ``text`` carries a medium label such as "(Light Novel)"."""
+    return isinstance(text, str) and _MEDIUM_LABEL_RE.search(text) is not None
+
+
 def query_key(text: object) -> str:
     """How two *ladder* queries are compared: cleaned, so punctuation does not count."""
     return clean_query(text).casefold()

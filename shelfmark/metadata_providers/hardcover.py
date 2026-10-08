@@ -15,6 +15,7 @@ from shelfmark.core.cache import cache_key, cacheable, get_metadata_cache
 from shelfmark.core.config import config as app_config
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.request_helpers import coerce_bool, coerce_int, normalize_optional_text
+from shelfmark.core.search_queries import clean_query, has_medium_label
 from shelfmark.core.settings_registry import (
     ActionButton,
     CheckboxField,
@@ -1040,6 +1041,12 @@ def _compute_search_title(
                 candidate = _strip_parenthetical_suffix(candidate)
                 if candidate and candidate.lower() != normalized_title.lower():
                     return candidate
+
+    # The full title it is: a medium label like "(Light Novel)" is in no release name.
+    if has_medium_label(original_title):
+        cleaned = clean_query(original_title)
+        if cleaned and cleaned.lower() != original_title.lower():
+            return cleaned
 
     # Last resort: return a cleaned version of the title if we removed noise.
     if normalized_title and normalized_title.lower() != original_title.lower():

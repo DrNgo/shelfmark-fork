@@ -33,3 +33,36 @@ class TestHardcoverComputeSearchTitle:
 
     def test_returns_none_when_no_useful_simplification(self):
         assert _compute_search_title("Dune", None) is None
+
+    def test_strips_a_medium_label_when_falling_back_to_the_full_title(self):
+        # No subtitle: today's query was the full title, "(Light Novel)" included,
+        # which no release name carries.
+        assert (
+            _compute_search_title(
+                "High School DxD (Light Novel), Vol. 5: Hellcat of the Underworld Training Camp",
+                None,
+                series_name="High School DxD (Light Novel)",
+            )
+            == "High School DxD Vol. 5 Hellcat of the Underworld Training Camp"
+        )
+        assert (
+            _compute_search_title(
+                "The Rising of the Shield Hero (Light Novel), Vol. 8",
+                None,
+                series_name="The Rising of the Shield Hero (Light Novel)",
+            )
+            == "The Rising of the Shield Hero Vol. 8"
+        )
+
+    def test_keeps_a_manga_label(self):
+        assert _compute_search_title("Overlord (Manga), Vol. 5", None) is None
+
+    def test_a_chosen_subtitle_is_unchanged(self):
+        assert (
+            _compute_search_title(
+                "High School DxD (Light Novel), Vol. 4: Vampire of the Suspended Classroom",
+                "Vampire of the Suspended Classroom",
+                series_name="High School DxD (Light Novel)",
+            )
+            == "Vampire of the Suspended Classroom"
+        )

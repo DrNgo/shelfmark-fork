@@ -116,7 +116,7 @@ def test_the_harness_runs_the_production_path_and_counts_requests(
     results = harness.run_books([dxd5, housemaid], lambda: _FakeProwlarr(answers))
 
     assert [(r.requests, r.fallback_variants, len(r.releases)) for r in results] == [
-        (3, 5, 1),
+        (3, 4, 1),
         (1, 0, 2),
     ]
     assert results[0].suspect == ["High School DxD v05 (2015) (Digital) (danke-Empire)"]
