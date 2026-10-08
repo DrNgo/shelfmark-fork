@@ -192,6 +192,34 @@ def parse_result_line(line: str) -> SearchResult | None:
     return None
 
 
+# What release ranking reads from a result line: the line without the "!Bot" command and
+# the trailing "::INFO::"/"::HASH::" metadata.
+_RANKING_COMMAND_RE = re.compile(r"^!\S+\s+")
+_RANKING_TRAILER_RE = re.compile(r"\s+::(?:INFO|HASH)::.*$", re.IGNORECASE | re.DOTALL)
+
+
+def ranking_evidence(full_line: object) -> tuple[str, str | None] | None:
+    """The release name and author release ranking should use for a result line.
+
+    The name is the original line minus the bot command and the trailing metadata, so the
+    words the parser split off as "author" (often the series: "!Bot Overlord - Volume
+    2.epub") still count. The author is trusted only when the detailed
+    "Author - Title.format" pattern matched; the fallback split is a guess, so it is
+    reported as missing. None when ``full_line`` is not a result line.
+    """
+    if not isinstance(full_line, str):
+        return None
+    line = full_line.strip()
+    command = _RANKING_COMMAND_RE.match(line)
+    if command is None:
+        return None
+    name = _RANKING_TRAILER_RE.sub("", line[command.end() :]).strip()
+    if not name:
+        return None
+    detailed = RESULT_LINE_REGEX.match(line)
+    return name, detailed.group(2).strip() if detailed else None
+
+
 # Words that mark an archive as holding an audiobook rather than an ebook. Multi-file
 # audiobooks ship as .rar/.zip, so for those the extension says nothing about the content
 # and the release name is the only evidence there is.
