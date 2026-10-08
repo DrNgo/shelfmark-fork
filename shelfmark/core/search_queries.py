@@ -592,6 +592,9 @@ class RankingIdentity:
     title_names_volume: bool = True
     book_is_comic: bool = False
     authors: tuple[str, ...] = ()
+    # The series name before a colon ("Mushoku Tensei" of "Mushoku Tensei: Jobless
+    # Reincarnation"), which release names often use alone; "" when there is none.
+    short_series_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -663,7 +666,24 @@ def build_ranking_identity(
         title_names_volume=search_identity.title_names_volume,
         book_is_comic=is_comic_book(title, series_name),
         authors=_clean_strings(authors),
+        short_series_key=_short_series_key(series_name, search_identity.series_key),
     )
+
+
+def _short_series_key(series_name: object, series_key: str) -> str:
+    """The pre-colon segment of ``series_name`` as a key, when it differs from the full key.
+
+    Only with at least one significant (non-stopword) token: "The: Saga" gives none.
+    """
+    if not series_key or not isinstance(series_name, str) or ":" not in series_name:
+        return ""
+    short = clean_query(_fold(series_name).split(":", 1)[0])
+    tokens = _tokens(short)
+    if not any(t not in _STOPWORDS for t in tokens):
+        return ""
+    if significant_tokens(short) == significant_tokens(series_key):
+        return ""
+    return short
 
 
 def _sanitize_identity(identity: object) -> RankingIdentity:
@@ -674,6 +694,8 @@ def _sanitize_identity(identity: object) -> RankingIdentity:
     if isinstance(position, bool) or not isinstance(position, int) or position < 0:
         position = None
     series_key = _fold(identity.series_key) if isinstance(identity.series_key, str) else ""
+    short_key = identity.short_series_key
+    short_series_key = _fold(short_key) if series_key and isinstance(short_key, str) else ""
     return RankingIdentity(
         series_key=series_key,
         position=position,
@@ -681,6 +703,7 @@ def _sanitize_identity(identity: object) -> RankingIdentity:
         title_names_volume=identity.title_names_volume is not False,
         book_is_comic=identity.book_is_comic is True,
         authors=tuple(_fold(a) for a in _clean_strings(identity.authors)),
+        short_series_key=short_series_key,
     )
 
 
@@ -715,10 +738,20 @@ def _medium(text: str, formats: set[str], content_type: str, own_tokens: set[str
     return "unknown"
 
 
-def _series_volume_res(series_tokens: tuple[str, ...]) -> list[re.Pattern[str]]:
-    if not series_tokens:
-        return []
-    last = re.escape(series_tokens[-1])
+def _last_tokens(keys: Sequence[tuple[str, ...]]) -> list[str]:
+    """The last token of each non-empty key, without repeats (order kept)."""
+    return list(dict.fromkeys(key[-1] for key in keys if key))
+
+
+def _series_volume_res(keys: Sequence[tuple[str, ...]]) -> list[re.Pattern[str]]:
+    return [
+        pattern
+        for last_token in _last_tokens(keys)
+        for pattern in _series_number_res(re.escape(last_token))
+    ]
+
+
+def _series_number_res(last: str) -> list[re.Pattern[str]]:
     return [
         # "[Overlord 02]" (and "[Overlord - Volume 02]", which "Volume" already covers).
         re.compile(rf"\b{last}(?:\s+|[.-])(\d{{1,3}})\s*\]"),
@@ -731,10 +764,10 @@ def _series_volume_res(series_tokens: tuple[str, ...]) -> list[re.Pattern[str]]:
     ]
 
 
-def _explicit_volumes(text: str, series_tokens: tuple[str, ...]) -> set[int] | None:
+def _explicit_volumes(text: str, keys: Sequence[tuple[str, ...]]) -> set[int] | None:
     """Volume numbers ``text`` names in explicit syntax; None when one is not a whole volume."""
     numbers: set[int] = set()
-    for pattern in [*_RANK_VOLUME_RES, *_series_volume_res(series_tokens)]:
+    for pattern in [*_RANK_VOLUME_RES, *_series_volume_res(keys)]:
         for match in pattern.finditer(text):
             if _RANK_PARTIAL_VOLUME_RE.match(text, match.end(1)):
                 return None
@@ -742,11 +775,11 @@ def _explicit_volumes(text: str, series_tokens: tuple[str, ...]) -> set[int] | N
     return numbers
 
 
-def _has_volume_list(text: str, series_tokens: tuple[str, ...]) -> bool:
+def _has_volume_list(text: str, keys: Sequence[tuple[str, ...]]) -> bool:
     """A range or list of volume numbers right after a volume marker or the series name."""
     patterns = list(_RANK_VOLUME_RES)
-    if series_tokens:
-        last = re.escape(series_tokens[-1])
+    for last_token in _last_tokens(keys):
+        last = re.escape(last_token)
         patterns.append(re.compile(rf"\b{last}(?:\s+|[.-])(\d{{1,3}})(?!\d)"))
     for pattern in patterns:
         for match in pattern.finditer(text):
@@ -855,14 +888,18 @@ def _volume(text: str, identity: RankingIdentity) -> tuple[Volume, int | None]:
     if not identity.series_key or identity.position is None:
         return "unknown", None
     key_tokens = significant_tokens(identity.series_key)
-    if _RANK_COLLECTION_RE.search(text) or _has_volume_list(text, key_tokens):
+    keys = [key_tokens]
+    if identity.short_series_key:
+        keys.append(significant_tokens(identity.short_series_key))
+    if _RANK_COLLECTION_RE.search(text) or _has_volume_list(text, keys):
         return "unknown", None
-    numbers = _explicit_volumes(text, key_tokens)
+    numbers = _explicit_volumes(text, keys)
     if numbers is None or len(numbers) > 1:
         return "unknown", None
 
     present = set(_tokens(text))
-    has_key = bool(key_tokens) and all(token in present for token in key_tokens)
+    # Either key in full: the whole series name, or the part before its colon.
+    has_key = any(key and all(token in present for token in key) for key in keys)
     if numbers and has_key:
         (number,) = numbers
         if number == identity.position:

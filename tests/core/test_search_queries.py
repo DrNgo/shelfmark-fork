@@ -1782,3 +1782,47 @@ class TestRankingFixRound2:
         assert _volume(f"Caliban{mark}s War (epub)", CALIBAN_RANK) == ("match", None)
         folded = _ranking(f"Caliban{mark}s War", "The Expanse", 2)
         assert _volume("Calibans War (epub)", folded) == ("match", None)
+
+
+MUSHOKU = "Mushoku Tensei: Jobless Reincarnation (Light Novel)"
+MUSHOKU3_RANK = _ranking(f"{MUSHOKU}, Vol. 3", MUSHOKU, 3, ("Rifujin na Magonote",))
+SHIELD3_RANK = _ranking(
+    "The Rising of the Shield Hero Volume 03", "The Rising of the Shield Hero", 3
+)
+
+
+class TestRankingShortSeriesKey:
+    """Final review: the pre-colon segment of a series name is a key of its own."""
+
+    def test_the_identity_carries_the_pre_colon_key(self):
+        assert MUSHOKU3_RANK.series_key == "Mushoku Tensei Jobless Reincarnation"
+        assert MUSHOKU3_RANK.short_series_key == "Mushoku Tensei"
+
+    def test_no_short_key_without_a_colon(self):
+        assert OVERLORD2_RANK.short_series_key == ""
+        assert SHIELD3_RANK.short_series_key == ""
+
+    def test_the_short_key_names_the_requested_volume(self):
+        assert _volume("Mushoku Tensei Vol. 3 (Light Novel) [EPUB]", MUSHOKU3_RANK) == (
+            "match",
+            None,
+        )
+
+    @pytest.mark.parametrize(
+        "name",
+        ["Mushoku Tensei Vol. 7 [EPUB]", "Mushoku Tensei v07 (2020) (Digital) (1r0n)"],
+    )
+    def test_the_short_key_names_another_volume(self, name):
+        assert _volume(name, MUSHOKU3_RANK) == ("other", 7)
+
+    def test_a_series_number_after_the_short_key(self):
+        assert _volume("Mushoku Tensei 07 (Digital)", MUSHOKU3_RANK) == ("other", 7)
+
+    def test_the_full_key_still_works(self):
+        name = "Mushoku Tensei - Jobless Reincarnation Vol. 3 (epub)"
+        assert _volume(name, MUSHOKU3_RANK) == ("match", None)
+
+    def test_a_series_without_a_colon_has_no_shortened_key(self):
+        # Known limit: "The Rising of the Shield Hero" has no colon, so "Shield Hero" is
+        # not a key and the release stays unknown.
+        assert _volume("Shield Hero v03", SHIELD3_RANK) == ("unknown", None)
