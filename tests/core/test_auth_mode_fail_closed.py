@@ -25,7 +25,7 @@ def test_fault_reading_config_does_not_open(error):
         assert load_active_auth_mode() == AUTH_MODE_UNAVAILABLE
 
 
-@pytest.mark.parametrize("auth_method", ["abs", "oidc", "builtin", "proxy", "cwa", "wat"])
+@pytest.mark.parametrize("auth_method", ["oidc", "builtin", "proxy", "cwa", "wat"])
 def test_configured_or_unknown_method_never_resolves_open(auth_method):
     with patch("shelfmark.core.config.config.get", return_value=auth_method):
         assert load_active_auth_mode() != OPEN_MODE

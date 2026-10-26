@@ -16,13 +16,11 @@ AUTH_SOURCE_BUILTIN = "builtin"
 AUTH_SOURCE_OIDC = "oidc"
 AUTH_SOURCE_PROXY = "proxy"
 AUTH_SOURCE_CWA = "cwa"
-AUTH_SOURCE_ABS = "abs"
 AUTH_SOURCES = (
     AUTH_SOURCE_BUILTIN,
     AUTH_SOURCE_OIDC,
     AUTH_SOURCE_PROXY,
     AUTH_SOURCE_CWA,
-    AUTH_SOURCE_ABS,
 )
 AUTH_SOURCE_SET = frozenset(AUTH_SOURCES)
 AUTH_MODE_NONE = "none"
@@ -83,7 +81,7 @@ def is_user_active_for_auth_mode(user: Mapping[str, Any], auth_mode: str) -> boo
     """Return whether a user can authenticate under the current auth mode."""
     source = normalize_auth_source(user.get("auth_source"), user.get("oidc_subject"))
     if source == AUTH_SOURCE_BUILTIN:
-        return auth_mode in (AUTH_SOURCE_BUILTIN, AUTH_SOURCE_OIDC, AUTH_SOURCE_ABS)
+        return auth_mode in (AUTH_SOURCE_BUILTIN, AUTH_SOURCE_OIDC)
     return source == auth_mode
 
 

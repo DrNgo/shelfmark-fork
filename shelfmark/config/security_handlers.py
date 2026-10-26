@@ -16,8 +16,6 @@ if TYPE_CHECKING:
 logger = setup_logger(__name__)
 
 _OIDC_LOCKOUT_MESSAGE = "A local admin account with a password is required before enabling OIDC. Use the 'Go to Users' button above to create one. This ensures you can still sign in if your identity provider is unavailable."
-_ABS_LOCKOUT_MESSAGE = "A local admin account with a password is required before enabling Audiobookshelf authentication. Use the 'Go to Users' button above to create one. This ensures you can still sign in if Audiobookshelf is unavailable."
-_ABS_NOT_CONFIGURED_MESSAGE = "Audiobookshelf authentication requires the Audiobookshelf connection to be enabled and its URL configured in the Audiobookshelf settings tab."
 _BUILTIN_LOCKOUT_MESSAGE = "A local admin account with a password is required before enabling Local authentication. Use the 'Go to Users' button above to create one, otherwise nobody could sign in as an admin."
 _OIDC_REQUIRED_FIELDS = (
     ("OIDC_DISCOVERY_URL", "Discovery URL"),
@@ -99,33 +97,6 @@ def on_save_security(
                 "message": f"OIDC configuration is incomplete: missing {missing_fields_text}.",
                 "values": normalized_values,
             }
-
-    if auth_method == "abs":
-        if not DISABLE_LOCAL_AUTH and not _has_local_password_admin():
-            return {"error": True, "message": _ABS_LOCKOUT_MESSAGE, "values": normalized_values}
-
-        from shelfmark.core.config import config as app_config
-
-        abs_enabled = bool(app_config.get("AUDIOBOOKSHELF_ENABLED", False))
-        abs_url = str(app_config.get("AUDIOBOOKSHELF_URL", "") or "").strip()
-        if not abs_enabled or not abs_url:
-            return {
-                "error": True,
-                "message": _ABS_NOT_CONFIGURED_MESSAGE,
-                "values": normalized_values,
-            }
-        # Normalize before checking the scheme: a scheme-less value like
-        # "audiobookshelf:13378" has no "http://" prefix to match against
-        # here, but normalize_http_url will turn it into a plain-HTTP URL at
-        # request time, so the warning must be based on that effective URL.
-        effective_abs_url = normalize_http_url(abs_url)
-        if effective_abs_url.lower().startswith("http://"):
-            logger.warning(
-                "AUTH_METHOD=abs with a plain-HTTP Audiobookshelf URL (%s): "
-                "credentials are forwarded unencrypted — acceptable only on a "
-                "trusted in-cluster network",
-                effective_abs_url,
-            )
 
     return {"error": False, "values": normalized_values}
 

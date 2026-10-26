@@ -56,7 +56,6 @@ export const AUTH_SOURCE_LABEL: Record<AuthSource, string> = {
   oidc: 'OIDC',
   proxy: 'Proxy',
   cwa: 'CWA',
-  abs: 'Audiobookshelf',
 };
 
 export const AUTH_SOURCE_BADGE_CLASSES: Record<AuthSource, string> = {
@@ -64,15 +63,9 @@ export const AUTH_SOURCE_BADGE_CLASSES: Record<AuthSource, string> = {
   oidc: 'bg-sky-500/15 text-sky-600 dark:text-sky-400',
   proxy: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400',
   cwa: 'bg-amber-500/15 text-amber-600 dark:text-amber-400',
-  abs: 'bg-violet-500/15 text-violet-600 dark:text-violet-400',
 };
 
 export const canCreateLocalUsersForAuthMode = (authMode?: string): boolean => {
   const normalized = (authMode || 'none').toLowerCase();
-  return (
-    normalized === 'none' ||
-    normalized === 'builtin' ||
-    normalized === 'oidc' ||
-    normalized === 'abs'
-  );
+  return normalized === 'none' || normalized === 'builtin' || normalized === 'oidc';
 };
