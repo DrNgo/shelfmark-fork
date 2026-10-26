@@ -321,6 +321,44 @@ class LibraryIndexDB:
 
         return list(matches.values())
 
+    def list_items(self, source: str) -> list[LibraryItem]:
+        """Every item this source's last sync stored, with its Hardcover id."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT i.*, (
+                        SELECT k.match_key FROM library_item_keys k
+                        WHERE k.source = i.source AND k.item_id = i.item_id
+                          AND k.match_key GLOB ?
+                        LIMIT 1
+                    ) AS hardcover_key
+                    FROM library_items i
+                    WHERE i.source = ?
+                    """,
+                    (f"{HARDCOVER_KEY_PREFIX}*", source),
+                ).fetchall()
+            finally:
+                conn.close()
+
+        return [
+            LibraryItem(
+                source=str(row["source"]),
+                item_id=str(row["item_id"]),
+                library_id=str(row["library_id"]),
+                library_name=str(row["library_name"]),
+                media_type=str(row["media_type"]),
+                title=str(row["title"]),
+                subtitle=str(row["subtitle"] or ""),
+                author=str(row["author"]),
+                asin=str(row["asin"] or ""),
+                isbn13=str(row["isbn13"] or ""),
+                hardcover_id=str(row["hardcover_key"] or "")[len(HARDCOVER_KEY_PREFIX) :],
+            )
+            for row in rows
+        ]
+
     def record_failure(self, source: str, message: str) -> None:
         """Record that a sync attempt failed, leaving the existing index intact."""
         with self._lock:

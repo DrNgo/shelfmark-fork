@@ -109,7 +109,10 @@ export const CardView = ({
               #{book.series_position}
             </div>
           )}
-          <LibraryBadge library={book.library} overlay className="absolute top-2 right-2 z-10" />
+          {/* Fork: the InLibraryBadge below shares this corner and says more. */}
+          {!libraryMatch && (
+            <LibraryBadge library={book.library} overlay className="absolute top-2 right-2 z-10" />
+          )}
           {book.preview && !imageError ? (
             <>
               {!imageLoaded && (

@@ -31,7 +31,12 @@ _SERIES_PREFIX = re.compile(r"^(?P<label>[^\d:]{1,40}?)\s+(?P<number>\d+(?:\.\d+
 def _config(overrides: Mapping[str, Any] | None = None) -> tuple[bool, str, str, list[str]]:
     enabled = bool(setting(app_config, "LIBRARY_CHECK_AUDIOBOOKSHELF_ENABLED", False, overrides))
     url = normalize_http_url(str(setting(app_config, "AUDIOBOOKSHELF_URL", "", overrides) or ""))
-    token = str(setting(app_config, "AUDIOBOOKSHELF_TOKEN", "", overrides) or "").strip()
+    # Fork: fall back to the Audiobookshelf integration tab's token, so one connection serves both.
+    token = str(
+        setting(app_config, "AUDIOBOOKSHELF_TOKEN", "", overrides)
+        or setting(app_config, "AUDIOBOOKSHELF_API_TOKEN", "", overrides)
+        or ""
+    ).strip()
     lib_ids_raw = str(setting(app_config, "AUDIOBOOKSHELF_LIBRARY_IDS", "", overrides) or "")
     lib_ids = [s.strip() for s in lib_ids_raw.split(",") if s.strip()]
     return enabled, url, token, lib_ids
