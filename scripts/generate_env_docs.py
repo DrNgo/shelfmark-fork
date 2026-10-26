@@ -161,6 +161,12 @@ def _generate_bootstrap_env_docs() -> list[str]:
             "default": "8084",
         },
         {
+            "name": "SOCKETIO_ALLOWED_ORIGINS",
+            "description": "Extra origins allowed to open the live-update websocket, comma separated (e.g. https://books.example.com). The app's own origin is always allowed, including behind a proxy that sends X-Forwarded-Host and X-Forwarded-Proto. Only needed if your proxy changes Host without sending those headers.",
+            "type": "string",
+            "default": "unset",
+        },
+        {
             "name": "SESSION_COOKIE_SECURE",
             "description": "Enable secure cookies (requires HTTPS).",
             "type": "boolean",
@@ -183,6 +189,12 @@ def _generate_bootstrap_env_docs() -> list[str]:
             "description": "Disable username/password login and remove the local-admin prerequisite for OIDC. Implies HIDE_LOCAL_AUTH; with AUTH_METHOD=builtin, everyone is locked out until auth env vars are changed.",
             "type": "boolean",
             "default": "false",
+        },
+        {
+            "name": "SHELFMARK_API_KEY",
+            "description": "Optional static API key. When set, requests carrying it as 'Authorization: Bearer <key>' (or X-Api-Key) are authenticated as an admin; browser sessions keep working. Unset = off.",
+            "type": "string",
+            "default": "unset",
         },
         {
             "name": "OIDC_AUTO_REDIRECT",
@@ -352,6 +364,7 @@ def generate_env_docs() -> str:
     import shelfmark.config.security
     import shelfmark.config.settings
     import shelfmark.grimmory.settings
+    import shelfmark.metadata_providers.dnb
     import shelfmark.metadata_providers.googlebooks
     import shelfmark.metadata_providers.hardcover
     import shelfmark.metadata_providers.openlibrary

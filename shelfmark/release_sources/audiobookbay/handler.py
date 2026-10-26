@@ -1,10 +1,12 @@
 """AudiobookBay download handler - resolves magnet links and uses shared client lifecycle."""
 
+import math
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from shelfmark.core.config import config
 from shelfmark.core.logger import setup_logger
+from shelfmark.core.request_helpers import coerce_int
 from shelfmark.download.clients import (
     DownloadClient,
     get_client,
@@ -27,6 +29,10 @@ if TYPE_CHECKING:
 logger = setup_logger(__name__)
 DEFAULT_ABB_HOSTNAME = "audiobookbay.lu"
 ALLOWED_DETAIL_URL_SCHEMES = {"https"}
+# retry_source_context key for the magnet resolved on an earlier attempt. It lives in the
+# handler-owned context rather than retry_download_url, which queue time fills from the
+# client-supplied release data.
+MAGNET_LINK_CONTEXT_KEY = "magnet_link"
 
 
 def _resolve_configured_hostname() -> str:
@@ -49,6 +55,22 @@ def _detail_url_matches_host(detail_url: str, hostname: str) -> bool:
         parsed.scheme.lower() in ALLOWED_DETAIL_URL_SCHEMES
         and bool(detail_hostname)
         and detail_hostname.lower().rstrip(".") == allowed_hostname
+    )
+
+
+def _seed_limits() -> tuple[int | None, float | None]:
+    """The configured seed time (minutes) and share ratio; None leaves the client's own limit."""
+    minutes = coerce_int(config.get("ABB_SEED_TIME_MINUTES", 0), 0)
+    raw_ratio = config.get("ABB_SEED_RATIO", 0)
+    ratio = 0.0
+    if isinstance(raw_ratio, (int, float, str)):
+        try:
+            ratio = float(raw_ratio)
+        except ValueError:
+            ratio = 0.0
+    return (
+        minutes if minutes > 0 else None,
+        ratio if math.isfinite(ratio) and ratio > 0 else None,
     )
 
 
@@ -82,6 +104,31 @@ class AudiobookBayHandler(ExternalClientHandler):
             return None
         return scraper.extract_file_list(detail_html)
 
+    def list_authors(self, release_data: dict[str, Any]) -> list[str] | None:
+        """Read the authors off the detail page, for a listing title that names none."""
+        raw_url = release_data.get("download_url") or release_data.get("source_url")
+        detail_url = raw_url.strip() if isinstance(raw_url, str) else ""
+        hostname = _resolve_allowed_detail_hostname()
+        if not detail_url or not _detail_url_matches_host(detail_url, hostname):
+            return None
+        # Cached: the pack inspection that follows a match reads the same page.
+        detail_html = scraper.fetch_detail_html(detail_url, hostname)
+        if not detail_html:
+            return None
+        return scraper.extract_authors(detail_html) or None
+
+    def seed_complaints(self, release_data: dict[str, Any]) -> int | None:
+        """Count the comments on the post that say nobody is seeding it (None: page unreadable)."""
+        raw_url = release_data.get("download_url") or release_data.get("source_url")
+        detail_url = raw_url.strip() if isinstance(raw_url, str) else ""
+        hostname = _resolve_allowed_detail_hostname()
+        if not detail_url or not _detail_url_matches_host(detail_url, hostname):
+            return None
+        detail_html = scraper.fetch_detail_html(detail_url, hostname)
+        if not detail_html:
+            return None
+        return scraper.extract_seed_complaints(detail_html)
+
     def _get_client(self, protocol: str) -> DownloadClient | None:
         """Compatibility shim so module-level patching still works in tests."""
         return get_client(protocol)
@@ -96,6 +143,21 @@ class AudiobookBayHandler(ExternalClientHandler):
         status_callback: Callable[[str, str | None], None],
     ) -> DownloadRequest | None:
         """Resolve ABB detail page into a magnet-link download request."""
+        # A retry must not depend on AudiobookBay being reachable: the torrent may already
+        # be finished in the client, and the magnet cannot go stale (#1388).
+        cached_magnet = task.retry_source_context.get(MAGNET_LINK_CONTEXT_KEY)
+        if isinstance(cached_magnet, str) and cached_magnet:
+            logger.info("Reusing magnet link from an earlier attempt for task %s", task.task_id)
+            seeding_time_limit, ratio_limit = _seed_limits()
+            return DownloadRequest(
+                url=cached_magnet,
+                protocol="torrent",
+                release_name=task.title or "Unknown",
+                expected_hash=None,
+                seeding_time_limit=seeding_time_limit,
+                ratio_limit=ratio_limit,
+            )
+
         detail_url = self._resolve_detail_url(task)
         if not detail_url:
             status_callback("error", "Missing AudiobookBay details URL")
@@ -119,12 +181,16 @@ class AudiobookBayHandler(ExternalClientHandler):
             return None
 
         logger.info("Extracted magnet link for task %s", task.task_id)
+        task.retry_source_context[MAGNET_LINK_CONTEXT_KEY] = magnet_link
 
+        seeding_time_limit, ratio_limit = _seed_limits()
         return DownloadRequest(
             url=magnet_link,
             protocol="torrent",
             release_name=task.title or "Unknown",
             expected_hash=None,
+            seeding_time_limit=seeding_time_limit,
+            ratio_limit=ratio_limit,
         )
 
     def cancel(self, task_id: str) -> bool:

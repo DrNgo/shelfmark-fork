@@ -14,13 +14,16 @@ logger = setup_logger(__name__)
 
 
 # Known variable tokens, sorted longest-first to avoid partial matches
-# e.g., "SeriesPosition" must match before "Series"
+# e.g., "SeriesPosition" must match before "Series", "FirstAuthor" before "Author"
 KNOWN_TOKENS = [
     "seriesposition",
     "primarytitle",
     "originalname",
+    "firstauthor",
+    "authorsort",
     "partnumber",
     "language",
+    "narrator",
     "subtitle",
     "author",
     "series",
@@ -29,11 +32,21 @@ KNOWN_TOKENS = [
     "user",
 ]
 
+# Authors reach naming already joined as "First Author, Second Author, ...".
+# {FirstAuthor} keeps only the first entry. A single name written "Last, First"
+# is split on the comma too and renders as "Last" -- the source metadata does
+# not mark which form it is (see #930).
+AUTHOR_LIST_SEPARATOR = re.compile(r"\s*[,;]\s*")
+
 # Match any {...} block for template parsing
 BRACE_PATTERN = re.compile(r"\{([^}]+)\}")
 
 # Characters that are invalid in filenames on various filesystems
 INVALID_CHARS = re.compile(r'[\\/:*?"<>|]')
+
+# Runs of whitespace inside a single placeholder's rendered value, e.g. "Conan Doyle"
+# -- collapsed to the configured word separator (see `parse_naming_template`).
+WHITESPACE_RUN = re.compile(r"\s+")
 
 
 def _sanitize(name: str | None, max_length: int = 245) -> str:
@@ -54,6 +67,51 @@ def sanitize_filename(name: str | None, max_length: int = 245) -> str:
 
 # Alias for backwards compatibility
 sanitize_path_component = sanitize_filename
+
+
+def first_author(value: object) -> str:
+    """Return the first entry from an author string joined with ',' or ';'."""
+    text = " ".join(str(value or "").split())
+    if not text:
+        return ""
+    return AUTHOR_LIST_SEPARATOR.split(text, maxsplit=1)[0].strip()
+
+
+# Generational suffixes kept after the given names: "King, Martin Luther, Jr."
+NAME_SUFFIXES = frozenset({"jr", "jr.", "sr", "sr.", "ii", "iii", "iv"})
+
+
+def author_sort(value: object) -> str:
+    """Return the first author as "Last, First" for {AuthorSort}.
+
+    "Arthur Conan Doyle" becomes "Doyle, Arthur Conan", and only the first of
+    several authors is kept. Exactly two comma-separated parts whose first part
+    is a single word ("Doyle, Arthur Conan") are taken to be one name already in
+    "Last, First" form and kept as is. Surname particles ("van", "Le") and
+    surname-first names are not detected; their last word is treated as the
+    surname (see #1178).
+    """
+    text = " ".join(str(value or "").split())
+    if not text:
+        return ""
+
+    entries = [entry for entry in AUTHOR_LIST_SEPARATOR.split(text) if entry]
+    if not entries:
+        return ""
+    if len(entries) == 2 and " " not in entries[0] and ";" not in text:
+        return f"{entries[0]}, {entries[1]}"
+
+    words = entries[0].split(" ")
+    suffix = ""
+    if len(entries) > 1 and entries[1].lower() in NAME_SUFFIXES:
+        suffix = entries[1]
+    elif len(words) > 2 and words[-1].lower() in NAME_SUFFIXES:
+        suffix = words.pop()
+
+    if len(words) < 2:
+        return entries[0]
+    sorted_name = f"{words[-1]}, {' '.join(words[:-1])}"
+    return f"{sorted_name}, {suffix}" if suffix else sorted_name
 
 
 def format_series_position(position: str | float | None) -> str:
@@ -143,8 +201,16 @@ def parse_naming_template(
     metadata: Mapping[str, str | int | float | None],
     *,
     allow_path_separators: bool = True,
+    word_separator: str = " ",
 ) -> str:
-    """Render a naming template with Shelfmark metadata placeholders."""
+    """Render a naming template with Shelfmark metadata placeholders.
+
+    `word_separator` replaces whitespace *inside* each placeholder's rendered
+    value (e.g. "Conan Doyle" -> "Conan.Doyle" for a "." separator). It never
+    touches literal characters typed into the template itself, so a template
+    like "{Author}.-.{Title}" keeps its own dots regardless of this setting.
+    The default (" ") leaves values untouched, matching prior behavior.
+    """
     if not template:
         return ""
 
@@ -163,6 +229,10 @@ def parse_naming_template(
         value = normalized.get(placeholder_name)
         if placeholder_name == "seriesposition":
             value = format_series_position(value)
+        elif placeholder_name == "firstauthor" and not value:
+            value = first_author(normalized.get("author"))
+        elif placeholder_name == "authorsort" and not value:
+            value = author_sort(normalized.get("author"))
         if value is None:
             return ""
         return str(value).strip()
@@ -178,6 +248,8 @@ def parse_naming_template(
         if not value:
             return ""
 
+        if word_separator != " ":
+            value = WHITESPACE_RUN.sub(word_separator, value)
         if not allow_path_separators:
             value = value.replace("/", "_")
         value = sanitize_filename(value)
@@ -215,12 +287,23 @@ def parse_naming_template(
                     parts.append(match.group(0))
 
             cursor = match.end()
+            if rendered == "":
+                # "{{Narrator}}" (Audiobookshelf's "Title {Narrator}" folder style) matches as
+                # "{" + "{Narrator}"; with no value, drop the closing braces it opened too.
+                for _ in range(content.count("{")):
+                    if template[cursor : cursor + 1] != "}":
+                        break
+                    cursor += 1
 
         parts.append(template[cursor:])
         result = "".join(parts)
 
     # Clean up any double slashes that might result from empty tokens
     result = re.sub(r"/+", "/", result)
+
+    # A token left empty at the end or start of a folder name leaves stray spaces there
+    result = re.sub(r"[ \t]+/", "/", result)
+    result = re.sub(r"/[ \t]+", "/", result)
 
     # Remove leading/trailing slashes
     result = result.strip("/")
@@ -243,9 +326,13 @@ def build_library_path(
     template: str,
     metadata: Mapping[str, str | int | float | None],
     extension: str | None = None,
+    *,
+    word_separator: str = " ",
 ) -> Path:
     """Build a final library path from a template and metadata."""
-    relative = parse_naming_template(template, metadata, allow_path_separators=True)
+    relative = parse_naming_template(
+        template, metadata, allow_path_separators=True, word_separator=word_separator
+    )
 
     if not relative:
         # Fallback to title if template produces empty result

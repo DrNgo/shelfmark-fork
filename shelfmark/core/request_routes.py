@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from typing import TYPE_CHECKING, Any
 
 from flask import Flask, Response, jsonify, request, session
@@ -41,13 +42,16 @@ from shelfmark.core.requests_service import (
     create_requests,
     fulfil_request,
     reject_request,
+    reopen_request,
 )
+from shelfmark.core.viewer_redaction import redact_request_row
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from flask.typing import ResponseReturnValue
 
+    from shelfmark.core.activity_view_state_service import ActivityViewStateService
     from shelfmark.core.user_db import UserDB
 
 logger = setup_logger(__name__)
@@ -570,6 +574,7 @@ def register_request_routes(
     resolve_auth_mode: Callable[[], str],
     queue_release: Callable[..., tuple[bool, str | None]],
     ws_manager: object | None = None,
+    activity_view_state_service: ActivityViewStateService | None = None,
 ) -> None:
     """Register request policy and request lifecycle routes."""
 
@@ -724,6 +729,8 @@ def register_request_routes(
         raw_requests = data.get("requests")
         if not isinstance(raw_requests, list) or len(raw_requests) == 0:
             return jsonify({"error": "requests must contain at least one request"}), 400
+        if not all(isinstance(raw_request, dict) for raw_request in raw_requests):
+            return jsonify({"error": "requests must contain objects"}), 400
 
         try:
             prepared_requests = [
@@ -854,6 +861,9 @@ def register_request_routes(
             )
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
+        if not session.get("is_admin", False):
+            # A fulfilled request carries the release an admin picked (#1418).
+            rows = [redact_request_row(row) for row in rows]
         return jsonify(rows)
 
     @app.route("/api/requests/<int:request_id>", methods=["DELETE"])
@@ -908,6 +918,8 @@ def register_request_routes(
             room="admins",
         )
 
+        if not session.get("is_admin", False):
+            updated = redact_request_row(updated)
         return jsonify(updated)
 
     @app.route("/api/admin/requests", methods=["GET"])
@@ -1074,6 +1086,78 @@ def register_request_routes(
             user_db,
             event=NotificationEvent.REQUEST_REJECTED,
             request_row=updated,
+        )
+
+        return jsonify(updated)
+
+    @app.route("/api/admin/requests/<int:request_id>/reopen", methods=["POST"])
+    def api_admin_reopen_request(request_id: int) -> ResponseReturnValue:
+        auth_gate = _require_request_endpoints_available(resolve_auth_mode)
+        if auth_gate is not None:
+            return auth_gate
+
+        admin_user_id, admin_gate = _require_admin_user_id()
+        if admin_gate is not None:
+            return admin_gate
+        if admin_user_id is None:
+            return jsonify({"error": "Admin user identity unavailable"}), 403
+
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({"error": "Invalid payload"}), 400
+
+        try:
+            updated = reopen_request(
+                user_db,
+                request_id=request_id,
+                admin_user_id=admin_user_id,
+                admin_note=data.get("admin_note"),
+            )
+        except RequestServiceError as exc:
+            return _error_response(str(exc), exc.status_code, code=exc.code)
+
+        # A rejected request has often been cleared from the activity list. Undo that too,
+        # or the reopened request stays hidden, the same as the failed-download reopen does.
+        if activity_view_state_service is not None:
+            try:
+                activity_view_state_service.clear_item_for_all_viewers(
+                    item_type="request",
+                    item_key=f"request:{updated['id']}",
+                )
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                logger.warning(
+                    "Could not restore reopened request #%s to the activity list: %s",
+                    updated["id"],
+                    exc,
+                )
+
+        event_payload = {
+            "request_id": updated["id"],
+            "status": updated["status"],
+            "title": _resolve_request_title(updated),
+        }
+        admin_label = _format_user_label(
+            normalize_optional_text(session.get("user_id")), admin_user_id
+        )
+        requester_label = _format_requester_label(user_db, updated)
+        logger.info(
+            "Request reopened #%s for '%s' by %s (requested by %s)",
+            updated["id"],
+            event_payload["title"],
+            admin_label,
+            requester_label,
+        )
+        emit_ws_event(
+            ws_manager,
+            event_name="request_update",
+            payload=event_payload,
+            room=f"user_{updated['user_id']}",
+        )
+        emit_ws_event(
+            ws_manager,
+            event_name="request_update",
+            payload=event_payload,
+            room="admins",
         )
 
         return jsonify(updated)

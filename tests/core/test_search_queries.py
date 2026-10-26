@@ -69,6 +69,8 @@ def _ladder(book: BookMetadata) -> list[str]:
 
 MT = "Mushoku Tensei: Jobless Reincarnation (Light Novel)"
 MT_SUB = "Jobless Reincarnation (Light Novel)"
+# Upstream v1.5.1 never searches a subtitle on its own; the pre-colon title it is.
+MT_QUERY = "Mushoku Tensei"
 OL = "Overlord (Light Novel)"
 DXD = "High School DxD (Light Novel)"
 SH = "The Rising of the Shield Hero (Light Novel)"
@@ -78,7 +80,7 @@ DM = "Death March to the Parallel World Rhapsody"
 MEASURED_BOOKS = [
     (
         _endpoint_book(730298, f"{MT}, Vol. 3", MT_SUB, ["Rifujin na Magonote"], MT, 3),
-        "Jobless Reincarnation",
+        MT_QUERY,
         [
             "Mushoku Tensei Jobless Reincarnation Vol. 3",
             "Mushoku Tensei Jobless Reincarnation v03",
@@ -87,7 +89,7 @@ MEASURED_BOOKS = [
     ),
     (
         _endpoint_book(730294, f"{MT}, Vol. 7", MT_SUB, ["Rifujin na Magonote"], MT, 7),
-        "Jobless Reincarnation",
+        MT_QUERY,
         [
             "Mushoku Tensei Jobless Reincarnation Vol. 7",
             "Mushoku Tensei Jobless Reincarnation v07",
@@ -103,7 +105,7 @@ MEASURED_BOOKS = [
             MT,
             11,
         ),
-        "Jobless Reincarnation",
+        MT_QUERY,
         [
             "Mushoku Tensei Jobless Reincarnation Vol. 11",
             "Mushoku Tensei Jobless Reincarnation v11",

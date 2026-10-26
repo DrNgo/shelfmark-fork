@@ -4,10 +4,36 @@ import {
   buildNamingTemplatePreview,
   NAMING_TEMPLATE_TOKENS,
   renderNamingTemplate,
+  resolveWordSeparator,
   SAMPLE_NAMING_METADATA,
 } from '../utils/namingTemplatePreview';
 
+const renderAuthorSort = (author: string): string =>
+  renderNamingTemplate(
+    '{AuthorSort}/{Year}',
+    { ...SAMPLE_NAMING_METADATA, Author: author, AuthorSort: '' },
+    { allowPathSeparators: true },
+  ).value;
+
 describe('namingTemplatePreview', () => {
+  it('renders Audiobookshelf-style {{Narrator}} and drops it cleanly when empty', () => {
+    const template = '{Author}/{Title} {{Narrator}}/{Title}';
+    const metadata = { Author: 'Christopher Ruocchio', Title: 'Empire of Silence' };
+
+    expect(
+      renderNamingTemplate(
+        template,
+        { ...metadata, Narrator: 'Samuel Roukin' },
+        {
+          allowPathSeparators: true,
+        },
+      ).value,
+    ).toBe('Christopher Ruocchio/Empire of Silence {Samuel Roukin}/Empire of Silence');
+    expect(renderNamingTemplate(template, metadata, { allowPathSeparators: true }).value).toBe(
+      'Christopher Ruocchio/Empire of Silence/Empire of Silence',
+    );
+  });
+
   it('groups primary title with universal variables', () => {
     expect(NAMING_TEMPLATE_TOKENS.find((token) => token.token === 'PrimaryTitle')?.group).toBe(
       'Universal',
@@ -38,6 +64,38 @@ describe('namingTemplatePreview', () => {
     );
 
     expect(preview.value).toBe('Arthur Conan Doyle/The Hound of the Baskervilles');
+  });
+
+  it('keeps only the first of several authors for FirstAuthor', () => {
+    const preview = renderNamingTemplate(
+      '{FirstAuthor}/{Year}',
+      { ...SAMPLE_NAMING_METADATA, Author: 'Terry Pratchett, Neil Gaiman', FirstAuthor: '' },
+      { allowPathSeparators: true },
+    );
+
+    expect(preview.value).toBe('Terry Pratchett/1902');
+  });
+
+  it('renders AuthorSort surname first from the first author', () => {
+    expect(renderAuthorSort('Arthur Conan Doyle')).toBe('Doyle, Arthur Conan/1902');
+    expect(renderAuthorSort('Terry Pratchett, Neil Gaiman')).toBe('Pratchett, Terry/1902');
+    expect(renderAuthorSort('Doyle, Arthur Conan')).toBe('Doyle, Arthur Conan/1902');
+    // The trailing dot of "Jr." is stripped like any other trailing dot in a path component.
+    expect(renderAuthorSort('Martin Luther King Jr.')).toBe('King, Martin Luther, Jr/1902');
+  });
+
+  it('offers AuthorSort as a core variable', () => {
+    const token = NAMING_TEMPLATE_TOKENS.find((t) => t.token === 'AuthorSort');
+
+    expect(token?.group).toBe('Core');
+    expect(token?.audiobookOnly).toBeFalsy();
+  });
+
+  it('offers FirstAuthor as a core variable', () => {
+    const token = NAMING_TEMPLATE_TOKENS.find((t) => t.token === 'FirstAuthor');
+
+    expect(token?.group).toBe('Core');
+    expect(token?.audiobookOnly).toBeFalsy();
   });
 
   it('reports unknown bare variables', () => {
@@ -78,6 +136,41 @@ describe('namingTemplatePreview', () => {
     expect(swedish.value).toBe('Andy Weir/Project Hail Mary (sv)');
     expect(english.value).toBe('Andy Weir/Project Hail Mary');
     expect(swedish.value).not.toBe(english.value);
+  });
+
+  it('replaces internal whitespace with the configured word separator', () => {
+    const preview = renderNamingTemplate('{Author}/{PrimaryTitle}', SAMPLE_NAMING_METADATA, {
+      allowPathSeparators: true,
+      wordSeparator: '.',
+    });
+
+    expect(preview.value).toBe('Arthur.Conan.Doyle/The.Hound.of.the.Baskervilles');
+  });
+
+  it('leaves values unchanged for the default space separator', () => {
+    const preview = renderNamingTemplate('{Author}', SAMPLE_NAMING_METADATA, {
+      allowPathSeparators: true,
+    });
+
+    expect(preview.value).toBe('Arthur Conan Doyle');
+  });
+
+  it('never touches literal template characters, only placeholder values', () => {
+    const preview = renderNamingTemplate('{Author}.-.{PrimaryTitle}', SAMPLE_NAMING_METADATA, {
+      allowPathSeparators: true,
+      wordSeparator: '.',
+    });
+
+    expect(preview.value).toBe('Arthur.Conan.Doyle.-.The.Hound.of.the.Baskervilles');
+  });
+
+  it('resolves the word separator setting like the backend policy module', () => {
+    expect(resolveWordSeparator('.')).toBe('.');
+    expect(resolveWordSeparator('_')).toBe('_');
+    expect(resolveWordSeparator('-')).toBe('-');
+    expect(resolveWordSeparator('~')).toBe('~');
+    expect(resolveWordSeparator('')).toBe(' ');
+    expect(resolveWordSeparator(undefined)).toBe(' ');
   });
 
   it('keeps the picker and the known-token list in lockstep', () => {

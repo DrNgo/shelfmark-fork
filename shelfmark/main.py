@@ -6,14 +6,16 @@ import os
 import re
 import sqlite3
 import time
+import unicodedata
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from functools import wraps
 from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, NoReturn, cast
+from urllib.parse import quote
 
-from flask import Flask, jsonify, request, send_file, send_from_directory, session
+from flask import Flask, g, jsonify, request, send_file, send_from_directory, session
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -34,6 +36,7 @@ from shelfmark.config.env import (
     RELEASE_VERSION,
     SESSION_COOKIE_NAME,
     SESSION_COOKIE_SECURE_ENV,
+    SOCKETIO_ALLOWED_ORIGINS,
     _is_config_dir_writable,
     string_to_bool,
 )
@@ -42,6 +45,7 @@ from shelfmark.config.settings import (
     _SUPPORTED_BOOK_LANGUAGE,
     migrate_audiobook_format_settings,
 )
+from shelfmark.core import api_key as api_key_module  # module access lets tests monkeypatch the key
 from shelfmark.core import search_deadline
 from shelfmark.core.activity_view_state_service import ActivityViewStateService
 from shelfmark.core.audible_topics import (
@@ -61,7 +65,12 @@ from shelfmark.core.discover import get_discover_row as get_discover_row_service
 from shelfmark.core.download_history_service import DownloadHistoryService
 from shelfmark.core.external_user_linking import upsert_external_user
 from shelfmark.core.logger import setup_logger
-from shelfmark.core.models import TERMINAL_QUEUE_STATUSES, QueueStatus, SearchFilters
+from shelfmark.core.models import (
+    TERMINAL_QUEUE_STATUSES,
+    QueueStatus,
+    SearchFilters,
+    build_filename,
+)
 from shelfmark.core.notifications import (
     NotificationContext,
     NotificationEvent,
@@ -79,6 +88,7 @@ from shelfmark.core.request_helpers import (
     normalize_positive_int,
 )
 from shelfmark.core.request_policy import (
+    DEFAULT_SUPPORTED_CONTENT_TYPES,
     PolicyMode,
     get_source_content_type_capabilities,
     merge_request_policy_settings,
@@ -91,10 +101,19 @@ from shelfmark.core.requests_service import (
     sync_delivery_states_from_queue_status,
 )
 from shelfmark.core.search_queries import build_ranking_identity, classify_release
+from shelfmark.core.socketio_origins import build_cors_allowed_origins
 from shelfmark.core.user_db import UserDB
 from shelfmark.core.utils import AUDIOBOOK_FORMATS, normalize_base_path
+from shelfmark.core.viewer_redaction import (
+    configure_public_id_key,
+    is_public_download_id,
+    match_public_download_id,
+    redact_status,
+    viewer_download_id,
+)
 from shelfmark.download import orchestrator as backend
 from shelfmark.download import warmup
+from shelfmark.download.zip_stream import stream_zip
 from shelfmark.library.scheduler import start_library_index_sync
 from shelfmark.metadata_providers.audible_taxonomy import (
     matching_core_topic_key,
@@ -109,6 +128,7 @@ from shelfmark.release_sources import (
 from shelfmark.release_sources.irc.parser import ranking_evidence as irc_ranking_evidence
 
 if TYPE_CHECKING:
+    from shelfmark.core.models import DownloadTask
     from shelfmark.core.search_queries import RankingIdentity
     from shelfmark.metadata_providers import BookMetadata, MetadataProvider
 
@@ -147,7 +167,8 @@ app.wsgi_app = wsgi_app
 # We run this app under Gunicorn with a gevent websocket worker (even when DEBUG=true),
 # so Socket.IO should always use gevent here.
 async_mode = "gevent"
-socketio_cors_allowed_origins = "*"
+# Same-origin only (python-engineio default), plus any SOCKETIO_ALLOWED_ORIGINS.
+socketio_cors_allowed_origins = build_cors_allowed_origins(SOCKETIO_ALLOWED_ORIGINS)
 
 # Initialize Flask-SocketIO with reverse proxy support
 socketio_path = f"{BASE_PATH}/socket.io" if BASE_PATH else "/socket.io"
@@ -162,7 +183,6 @@ socketio_init_kwargs: dict[str, Any] = {
     "ping_interval": 25,
     # Allow both websocket and polling for better compatibility
     "transports": ["websocket", "polling"],
-    # Enable CORS for all origins (you can restrict this in production)
     "allow_upgrades": True,
     # Important for proxies that buffer
     "http_compression": True,
@@ -171,9 +191,19 @@ socketio = SocketIO(app, **socketio_init_kwargs)
 
 # Initialize WebSocket manager
 ws_manager.init_app(app, socketio)
-ws_manager.set_queue_status_fn(backend.queue_status)
+
+
+def _user_room_queue_status(user_id: int | None = None) -> dict[str, dict[str, Any]]:
+    """Queue status for a non-admin user room, with release details hidden (#1418)."""
+    return redact_status(backend.queue_status(user_id=user_id))
+
+
+ws_manager.set_queue_status_fn(_user_room_queue_status)
 logger.info("Flask-SocketIO initialized with async_mode='%s'", async_mode)
-logger.info("Socket.IO CORS allowed origins: %s", socketio_cors_allowed_origins)
+logger.info(
+    "Socket.IO origin check: same-origin plus %s configured origin(s)",
+    len(SOCKETIO_ALLOWED_ORIGINS),
+)
 
 # Ensure all plugins are loaded before starting the download coordinator.
 # This prevents a race condition where the download loop could try to process
@@ -206,11 +236,23 @@ try:
     import_module("shelfmark.config.users_settings")
     from shelfmark.core.admin_routes import register_admin_routes
     from shelfmark.core.oidc_routes import register_oidc_routes
-    from shelfmark.core.self_user_routes import register_self_user_routes
+    from shelfmark.core.self_user_routes import (
+        PasswordAttemptLimiter,
+        register_self_user_routes,
+    )
 
     register_oidc_routes(app, user_db)
     register_admin_routes(app, user_db)
-    register_self_user_routes(app, user_db)
+    register_self_user_routes(
+        app,
+        user_db,
+        # Looked up when called: the lockout helpers are defined further down this module.
+        password_attempts=PasswordAttemptLimiter(
+            is_locked=lambda username: is_account_locked(username),  # noqa: PLW0108
+            record_failure=lambda username: record_failed_login(username, get_client_ip()),
+            clear=lambda username: clear_failed_logins(username),  # noqa: PLW0108
+        ),
+    )
 except (sqlite3.OperationalError, OSError) as e:
     logger.warning(
         "User database initialization failed: %s. Multi-user authentication features will be disabled. Ensure CONFIG_DIR (%s) exists and is writable.",
@@ -221,12 +263,62 @@ except (sqlite3.OperationalError, OSError) as e:
     download_history_service = None
     activity_view_state_service = None
 
+
+def _warn_if_local_admin_missing() -> None:
+    """Log a recovery hint when builtin/OIDC auth is active without a local admin."""
+    if user_db is None or DISABLE_LOCAL_AUTH:
+        return
+    auth_mode = load_active_auth_mode()
+    if auth_mode not in ("builtin", "oidc"):
+        return
+    try:
+        if user_db.has_admin_with_password():
+            return
+    except sqlite3.Error:
+        return
+    logger.warning(
+        "AUTH_METHOD=%s is active but no local admin account with a password exists. If no "
+        "admin can sign in, start once with AUTH_METHOD=none (keep Shelfmark off the public "
+        "internet meanwhile), create a local admin under Settings > Users, then remove the "
+        "override.",
+        auth_mode,
+    )
+
+
+_warn_if_local_admin_missing()
+
+# Nothing is downloading yet, so anything the last process left "active" or "queued" was
+# interrupted. Close those rows out and put the recently interrupted requests back in the
+# queue, before the coordinator starts. Assumes one worker process (entrypoint.sh).
+if user_db is not None and download_history_service is not None:
+    try:
+        from shelfmark.core.startup_reconcile import reconcile_interrupted_downloads
+
+        _reconciled = reconcile_interrupted_downloads(user_db, download_history_service)
+        if _reconciled["marked"] or _reconciled["reopened"]:
+            logger.info(
+                "Startup: closed out %d interrupted download(s), reopened %d request(s)",
+                _reconciled["marked"],
+                _reconciled["reopened"],
+            )
+    except _IMPORT_OPERATIONAL_ERRORS as exc:
+        logger.warning("Could not reconcile interrupted downloads at startup: %s", exc)
+
 # Start download coordinator
 backend.start()
 
 # Start the Audiobookshelf library index refresher. It idles until
 # Audiobookshelf is both enabled and configured, so this is safe unconditionally.
 start_library_index_sync()
+
+# Start the Hardcover wishlist sync + auto-download scheduler (in-process daemon).
+if user_db is not None:
+    try:
+        from shelfmark.core import hardcover_scheduler
+
+        hardcover_scheduler.start(user_db, backend.queue_release, _user_db_path)
+    except (ImportError, RuntimeError, OSError) as exc:
+        logger.warning("Failed to start Hardcover scheduler: %s", exc)
 
 # Pre-solve the direct-download source's protection challenge in the background so the
 # first user search does not pay for a cold Chrome bypass. Never blocks startup.
@@ -344,10 +436,10 @@ def get_client_ip() -> str:
 def get_auth_mode() -> str:
     """Determine which authentication mode is active.
 
-    Uses configured AUTH_METHOD plus runtime prerequisites.
-    Returns "none" when config is invalid or unavailable.
+    Returns "none" only when AUTH_METHOD is explicitly "none"; an unreadable or
+    unrecognized AUTH_METHOD fails closed.
     """
-    return load_active_auth_mode(CWA_DB_PATH, user_db=user_db)
+    return load_active_auth_mode()
 
 
 _AUDIOBOOK_CATEGORY_RANGE = (3030, 3049)
@@ -417,7 +509,7 @@ def _resolve_policy_mode_for_current_user(*, source: Any, content_type: Any) -> 
     auth_mode = get_auth_mode()
     if auth_mode == "none":
         return None
-    if session.get("is_admin", True):
+    if session.get("is_admin", False):
         return None
     if user_db is None:
         return None
@@ -453,7 +545,9 @@ def _resolve_policy_mode_for_current_user(*, source: Any, content_type: Any) -> 
     return resolved_mode
 
 
-def _policy_block_response(mode: PolicyMode) -> tuple[Response, int]:
+def _policy_block_response(
+    mode: PolicyMode, *, error: str = "Download not allowed by policy"
+) -> tuple[Response, int]:
     logger.debug(
         "download policy guard user=%s db_user_id=%s mode=%s",
         session.get("user_id"),
@@ -464,7 +558,7 @@ def _policy_block_response(mode: PolicyMode) -> tuple[Response, int]:
         return (
             jsonify(
                 {
-                    "error": "Download not allowed by policy",
+                    "error": error,
                     "code": "policy_blocked",
                     "required_mode": PolicyMode.BLOCKED.value,
                 }
@@ -474,13 +568,82 @@ def _policy_block_response(mode: PolicyMode) -> tuple[Response, int]:
     return (
         jsonify(
             {
-                "error": "Download not allowed by policy",
+                "error": error,
                 "code": "policy_requires_request",
                 "required_mode": mode.value,
             }
         ),
         403,
     )
+
+
+# Modes under which the user never sees a release list: request_book asks for the
+# book as a whole and blocked gets nothing. request_release still lists releases,
+# since that user picks the one they ask for. Listing goes through the shared
+# source credentials (Prowlarr, torrent clients, scrapers), so the routes that
+# list have to refuse these two modes just as the download route does.
+_RELEASE_LISTING_REFUSED_MODES = frozenset({PolicyMode.REQUEST_BOOK, PolicyMode.BLOCKED})
+
+
+def _release_listing_refusal(*, source: Any, content_type: Any) -> PolicyMode | None:
+    """Return the policy mode when the current user may not list releases from `source`."""
+    mode = _resolve_policy_mode_for_current_user(source=source, content_type=content_type)
+    if mode is not None and mode in _RELEASE_LISTING_REFUSED_MODES:
+        return mode
+    return None
+
+
+def _release_listing_block_response(mode: PolicyMode) -> tuple[Response, int]:
+    return _policy_block_response(mode, error="Release listing not allowed by policy")
+
+
+def _sources_allowed_for_listing(
+    sources: list[str], content_type: Any
+) -> tuple[list[str], PolicyMode | None]:
+    """Drop the sources the current user may not list releases from.
+
+    Returns the sources left and, when any was dropped, the mode of the first one
+    dropped, which is what the response reports when nothing is left.
+    """
+    allowed: list[str] = []
+    refused_mode: PolicyMode | None = None
+    for source_name in sources:
+        refusal = _release_listing_refusal(source=source_name, content_type=content_type)
+        if refusal is None:
+            allowed.append(source_name)
+        elif refused_mode is None:
+            refused_mode = refusal
+    return allowed, refused_mode
+
+
+def _release_source_record_refusal(source_name: str) -> PolicyMode | None:
+    """Policy refusal for resolving one browse record of a release source.
+
+    The record's content type is not known before it is fetched, so the user is
+    refused only when every content type the source supports is refused.
+    """
+    capabilities = get_source_content_type_capabilities()
+    content_types = capabilities.get(normalize_source(source_name)) or set(
+        DEFAULT_SUPPORTED_CONTENT_TYPES
+    )
+    refused_mode: PolicyMode | None = None
+    for content_type in sorted(content_types):
+        refusal = _release_listing_refusal(source=source_name, content_type=content_type)
+        if refusal is None:
+            return None
+        if refused_mode is None:
+            refused_mode = refusal
+    return refused_mode
+
+
+def _release_payload_listing_gate(data: dict[str, Any]) -> tuple[Response, int] | None:
+    """Policy gate for routes that take a release payload, shared with the inspect route."""
+    source = data["source"]
+    resolved_content_type, _inferred = _resolve_release_content_type(data, source)
+    refusal = _release_listing_refusal(source=source, content_type=resolved_content_type)
+    if refusal is None:
+        return None
+    return _release_listing_block_response(refusal)
 
 
 def _resolve_download_user_context(
@@ -548,6 +711,7 @@ if user_db is not None:
             resolve_auth_mode=_resolve_auth_mode_for_routes,
             queue_release=_queue_release_for_routes,
             ws_manager=ws_manager,
+            activity_view_state_service=activity_view_state_service,
         )
         if download_history_service is not None and activity_view_state_service is not None:
             register_activity_routes(
@@ -573,7 +737,7 @@ if _is_debug_enabled():
             r"/*": {
                 "origins": ["http://localhost:5173", "http://127.0.0.1:5173"],
                 "supports_credentials": True,
-                "allow_headers": ["Content-Type", "Authorization"],
+                "allow_headers": ["Content-Type", "Authorization", "X-Api-Key"],
                 "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             }
         },
@@ -672,6 +836,7 @@ app.config.update(
     SESSION_COOKIE_NAME=SESSION_COOKIE_NAME,
     PERMANENT_SESSION_LIFETIME=604800,  # 7 days in seconds
 )
+configure_public_id_key(app.config["SECRET_KEY"])
 
 logger.info(
     "Session cookie secure setting: %s (from env: %s)",
@@ -679,6 +844,84 @@ logger.info(
     SESSION_COOKIE_SECURE_ENV,
 )
 logger.info("Session cookie name: %s", SESSION_COOKIE_NAME)
+
+
+def _proxy_default_is_admin(db: UserDB) -> bool:
+    """Role for a proxy user seen for the first time when no admin group is configured.
+
+    The first account ever provisioned is an admin so the instance is never left without
+    one; later accounts follow PROXY_AUTH_DEFAULT_ROLE (default: user).
+    """
+    if not db.has_admin():
+        return True
+    role = str(app_config.get("PROXY_AUTH_DEFAULT_ROLE", "user") or "user").strip().lower()
+    return role == "admin"
+
+
+_API_KEY_EXEMPT_PREFIXES = ("/api/auth/",)
+_API_KEY_EXEMPT_PATHS = frozenset({"/api/health"})
+_READ_ONLY_KEY_PATHS = frozenset({"/api/stats"})
+
+
+@app.before_request
+def api_key_auth_middleware() -> Response | tuple[Response, int] | None:
+    """Authenticate requests that present the configured SHELFMARK_API_KEY.
+
+    Both Authorization: Bearer and X-Api-Key are checked, and either
+    matching authenticates the request as an admin for this request only:
+    any session cookie is ignored and none is written back. Checking both
+    means a reverse proxy's own Authorization header never shadows an
+    operator-supplied X-Api-Key. No matching candidate is ignored so bearer
+    tokens forwarded by reverse proxies keep working; the request then
+    continues on the normal session path.
+    """
+    if not request.path.startswith("/api/"):
+        return None
+    if request.path in _API_KEY_EXEMPT_PATHS or request.path.startswith(_API_KEY_EXEMPT_PREFIXES):
+        return None
+    if not api_key_module.SHELFMARK_API_KEY and not api_key_module.SHELFMARK_API_KEY_READONLY:
+        return None
+
+    candidates = api_key_module.extract_api_key_candidates(
+        request.headers.get("Authorization"), request.headers.get("X-Api-Key")
+    )
+    if not candidates:
+        return None
+
+    scopes = {api_key_module.key_scope(candidate) for candidate in candidates}
+    scope = "admin" if "admin" in scopes else "readonly" if "readonly" in scopes else None
+    if scope is None:
+        return None
+    if get_auth_mode() == "none":
+        return None
+
+    # Mark the request as keyed before the lookup so the after-request cookie
+    # reset also covers the error path below.
+    g.api_key_auth = True
+
+    if scope == "readonly":
+        # A read-only key is a dashboard credential: one GET endpoint, no session.
+        g.api_key_scope = "readonly"
+        if request.method != "GET" or request.path not in _READ_ONLY_KEY_PATHS:
+            return jsonify({"error": "This API key is read-only"}), 403
+        return None
+    g.api_key_scope = "admin"
+
+    try:
+        admin = user_db.get_first_admin() if user_db is not None else None
+    except _OPERATIONAL_ERRORS:
+        logger.exception("API key auth middleware error")
+        return jsonify({"error": "Authentication error"}), 500
+
+    session.clear()
+    session["user_id"] = admin["username"] if admin else "api"
+    session["is_admin"] = True
+    if admin:
+        session["db_user_id"] = admin["id"]
+    session.permanent = False
+    # Identity is per request; never persist it as a cookie.
+    session.modified = False
+    return None
 
 
 @app.before_request
@@ -692,6 +935,10 @@ def proxy_auth_middleware() -> Response | tuple[Response, int] | None:
 
     # Only run for proxy auth mode
     if auth_mode != "proxy":
+        return None
+
+    # A request already authenticated by SHELFMARK_API_KEY needs no proxy headers.
+    if g.get("api_key_auth"):
         return None
 
     # Skip for public endpoints that don't need auth
@@ -733,8 +980,9 @@ def proxy_auth_middleware() -> Response | tuple[Response, int] | None:
 
         # Resolve admin role for proxy sessions.
         # If an admin group is configured, derive from groups header.
-        # Otherwise preserve existing DB role for known users and default
-        # first-time users to admin (to avoid lockouts).
+        # Otherwise preserve the existing DB role for known users; a first-time user
+        # is an admin only while the instance has none (so nobody is locked out),
+        # after that PROXY_AUTH_DEFAULT_ROLE decides (default: user).
         admin_group_header = (
             normalize_optional_text(
                 app_config.get("PROXY_AUTH_ADMIN_GROUP_HEADER", "X-Auth-Groups")
@@ -754,9 +1002,11 @@ def proxy_auth_middleware() -> Response | tuple[Response, int] | None:
             ]
             is_admin = admin_group_name in user_groups
         elif user_db is not None:
-            existing_db_user = user_db.get_user(username=username)
+            existing_db_user = user_db.get_user_cached(username=username)
             if existing_db_user:
                 is_admin = existing_db_user.get("role") == "admin"
+            else:
+                is_admin = _proxy_default_is_admin(user_db)
 
         # Create or update session
         previous_username = session.get("user_id")
@@ -776,7 +1026,7 @@ def proxy_auth_middleware() -> Response | tuple[Response, int] | None:
 
             if raw_db_user_id is not None:
                 try:
-                    session_db_user = user_db.get_user(user_id=int(raw_db_user_id))
+                    session_db_user = user_db.get_user_cached(user_id=int(raw_db_user_id))
                 except TypeError, ValueError:
                     session_db_user = None
 
@@ -823,6 +1073,17 @@ def set_security_headers(response: Response) -> Response:
     return response
 
 
+@app.after_request
+def strip_cookie_for_api_key_requests(response: Response) -> Response:
+    """Keyed requests never mint or refresh a session cookie, even if a handler dirties the session."""
+    if g.get("api_key_auth"):
+        # Setting `permanent` mutates the session dict (re-marking it
+        # modified), so it must be reset before `modified`, not after.
+        session.permanent = False
+        session.modified = False
+    return response
+
+
 def login_required(
     f: Callable[..., Response | tuple[Response, int]],
 ) -> Callable[..., Response | tuple[Response, int]]:
@@ -857,6 +1118,25 @@ def login_required(
                 logger.exception("Admin access check error")
                 return jsonify({"error": "Internal Server Error"}), 500
 
+        return f(*args, **kwargs)
+
+    return decorated_function
+
+
+def admin_required(
+    f: Callable[..., Response | tuple[Response, int]],
+) -> Callable[..., Response | tuple[Response, int]]:
+    """Require an authenticated admin session for a Flask route.
+
+    Builds on `login_required`, so auth mode "none" (no users, the single
+    operator owns the instance) still has access.
+    """
+
+    @login_required
+    @wraps(f)
+    def decorated_function(*args: object, **kwargs: object) -> Response | tuple[Response, int]:
+        if get_auth_mode() != "none" and not session.get("is_admin", False):
+            return jsonify({"error": "Admin access required"}), 403
         return f(*args, **kwargs)
 
     return decorated_function
@@ -936,7 +1216,7 @@ if _is_debug_enabled():
             _cleanup_orphan_processes()
 
     @app.route("/api/debug", methods=["GET"])
-    @login_required
+    @admin_required
     def debug() -> Response | tuple[Response, int]:
         """Run `/app/genDebug.sh`, generate a debug zip, and return it.
 
@@ -972,7 +1252,7 @@ if _is_debug_enabled():
             return jsonify({"error": str(e)}), 500
 
     @app.route("/api/restart", methods=["GET"])
-    @login_required
+    @admin_required
     def restart() -> Response | tuple[Response, int]:
         """Restart the application."""
         os._exit(0)
@@ -1098,7 +1378,7 @@ def _annotate_release_matches(
         extra["release_match"] = payload
 
 
-register_release_inspect_routes(app, login_required)
+register_release_inspect_routes(app, login_required, policy_gate=_release_payload_listing_gate)
 
 
 @app.route("/api/releases/download", methods=["POST"])
@@ -1153,6 +1433,13 @@ def api_download_release() -> Response | tuple[Response, int]:
         release_payload = authorize_destination_key(
             release_payload,
             is_admin=bool(session.get("is_admin", False)) or get_auth_mode() == "none",
+        )
+
+        logger.info(
+            "Download request received. keys=%s downloads=%s extra.downloads=%s",
+            list(data.keys()),
+            data.get("downloads"),
+            data.get("extra", {}).get("downloads") if isinstance(data.get("extra"), dict) else None,
         )
 
         priority = data.get("priority", 0)
@@ -1252,6 +1539,9 @@ def api_config() -> Response | tuple[Response, int]:
             "release_version": RELEASE_VERSION,
             "book_languages": _SUPPORTED_BOOK_LANGUAGE,
             "default_language": app_config.get("BOOK_LANGUAGE", ["en"], user_id=db_user_id),
+            "default_content_type": app_config.get(
+                "DEFAULT_CONTENT_TYPE", "ebook", user_id=db_user_id
+            ),
             "supported_formats": app_config.SUPPORTED_FORMATS,
             "supported_audiobook_formats": app_config.SUPPORTED_AUDIOBOOK_FORMATS,
             "search_mode": search_mode,
@@ -1292,8 +1582,8 @@ def api_config() -> Response | tuple[Response, int]:
             "onboarding_complete": _get_onboarding_complete(),
             # Default sort orders
             "default_sort": app_config.get(
-                "AA_DEFAULT_SORT", "relevance"
-            ),  # For direct mode (Anna's Archive)
+                "AA_DEFAULT_SORT", ""
+            ),  # For direct mode (Anna's Archive) — empty means use local downloads sort
             "metadata_default_sort": get_provider_default_sort(
                 metadata_ui_provider
             ),  # For universal mode
@@ -1302,6 +1592,28 @@ def api_config() -> Response | tuple[Response, int]:
     except _IMPORT_OPERATIONAL_ERRORS as e:
         logger.error_trace(f"Config error: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/stats", methods=["GET"])
+def api_stats() -> Response | tuple[Response, int]:
+    """Counters for dashboards. Reachable with the read-only API key, an admin key or an admin session."""
+    from shelfmark.core import stats
+
+    scope = g.get("api_key_scope")
+    if get_auth_mode() != "none" and scope is None:
+        if "user_id" not in session:
+            return jsonify({"error": "Unauthorized"}), 401
+        if not session.get("is_admin", False):
+            return jsonify({"error": "Admin access required"}), 403
+
+    if user_db is None:
+        return jsonify({"error": "User database unavailable"}), 503
+    try:
+        payload = stats.collect(user_db.db_path)
+    except sqlite3.Error:
+        logger.exception("stats: could not read the database")
+        return jsonify({"error": "Internal Server Error"}), 500
+    return jsonify(payload)
 
 
 @app.route("/api/health", methods=["GET"])
@@ -1422,6 +1734,14 @@ def _emit_activity_update_for_task(*, payload: dict[str, Any], task: Any) -> Non
     )
     if owner_user_id is None:
         return
+    # The owner knows a request-linked download by its opaque id, as /api/status
+    # shows it, since the task id can carry a private tracker's passkey (#1418).
+    task_id = payload.get("task_id")
+    if isinstance(task_id, str):
+        payload = {
+            **payload,
+            "task_id": viewer_download_id(task_id, getattr(task, "request_id", None)),
+        }
     emit_ws_event(
         ws_manager,
         event_name="activity_update",
@@ -1457,6 +1777,7 @@ def _record_download_queued(task_id: str, task: Any) -> None:
             preview=normalize_optional_text(getattr(task, "preview", None)),
             cover_aspect=normalize_optional_text(getattr(task, "cover_aspect", None)),
             content_type=normalize_optional_text(getattr(task, "content_type", None)),
+            downloads=getattr(task, "downloads", None),
             origin=origin,
             retry_payload=backend.serialize_task_for_retry(task),
         )
@@ -1631,6 +1952,34 @@ def _queue_task_visible_to_actor(
     )
 
 
+def _resolve_viewer_download_id(book_id: str) -> str:
+    """Map a non-admin's opaque download id back to the task it names (#1418).
+
+    Only the caller's own request-linked downloads are searched, so an id that
+    doesn't resolve comes back unchanged and fails the route's usual lookup.
+    """
+    if not is_public_download_id(book_id):
+        return book_id
+    is_admin, db_user_id, _ = _resolve_status_scope()
+    if is_admin or db_user_id is None:
+        return book_id
+    candidates = [
+        task_id
+        for tasks in backend.book_queue.get_status(user_id=db_user_id).values()
+        for task_id, task in tasks.items()
+        if getattr(task, "request_id", None) is not None
+    ]
+    if download_history_service is not None:
+        candidates.extend(download_history_service.list_request_task_ids(user_id=db_user_id))
+    return match_public_download_id(book_id, candidates) or book_id
+
+
+def _viewer_queue_task_id(task_id: str) -> str:
+    """Return the id a non-admin sees for a live queue task."""
+    task = backend.book_queue.get_task(task_id)
+    return viewer_download_id(task_id, getattr(task, "request_id", None))
+
+
 backend.book_queue.set_queue_hook(_record_download_queued)
 backend.book_queue.set_terminal_status_hook(_record_download_terminal_snapshot)
 
@@ -1684,31 +2033,61 @@ def api_status() -> Response | tuple[Response, int]:
                 user_id=user_id,
             )
             _emit_request_update_events(updated_requests)
-        return jsonify(status)
+        return jsonify(status if is_admin else redact_status(status))
     except _OPERATIONAL_ERRORS as e:
         logger.error_trace(f"Status error: {e}")
         return jsonify({"error": str(e)}), 500
 
 
+def _attachment_filename_options(download_name: str) -> dict[str, str]:
+    """Content-Disposition filename options, RFC 2231-encoded when not plain ASCII.
+
+    Mirrors what send_file does, for responses built from a generator.
+    """
+    try:
+        download_name.encode("ascii")
+    except UnicodeEncodeError:
+        simple = unicodedata.normalize("NFKD", download_name)
+        simple = simple.encode("ascii", "ignore").decode("ascii")
+        quoted = quote(download_name, safe="!#$&+^`|~")
+        return {"filename": simple, "filename*": f"UTF-8''{quoted}"}
+    return {"filename": download_name}
+
+
+def _zip_download_response(file_paths: list[str], task: DownloadTask) -> Response:
+    """Send a multi-file download (audiobook chapters, a pack) as one streamed ZIP."""
+    download_name = build_filename(task.title or "download", task.author, task.year, "zip")
+    response = Response(stream_zip(file_paths), mimetype="application/zip")
+    response.headers.set(
+        "Content-Disposition", "attachment", **_attachment_filename_options(download_name)
+    )
+    return response
+
+
 @app.route("/api/localdownload", methods=["GET"])
 @login_required
 def api_local_download() -> Response | tuple[Response, int]:
-    """Download an EPUB file from local storage if available.
+    """Download a completed book from local storage if available.
 
     Query Parameters:
         id (str): Book identifier (MD5 hash)
 
     Returns:
-        flask.Response: The EPUB file if found, otherwise an error response.
+        flask.Response: The file if found, a ZIP of all of them when the download
+        produced several (a live task only; history keeps just the first), otherwise
+        an error response.
 
     """
     book_id = request.args.get("id", "")
     if not book_id:
         return jsonify({"error": "No book ID provided"}), 400
+    book_id = _resolve_viewer_download_id(book_id)
 
     try:
-        file_path, book_info = backend.get_book_path(book_id)
-        if file_path is None:
+        # The path, not the bytes: send_file streams it off disk, where reading it
+        # first cost two resident copies of the whole book.
+        file_paths, book_info = backend.get_book_paths(book_id)
+        if not file_paths:
             # Fallback for dismissed/history entries where queue task may no longer exist.
             if download_history_service is not None:
                 is_admin, db_user_id, can_access_status = _resolve_status_scope()
@@ -1729,14 +2108,28 @@ def api_local_download() -> Response | tuple[Response, int]:
 
             # Book data not found or not available
             return jsonify({"error": "File not found"}), 404
+
+        is_admin, db_user_id, can_access_status = _resolve_status_scope()
+        if not is_admin:
+            actor_username = session.get("user_id")
+            if not can_access_status or not _task_owned_by_actor(
+                book_info,
+                actor_user_id=db_user_id,
+                actor_username=actor_username if isinstance(actor_username, str) else None,
+            ):
+                return jsonify({"error": "File not found"}), 404
+
+        if book_info is not None and len(file_paths) > 1:
+            return _zip_download_response(file_paths, book_info)
+
         file_name = book_info.get_filename() if book_info is not None else Path(book_id).name
-        # Stream straight from disk: Werkzeug's FileWrapper sends it in chunks, so peak
-        # memory is constant regardless of file size, and we gain ETag/Range support.
-        return send_file(file_path, download_name=file_name, as_attachment=True)
+        return send_file(file_paths[0], download_name=file_name, as_attachment=True)
 
     except _OPERATIONAL_ERRORS as e:
+        # The details are logged. The message of an OSError names the file's path on the server,
+        # which a non-admin never sees anywhere else.
         logger.error_trace(f"Local download error: {e}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Could not read the file"}), 500
 
 
 @app.route("/api/covers/<cover_id>", methods=["GET"])
@@ -1748,10 +2141,11 @@ def api_cover(cover_id: str) -> Response | tuple[Response, int]:
     Images are cached to disk for faster subsequent requests.
 
     Path Parameters:
-        cover_id (str): Cover identifier (book ID or composite key for universal mode)
+        cover_id (str): Cover identifier (book ID or composite key for universal mode).
+            Kept for the link shape only; the cache entry is chosen by `url`.
 
     Query Parameters:
-        url (str): Base64-encoded original image URL (required on first request)
+        url (str): Base64-encoded original image URL (required)
 
     Returns:
         flask.Response: Binary image data with appropriate Content-Type, or 404.
@@ -1761,24 +2155,12 @@ def api_cover(cover_id: str) -> Response | tuple[Response, int]:
         import base64
 
         from shelfmark.config.env import is_covers_cache_enabled
-        from shelfmark.core.image_cache import get_image_cache
+        from shelfmark.core.image_cache import cover_cache_key, get_image_cache
 
         # Check if caching is enabled
         if not is_covers_cache_enabled():
             return jsonify({"error": "Cover caching is disabled"}), 404
 
-        cache = get_image_cache()
-
-        # Try to get from cache first
-        cached = cache.get(cover_id)
-        if cached:
-            image_data, content_type = cached
-            response = app.response_class(response=image_data, status=200, mimetype=content_type)
-            response.headers["Cache-Control"] = "public, max-age=86400"
-            response.headers["X-Cache"] = "HIT"
-            return response
-
-        # Cache miss - get URL from query parameter
         encoded_url = request.args.get("url")
         if not encoded_url:
             return jsonify({"error": "Cover URL not provided"}), 404
@@ -1789,8 +2171,21 @@ def api_cover(cover_id: str) -> Response | tuple[Response, int]:
             logger.warning("Failed to decode cover URL: %s", e)
             return jsonify({"error": "Invalid cover URL encoding"}), 400
 
+        # The entry is keyed by the URL, never by the caller-supplied id: the id would
+        # let any user cache an image of their choosing under another book's link.
+        cache = get_image_cache()
+        cache_key = cover_cache_key(original_url)
+
+        cached = cache.get(cache_key)
+        if cached:
+            image_data, content_type = cached
+            response = app.response_class(response=image_data, status=200, mimetype=content_type)
+            response.headers["Cache-Control"] = "public, max-age=86400"
+            response.headers["X-Cache"] = "HIT"
+            return response
+
         # Fetch and cache the image
-        result = cache.fetch_and_cache(cover_id, original_url)
+        result = cache.fetch_and_cache(cache_key, original_url)
         if not result:
             return jsonify({"error": "Failed to fetch cover image"}), 404
 
@@ -1817,6 +2212,8 @@ def api_cancel_download(book_id: str) -> Response | tuple[Response, int]:
         flask.Response: JSON status indicating success or failure.
 
     """
+    viewer_book_id = book_id
+    book_id = _resolve_viewer_download_id(book_id)
     try:
         task = backend.book_queue.get_task(book_id)
         if task is None:
@@ -1845,7 +2242,7 @@ def api_cancel_download(book_id: str) -> Response | tuple[Response, int]:
 
         success = backend.cancel_download(book_id)
         if success:
-            return jsonify({"status": "cancelled", "book_id": book_id})
+            return jsonify({"status": "cancelled", "book_id": viewer_book_id})
         return jsonify({"error": "Failed to cancel download or book not found"}), 404
     except _OPERATIONAL_ERRORS as e:
         logger.error_trace(f"Cancel download error: {e}")
@@ -1856,6 +2253,8 @@ def api_cancel_download(book_id: str) -> Response | tuple[Response, int]:
 @login_required
 def api_retry_download(book_id: str) -> Response | tuple[Response, int]:
     """Retry a failed download."""
+    viewer_book_id = book_id
+    book_id = _resolve_viewer_download_id(book_id)
     try:
         task = backend.book_queue.get_task(book_id)
         history_row = None
@@ -1920,7 +2319,7 @@ def api_retry_download(book_id: str) -> Response | tuple[Response, int]:
             )
 
         if success:
-            return jsonify({"status": "queued", "book_id": book_id})
+            return jsonify({"status": "queued", "book_id": viewer_book_id})
 
         if error == "Download not found":
             return jsonify({"error": error}), 404
@@ -1957,6 +2356,8 @@ def api_set_priority(book_id: str) -> Response | tuple[Response, int]:
         if identity_error is not None:
             return identity_error, 403
 
+        viewer_book_id = book_id
+        book_id = _resolve_viewer_download_id(book_id)
         task = backend.book_queue.get_task(book_id)
         if task is None:
             return jsonify({"error": "Failed to update priority or book not found"}), 404
@@ -1971,7 +2372,7 @@ def api_set_priority(book_id: str) -> Response | tuple[Response, int]:
         success = backend.set_book_priority(book_id, priority)
 
         if success:
-            return jsonify({"status": "updated", "book_id": book_id, "priority": priority})
+            return jsonify({"status": "updated", "book_id": viewer_book_id, "priority": priority})
         return jsonify({"error": "Failed to update priority or book not found"}), 404
     except ValueError:
         return jsonify({"error": "Invalid priority value"}), 400
@@ -2011,6 +2412,10 @@ def api_reorder_queue() -> Response | tuple[Response, int]:
             return identity_error, 403
 
         if not is_admin:
+            book_priorities = {
+                _resolve_viewer_download_id(str(book_id)): priority
+                for book_id, priority in book_priorities.items()
+            }
             owned_book_priorities = {}
             for book_id in book_priorities:
                 task = backend.book_queue.get_task(str(book_id))
@@ -2049,7 +2454,7 @@ def api_queue_order() -> Response | tuple[Response, int]:
             return identity_error, 403
         if not is_admin:
             queue_order = [
-                item
+                {**item, "id": _viewer_queue_task_id(str(item.get("id", "")))}
                 for item in queue_order
                 if _queue_task_visible_to_actor(
                     str(item.get("id", "")),
@@ -2080,7 +2485,7 @@ def api_active_downloads() -> Response | tuple[Response, int]:
             return identity_error, 403
         if not is_admin:
             active_downloads = [
-                task_id
+                _viewer_queue_task_id(task_id)
                 for task_id in active_downloads
                 if _queue_task_visible_to_actor(
                     task_id,
@@ -2859,7 +3264,10 @@ def api_metadata_search() -> Response | tuple[Response, int]:
 
         # Extract custom search field values from query params
         fields: dict[str, Any] = {}
+        may_use_account = _session_may_use_provider_account()
         for search_field in provider.search_fields:
+            if search_field.key in provider.account_search_fields and not may_use_account:
+                continue
             value = request.args.get(search_field.key)
             if value is not None:
                 # Strip string values to handle whitespace-only input
@@ -2879,7 +3287,7 @@ def api_metadata_search() -> Response | tuple[Response, int]:
             return jsonify({"error": "Either 'query' or search field values are required"}), 400
 
         options = MetadataSearchOptions(
-            query=query, limit=limit, page=page, sort=sort_order, fields=fields
+            query=query, limit=limit, page=page, sort=sort_order, fields=fields, user_id=db_user_id
         )
         search_result = provider.search_paginated(options)
 
@@ -2893,6 +3301,8 @@ def api_metadata_search() -> Response | tuple[Response, int]:
             if book_dict.get("cover_url"):
                 cache_id = f"{book_dict['provider']}_{book_dict['provider_id']}"
                 book_dict["cover_url"] = transform_cover_url(book_dict["cover_url"], cache_id)
+        for book, book_dict in zip(search_result.books, books_data, strict=True):
+            _attach_library_ownership(book, book_dict)
 
         response_data = {
             "books": books_data,
@@ -2946,11 +3356,33 @@ def api_metadata_field_options() -> Response:
         if not provider or not provider.is_available():
             return jsonify({"options": []})
 
+        if field_key in provider.account_search_fields and not _session_may_use_provider_account():
+            return jsonify({"options": []})
+
         options = provider.get_search_field_options(field_key, query=query_text or None)
         return jsonify({"options": options})
     except _OPERATIONAL_ERRORS as e:
         logger.warning("Metadata field options endpoint error: %s", e)
         return jsonify({"options": []})
+
+
+def _attach_library_ownership(book: Any, book_dict: dict[str, Any]) -> None:
+    """Add per-format ownership under ``library`` when a library check is enabled."""
+    from shelfmark.core import library_index
+
+    owned = library_index.ownership(book)
+    if owned is not None:
+        book_dict["library"] = owned
+
+
+def _session_may_use_provider_account() -> bool:
+    """Whether this session may read or change the metadata provider's own account.
+
+    A provider such as Hardcover is signed in as one account, the instance owner's, and its lists
+    and shelves belong to that person. With no authentication configured the one user is the owner.
+    Otherwise only an admin may use them.
+    """
+    return get_auth_mode() == "none" or bool(session.get("is_admin", False))
 
 
 def _resolve_metadata_provider(provider_name: str) -> MetadataProvider:
@@ -3001,6 +3433,7 @@ def api_metadata_book(provider: str, book_id: str) -> Response | tuple[Response,
             return jsonify({"error": "Book not found"}), 404
 
         book_dict = asdict(book)
+        _attach_library_ownership(book, book_dict)
 
         # Transform cover_url to local proxy URL when caching is enabled
         from shelfmark.core.utils import transform_cover_url
@@ -3052,6 +3485,8 @@ def _handle_target_errors(
 def api_metadata_book_targets(provider: str, book_id: str) -> Response | tuple[Response, int]:
     """Get provider-managed list/status targets for a specific book."""
     prov = _resolve_metadata_provider(provider)
+    if not _session_may_use_provider_account():
+        return jsonify({"options": []})
     return jsonify({"options": prov.get_book_targets(book_id)})
 
 
@@ -3069,6 +3504,8 @@ def api_metadata_book_targets_batch(provider: str) -> Response | tuple[Response,
 
     book_ids = [str(bid) for bid in raw_ids[:50]]
 
+    if not _session_may_use_provider_account():
+        return jsonify({"results": {book_id: [] for book_id in book_ids}})
     return jsonify({"results": prov.get_book_targets_batch(book_ids)})
 
 
@@ -3079,6 +3516,8 @@ def api_metadata_book_targets_update(
     provider: str, book_id: str
 ) -> Response | tuple[Response, int]:
     """Set whether a book belongs to a provider-managed list or shelf."""
+    if not _session_may_use_provider_account():
+        return jsonify({"error": "Admin access required"}), 403
     prov = _resolve_metadata_provider(provider)
 
     payload = request.get_json(silent=True) or {}
@@ -3121,7 +3560,7 @@ def api_releases() -> Response | tuple[Response, int]:
     try:
         from dataclasses import asdict
 
-        from shelfmark.core.search_plan import build_release_search_plan
+        from shelfmark.core.release_search import search_source_releases
         from shelfmark.metadata_providers import (
             BookMetadata,
             get_provider,
@@ -3129,6 +3568,7 @@ def api_releases() -> Response | tuple[Response, int]:
             is_provider_registered,
         )
         from shelfmark.release_sources import (
+            apply_column_visibility,
             browse_record_to_book_metadata,
             get_source,
             list_available_sources,
@@ -3140,55 +3580,17 @@ def api_releases() -> Response | tuple[Response, int]:
             source_name: str, search_book: BookMetadata
         ) -> tuple[Any | None, list[Any], str | None]:
             """Search one source and return any error message instead of raising."""
-            try:
-                source = get_source(source_name)
-
-                plan = build_release_search_plan(
-                    search_book,
-                    languages=browse_filters.lang
-                    if source_query_filters is not None
-                    else languages,
-                    manual_query=query_text if source_query_filters is not None else manual_query,
-                    indexers=indexers,
-                    source_filters=source_query_filters,
-                    user_id=db_user_id,
-                    content_type=content_type,
-                )
-
-                if plan.source_filters is not None:
-                    planned_query = plan.manual_query or plan.primary_query
-                    planned_query_type = "query"
-                elif plan.manual_query:
-                    planned_query = plan.manual_query
-                    planned_query_type = "manual"
-                elif not expand_search and plan.isbn_candidates:
-                    planned_query = plan.isbn_candidates[0]
-                    planned_query_type = "isbn"
-                else:
-                    planned_query = plan.primary_query
-                    planned_query_type = "title_author"
-
-                logger.debug(
-                    "Searching %s: %s='%s' (title='%s', authors=%s, expand=%s, content_type=%s)",
-                    source_name,
-                    planned_query_type,
-                    planned_query,
-                    search_book.title,
-                    search_book.authors,
-                    expand_search,
-                    content_type,
-                )
-
-                releases = source.search(
-                    search_book, plan, expand_search=expand_search, content_type=content_type
-                )
-            except ValueError:
-                return None, [], f"Unknown source: {source_name}"
-            except (SourceUnavailableError, *_OPERATIONAL_ERRORS) as e:
-                logger.warning("Release search failed for source %s: %s", source_name, e)
-                return None, [], f"{source_name}: {e!s}"
-            else:
-                return source, releases, None
+            return search_source_releases(
+                source_name,
+                search_book,
+                languages=(browse_filters.lang if source_query_filters is not None else languages),
+                manual_query=(query_text if source_query_filters is not None else manual_query),
+                indexers=indexers,
+                expand_search=expand_search,
+                content_type=content_type,
+                source_filters=source_query_filters,
+                user_id=db_user_id,
+            )
 
         provider = request.args.get("provider", "").strip()
         book_id = request.args.get("book_id", "").strip()
@@ -3225,7 +3627,6 @@ def api_releases() -> Response | tuple[Response, int]:
         source_query_filters = None
         is_source_provider = bool(provider) and source_results_are_releases(provider)
 
-        book: BookMetadata
         # Set only for an ebook search of a metadata-provider book with no manual query.
         ranking_identity: RankingIdentity | None = None
 
@@ -3236,9 +3637,31 @@ def api_releases() -> Response | tuple[Response, int]:
                 return jsonify(
                     {"error": f"Source does not support browse release search: {source_filter}"}
                 ), 400
-
-            book = _build_source_query_book(query_text, browse_filters)
             source_query_filters = browse_filters
+
+        # Determine which release sources to search
+        if source_filter:
+            sources_to_search = [source_filter]
+        elif is_source_provider:
+            # Source-backed browse flows stay within the source that produced the record.
+            sources_to_search = [provider]
+        else:
+            # Search only enabled sources
+            sources_to_search = [src["name"] for src in list_available_sources() if src["enabled"]]
+
+        # The policy gate comes before anything is asked of a source: listing goes
+        # through the shared source credentials, so a user whose policy never shows
+        # a release list (request_book, blocked) must not reach them.
+        sources_to_search, refused_mode = _sources_allowed_for_listing(
+            sources_to_search, content_type
+        )
+        if not sources_to_search and refused_mode is not None:
+            return _release_listing_block_response(refused_mode)
+
+        book: BookMetadata
+
+        if source_query_filters is not None:
+            book = _build_source_query_book(query_text, browse_filters)
         elif is_source_provider:
             # Source-backed browse flows can reopen the release modal with provider=<source name>.
             # In that flow, treat the source-native record as release-search context instead of
@@ -3289,6 +3712,12 @@ def api_releases() -> Response | tuple[Response, int]:
             # filtered authors (primary authors only, excluding translators/narrators),
             # which gives better release search results than the unfiltered search data
             if title_param:
+                if title_param != book.title:
+                    # A different title is one the search result carried and the book
+                    # record does not, typically a translation's ("Kinder des Nebels" for
+                    # "Mistborn: The Final Empire"). The provider's search_title derives
+                    # from the original and would otherwise win the release search.
+                    book.search_title = title_param
                 book.title = title_param
 
             # Ebook searches rank releases by volume and medium; audiobook searches and
@@ -3305,16 +3734,6 @@ def api_releases() -> Response | tuple[Response, int]:
                     )
                 except Exception as exc:  # noqa: BLE001 - ranking must never fail the search
                     logger.debug("Release match identity failed for %s: %s", book.provider_id, exc)
-
-        # Determine which release sources to search
-        if source_query_filters is not None or source_filter:
-            sources_to_search = [source_filter]
-        elif is_source_provider:
-            # Source-backed browse flows stay within the source that produced the record.
-            sources_to_search = [provider]
-        else:
-            # Search only enabled sources
-            sources_to_search = [src["name"] for src in list_available_sources() if src["enabled"]]
 
         # Search each source for releases.
         #
@@ -3334,13 +3753,14 @@ def api_releases() -> Response | tuple[Response, int]:
         warmup.note_user_search()
 
         with search_deadline.search_deadline():
-            for source_name in sources_to_search:
+            for index, source_name in enumerate(sources_to_search):
                 if search_deadline.expired():
                     logger.warning("Release search budget spent; %s not searched", source_name)
                     errors.append(f"{source_name}: {search_deadline.deadline_message()}")
                     continue
 
-                source, releases, error = _search_source_releases(source_name, book)
+                with search_deadline.unit_deadline(waiting=len(sources_to_search) - index - 1):
+                    source, releases, error = _search_source_releases(source_name, book)
                 if source is not None:
                     source_instances[source_name] = source
                     all_releases.extend(releases)
@@ -3358,12 +3778,21 @@ def api_releases() -> Response | tuple[Response, int]:
         if sources_to_search and sources_to_search[0] in source_instances:
             try:
                 first_source = source_instances[sources_to_search[0]]
-                column_config = serialize_column_config(first_source.get_column_config())
+                column_config = serialize_column_config(
+                    apply_column_visibility(
+                        first_source.get_column_config(),
+                        content_type=normalize_content_type(content_type),
+                        is_setting_enabled=lambda key: bool(
+                            app_config.get(key, True, user_id=db_user_id)
+                        ),
+                    )
+                )
             except _OPERATIONAL_ERRORS as e:
                 logger.warning("Failed to get column config: %s", e)
 
         # Convert book to dict and transform cover_url
         book_dict = asdict(book)
+        _attach_library_ownership(book, book_dict)
         from shelfmark.core.utils import transform_cover_url
 
         if book_dict.get("cover_url"):
@@ -3372,8 +3801,13 @@ def api_releases() -> Response | tuple[Response, int]:
 
         search_info = {}
         for source_name, source_instance in source_instances.items():
+            info: dict[str, str | int | None] = {}
             if hasattr(source_instance, "last_search_type") and source_instance.last_search_type:
-                search_info[source_name] = {"search_type": source_instance.last_search_type}
+                info["search_type"] = source_instance.last_search_type
+            if hasattr(source_instance, "total_results"):
+                info["total_results"] = source_instance.total_results
+            if info:
+                search_info[source_name] = info
             # A search cut short by its deadline still returns what it found; say so.
             if getattr(source_instance, "last_search_incomplete", False) is True:
                 search_info.setdefault(source_name, {})["incomplete"] = True
@@ -3436,6 +3870,9 @@ def api_release_source_record(source_name: str, record_id: str) -> Response | tu
         from shelfmark.release_sources import get_source
 
         source = get_source(source_name)
+        refused_mode = _release_source_record_refusal(source_name)
+        if refused_mode is not None:
+            return _release_listing_block_response(refused_mode)
         record = source.get_record(record_id)
         if record is None:
             return jsonify({"error": "Record not found"}), 404
@@ -3720,7 +4157,7 @@ def handle_connect() -> None:
 
         user_id = None if is_admin else db_user_id
         status = backend.queue_status(user_id=user_id)
-        emit("status_update", status)
+        emit("status_update", status if is_admin else redact_status(status))
     except _OPERATIONAL_ERRORS:
         logger.exception("Error sending initial status")
 
@@ -3757,7 +4194,7 @@ def handle_status_request() -> None:
 
         user_id = None if is_admin else db_user_id
         status = backend.queue_status(user_id=user_id)
-        emit("status_update", status)
+        emit("status_update", status if is_admin else redact_status(status))
     except _OPERATIONAL_ERRORS:
         logger.exception("Error handling status request")
         emit("error", {"message": "Failed to get status"})

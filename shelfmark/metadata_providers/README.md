@@ -14,6 +14,7 @@ Metadata providers allow searching for books and retrieving detailed metadata (t
 | **Open Library** | No | Free, open-source library catalog from the Internet Archive. Rate limited to ~100 requests/minute |
 | **Google Books** | Yes (API key) | Google's book database with broad coverage and a free API key option |
 | **Audible** | No | Audiobooks only. Audible's public catalog API — the only provider that supplies narrator, runtime, abridgement and an ASIN. Optionally enriched with genres/ISBN from [audnex.us](https://audnex.us). Set it as the *audiobook* provider; it has no ebooks |
+| **DNB** | No | Deutsche Nationalbibliothek, the German national library catalog. Best coverage for German-language editions |
 
 
 ## Core Components
@@ -72,6 +73,7 @@ class MetadataSearchOptions:
     sort: SortOrder = SortOrder.RELEVANCE
     limit: int = 40
     page: int = 1
+    user_id: int | None = None  # Searching user, for per-user settings
 ```
 
 ### SortOrder

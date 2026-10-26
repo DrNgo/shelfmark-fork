@@ -1,5 +1,5 @@
 // Search mode constants and type
-export const SEARCH_MODE = {
+const SEARCH_MODE = {
   DIRECT: 'direct',
   UNIVERSAL: 'universal',
 } as const;
@@ -32,6 +32,7 @@ export interface Book {
   status_message?: string; // Detailed status message (e.g., "Trying Libgen (2/5)")
   added_time?: number; // Timestamp when added to queue
   content_type?: string; // "ebook", "audiobook", or related book subtype
+  library?: LibraryOwnership; // "already in your library" flags from the library check
   source?: string; // Release source handler (e.g., "direct_download", "prowlarr")
   source_display_name?: string; // Human-readable source name (e.g., "Direct Download")
   // Metadata provider fields (used in universal search mode)
@@ -57,6 +58,23 @@ export interface Book {
   titles_by_language?: Record<string, string>;
   username?: string;
   retry_available?: boolean;
+  downloads?: number;
+  extra?: Record<string, unknown>;
+}
+
+/**
+ * Extract download count from a book's data.
+ * Checks both the direct `downloads` field and the `extra.downloads` fallback.
+ */
+export function getDownloadsCount(book: Book): number | null {
+  if (book.downloads != null && book.downloads > 0) {
+    return book.downloads;
+  }
+  const extraDownloads = book.extra?.downloads;
+  if (extraDownloads != null && typeof extraDownloads === 'number' && extraDownloads > 0) {
+    return extraDownloads;
+  }
+  return null;
 }
 
 // Status response types
@@ -71,7 +89,7 @@ export interface StatusData {
 }
 
 // Button states
-export type ButtonState =
+type ButtonState =
   | 'download'
   | 'queued'
   | 'resolving'
@@ -139,24 +157,24 @@ export interface TextSearchField extends SearchFieldBase {
   suggestions_min_query_length?: number;
 }
 
-export interface NumberSearchField extends SearchFieldBase {
+interface NumberSearchField extends SearchFieldBase {
   type: 'NumberSearchField';
   min?: number;
   max?: number;
   step?: number;
 }
 
-export interface SelectSearchField extends SearchFieldBase {
+interface SelectSearchField extends SearchFieldBase {
   type: 'SelectSearchField';
   options: SortOption[];
 }
 
-export interface CheckboxSearchField extends SearchFieldBase {
+interface CheckboxSearchField extends SearchFieldBase {
   type: 'CheckboxSearchField';
   default?: boolean;
 }
 
-export interface DynamicSelectSearchField extends SearchFieldBase {
+interface DynamicSelectSearchField extends SearchFieldBase {
   type: 'DynamicSelectSearchField';
   options_endpoint: string;
 }
@@ -168,7 +186,7 @@ export type MetadataSearchField =
   | CheckboxSearchField
   | DynamicSelectSearchField;
 
-export type QueryTargetSource = 'general' | 'manual' | 'direct-field' | 'provider-field';
+type QueryTargetSource = 'general' | 'manual' | 'direct-field' | 'provider-field';
 
 export interface QueryTargetOption {
   key: string;
@@ -184,12 +202,12 @@ export type ContentType = 'ebook' | 'audiobook';
 
 export type RequestPolicyMode = 'download' | 'request_release' | 'request_book' | 'blocked';
 
-export interface RequestPolicyDefaults {
+interface RequestPolicyDefaults {
   ebook: RequestPolicyMode;
   audiobook: RequestPolicyMode;
 }
 
-export interface RequestPolicySourceMode {
+interface RequestPolicySourceMode {
   source: string;
   supported_content_types: string[];
   browse_results_are_releases?: boolean;
@@ -205,7 +223,7 @@ export interface RequestPolicyResponse {
   source_modes: RequestPolicySourceMode[];
 }
 
-export interface RequestContextPayload {
+interface RequestContextPayload {
   source: string;
   content_type: ContentType;
   request_level: 'book' | 'release';
@@ -261,7 +279,15 @@ export interface QueuedDownloadResult {
 
 export type RequestSubmissionResult = RequestRecord | QueuedDownloadResult;
 
-export type BooksOutputMode = 'folder' | 'booklore' | 'email';
+/** How the library holds a book, per format: owned outright, or inside a collection. */
+type LibraryHolding = 'owned' | 'collection';
+
+export interface LibraryOwnership {
+  ebook?: LibraryHolding | null;
+  audiobook?: LibraryHolding | null;
+}
+
+type BooksOutputMode = 'folder' | 'booklore' | 'email';
 
 export interface AppConfig {
   calibre_web_url: string;
@@ -272,6 +298,7 @@ export interface AppConfig {
   release_version: string;
   book_languages: Language[];
   default_language: string[];
+  default_content_type: ContentType;
   supported_formats: string[];
   supported_audiobook_formats: string[]; // Audiobook formats (m4b, mp3)
   search_mode: SearchMode;
@@ -311,7 +338,7 @@ export interface MetadataProvidersResponse {
   configured_provider_combined: string | null;
 }
 
-export interface MetadataCapability {
+interface MetadataCapability {
   key: string;
   field_key?: string;
   sort?: string;
@@ -375,7 +402,7 @@ export interface ReleaseSource {
 }
 
 // Column schema types for plugin-driven release list UI
-export type ColumnRenderType =
+type ColumnRenderType =
   | 'text'
   | 'badge'
   | 'tags'
@@ -385,7 +412,7 @@ export type ColumnRenderType =
   | 'indexer_protocol'
   | 'flag_icon'
   | 'format_content_type';
-export type ColumnAlign = 'left' | 'center' | 'right';
+type ColumnAlign = 'left' | 'center' | 'right';
 
 export interface ColumnColorHint {
   type: 'map' | 'static'; // 'map' uses colorMaps.ts, 'static' is a fixed Tailwind class
@@ -407,7 +434,7 @@ export interface ColumnSchema {
 }
 
 // Leading cell config - what to show in the left-most position of each row
-export type LeadingCellType = 'thumbnail' | 'badge' | 'none';
+type LeadingCellType = 'thumbnail' | 'badge' | 'none';
 
 export interface LeadingCellConfig {
   type: LeadingCellType;
@@ -416,13 +443,13 @@ export interface LeadingCellConfig {
   uppercase?: boolean; // Force uppercase for badge text
 }
 
-export interface ExtraSortOption {
+interface ExtraSortOption {
   label: string; // Display label in the sort dropdown
   sort_key: string; // Field to sort by on the Release object
   default_direction?: 'asc' | 'desc'; // Which way "best first" runs (defaults to desc)
 }
 
-export interface SourceActionButton {
+interface SourceActionButton {
   label: string; // Button text (e.g., "Refresh search")
   action: string; // Action type: "expand" triggers expand_search
 }
@@ -451,7 +478,7 @@ export interface Release {
   size_bytes?: number; // Size in bytes for sorting
   download_url?: string;
   info_url?: string; // Link to release info page (e.g., tracker page) - makes title clickable
-  protocol?: 'http' | 'torrent' | 'nzb' | 'dcc';
+  protocol?: 'http' | 'torrent' | 'nzb' | 'dcc' | 'soulseek';
   indexer?: string; // Display name for the source/indexer
   seeders?: number; // For torrents
   peers?: string; // For torrents: "seeders/leechers" display string
@@ -470,8 +497,9 @@ export interface ReleaseMatch {
 }
 
 // Search info returned by release sources
-export interface SourceSearchInfo {
+interface SourceSearchInfo {
   search_type: 'isbn' | 'title_author' | 'categories' | 'expanded' | 'manual' | 'query';
+  total_results?: number | string | null;
 }
 
 // Response from /api/releases endpoint

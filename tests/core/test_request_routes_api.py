@@ -98,6 +98,38 @@ class TestDownloadPolicyGuards:
         assert resp.json["required_mode"] == "request_release"
         mock_queue_release.assert_not_called()
 
+    def test_release_download_endpoint_applies_policy_when_session_lacks_is_admin(
+        self, main_module, client
+    ):
+        user = _create_user(main_module, prefix="reader")
+        with client.session_transaction() as sess:
+            sess["user_id"] = user["username"]
+            sess["db_user_id"] = user["id"]
+            sess.pop("is_admin", None)
+
+        with patch.object(main_module, "get_auth_mode", return_value="builtin"):
+            with patch.object(
+                main_module,
+                "load_users_request_policy_settings",
+                return_value=_policy(default_ebook="request_release"),
+            ):
+                with patch.object(
+                    main_module.backend, "queue_release", return_value=(True, None)
+                ) as mock_queue_release:
+                    resp = client.post(
+                        "/api/releases/download",
+                        json={
+                            "source": "direct_download",
+                            "source_id": "book-123",
+                            "search_mode": "direct",
+                        },
+                    )
+
+        assert resp.status_code == 403
+        assert resp.json["code"] == "policy_requires_request"
+        assert resp.json["required_mode"] == "request_release"
+        mock_queue_release.assert_not_called()
+
     def test_release_download_endpoint_blocks_before_queue_when_policy_blocked(
         self, main_module, client
     ):
@@ -743,6 +775,54 @@ class TestRequestRoutes:
         assert resp.json["code"] == "duplicate_pending_request"
         assert main_module.user_db.list_requests(user_id=user["id"]) == []
 
+    @pytest.mark.parametrize("bad_item", [1, "book", None, ["x"]])
+    def test_batch_rejects_non_object_request_items(self, main_module, client, bad_item):
+        user = _create_user(main_module, prefix="reader")
+        _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
+
+        with patch.object(main_module, "get_auth_mode", return_value="builtin"):
+            resp = client.post("/api/requests/batch", json={"requests": [bad_item]})
+
+        assert resp.status_code == 400
+        assert "requests must contain objects" in resp.json["error"]
+
+    def test_batch_non_object_item_rejects_whole_batch(self, main_module, client):
+        user = _create_user(main_module, prefix="reader")
+        _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
+        policy = _policy(default_ebook="request_book")
+
+        valid_request = {
+            "book_data": {
+                "title": "Batch Valid Alongside Bad Item",
+                "author": "Shelfmark",
+                "content_type": "ebook",
+                "provider": "openlibrary",
+                "provider_id": "batch-valid-alongside-bad-1",
+            },
+            "context": {
+                "source": "*",
+                "content_type": "ebook",
+                "request_level": "book",
+            },
+        }
+
+        with patch.object(main_module, "get_auth_mode", return_value="builtin"):
+            with patch.object(
+                main_module, "load_users_request_policy_settings", return_value=policy
+            ):
+                with patch(
+                    "shelfmark.core.request_routes.load_users_request_policy_settings",
+                    return_value=policy,
+                ):
+                    resp = client.post(
+                        "/api/requests/batch",
+                        json={"requests": [valid_request, "not-an-object"]},
+                    )
+
+        assert resp.status_code == 400
+        assert "requests must contain objects" in resp.json["error"]
+        assert main_module.user_db.list_requests(user_id=user["id"]) == []
+
     def test_create_request_emits_websocket_events(self, main_module, client):
         user = _create_user(main_module, prefix="reader")
         _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
@@ -1227,6 +1307,88 @@ class TestRequestRoutes:
         assert updated is not None
         assert updated["user_id"] == user["id"]
         assert updated["status"] == "rejected"
+
+    def test_admin_reopen_undoes_a_rejection(self, main_module, client):
+        user = _create_user(main_module, prefix="reader")
+        admin = _create_user(main_module, prefix="admin", role="admin")
+        policy = _policy(default_ebook="request_book")
+
+        _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
+        create_payload = {
+            "book_data": {
+                "title": "My Dog Thinks It's a Cat",
+                "author": "Some Author",
+                "content_type": "ebook",
+                "provider": "openlibrary",
+                "provider_id": "ol-reopen",
+            },
+            "context": {
+                "source": "direct_download",
+                "content_type": "ebook",
+                "request_level": "book",
+            },
+        }
+
+        with patch.object(main_module, "get_auth_mode", return_value="builtin"):
+            with patch.object(
+                main_module, "load_users_request_policy_settings", return_value=policy
+            ):
+                with patch(
+                    "shelfmark.core.request_routes.load_users_request_policy_settings",
+                    return_value=policy,
+                ):
+                    create_resp = client.post("/api/requests", json=create_payload)
+                    request_id = create_resp.json["id"]
+
+                    reopen_as_user_resp = client.post(f"/api/admin/requests/{request_id}/reopen")
+
+                    _set_session(
+                        client, user_id=admin["username"], db_user_id=admin["id"], is_admin=True
+                    )
+                    reopen_pending_resp = client.post(f"/api/admin/requests/{request_id}/reopen")
+                    client.post(
+                        f"/api/admin/requests/{request_id}/reject",
+                        json={"admin_note": "Sounds like a dumb book"},
+                    )
+                    main_module.activity_view_state_service.dismiss(
+                        viewer_scope="admin:shared",
+                        item_type="request",
+                        item_key=f"request:{request_id}",
+                    )
+                    with patch.object(main_module.ws_manager, "is_enabled", return_value=True):
+                        with patch.object(main_module.ws_manager.socketio, "emit") as mock_emit:
+                            reopen_resp = client.post(
+                                f"/api/admin/requests/{request_id}/reopen",
+                                json={"admin_note": "Therapy book, fair enough"},
+                            )
+                    reopen_again_resp = client.post(f"/api/admin/requests/{request_id}/reopen")
+
+        assert create_resp.status_code == 201
+        assert reopen_as_user_resp.status_code == 403
+        assert reopen_pending_resp.status_code == 409
+        assert reopen_pending_resp.json["code"] == "stale_transition"
+        assert reopen_resp.status_code == 200
+        assert reopen_resp.json["status"] == "pending"
+        assert reopen_resp.json["admin_note"] == "Therapy book, fair enough"
+        assert reopen_again_resp.status_code == 409
+        assert mock_emit.call_count == 2
+        expected_payload = {
+            "request_id": request_id,
+            "status": "pending",
+            "title": "My Dog Thinks It's a Cat",
+        }
+        _assert_emit_call(mock_emit, 0, "request_update", expected_payload, f"user_{user['id']}")
+        _assert_emit_call(mock_emit, 1, "request_update", expected_payload, "admins")
+        updated = main_module.user_db.get_request(request_id)
+        assert updated["status"] == "pending"
+        assert updated["reviewed_by"] is None
+        hidden_keys = {
+            row["item_key"]
+            for row in main_module.activity_view_state_service.list_hidden(
+                viewer_scope="admin:shared"
+            )
+        }
+        assert f"request:{request_id}" not in hidden_keys
 
     def test_admin_reject_emits_update_to_user_and_admin_rooms(self, main_module, client):
         user = _create_user(main_module, prefix="reader")

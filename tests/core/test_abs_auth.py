@@ -6,7 +6,6 @@ import pytest
 
 from shelfmark.core.auth_modes import (
     AUTH_SOURCE_ABS,
-    AUTH_SOURCE_LOCKED,
     AUTH_SOURCE_SET,
     determine_auth_mode,
     is_user_active_for_auth_mode,
@@ -16,31 +15,10 @@ from shelfmark.core.user_db import UserDB
 
 
 class TestDetermineAuthModeAbs:
-    def test_returns_abs_when_local_admin_exists(self):
-        result = determine_auth_mode({"AUTH_METHOD": "abs"}, None, has_local_admin=True)
-        assert result == AUTH_SOURCE_ABS
-
-    def test_locks_without_local_admin(self):
-        # Previously asserted "none" -- the OPEN mode. `abs` was documented as failing
-        # closed, but that only held for the ABS *connection* config; without a local
-        # admin it fell through and opened the app. It now denies.
-        result = determine_auth_mode({"AUTH_METHOD": "abs"}, None, has_local_admin=False)
-        assert result == AUTH_SOURCE_LOCKED
-
-    def test_disable_local_auth_substitutes_for_local_admin(self):
-        result = determine_auth_mode(
-            {"AUTH_METHOD": "abs"},
-            None,
-            has_local_admin=False,
-            disable_local_auth=True,
-        )
-        assert result == AUTH_SOURCE_ABS
-
-    def test_abs_mode_does_not_gate_on_abs_connection_config(self):
-        # Fail closed: no AUDIOBOOKSHELF_* keys in security_config at all,
-        # mode must still resolve to "abs" (never degrade to open "none").
-        security_config = {"AUTH_METHOD": "abs", "OIDC_DISCOVERY_URL": "", "OIDC_CLIENT_ID": ""}
-        assert determine_auth_mode(security_config, None, has_local_admin=True) == AUTH_SOURCE_ABS
+    def test_returns_abs(self):
+        # No prerequisite gates it: a missing ABS connection or local admin makes
+        # sign-in fail, never degrades to the open mode.
+        assert determine_auth_mode("abs") == AUTH_SOURCE_ABS
 
     def test_abs_registered_in_auth_source_set(self):
         assert "abs" in AUTH_SOURCE_SET

@@ -14,7 +14,26 @@ export interface ReleaseDownloadOptions {
    * blank, so the server keeps its own default.
    */
   destinationKey?: string;
+  /** Files from the pack the user chose to skip (release-relative paths). */
+  ignoredFiles?: string[];
 }
+
+/** Download count for a release, preferring what the release itself reports. */
+const releaseDownloads = (book: Book, release: Release): number => {
+  if (typeof release.extra?.downloads === 'number') {
+    return release.extra.downloads;
+  }
+  if (typeof book.downloads === 'number' && book.downloads > 0) {
+    return book.downloads;
+  }
+  if (typeof book.extra?.downloads === 'number') {
+    return book.extra.downloads;
+  }
+  if (Array.isArray(book.info?.Downloads) && book.info.Downloads.length > 0) {
+    return Number(book.info.Downloads[0]) || 0;
+  }
+  return 0;
+};
 
 /** Build the body for /api/releases/download (and /api/releases/inspect). */
 export function buildReleaseDownloadPayload(
@@ -39,6 +58,7 @@ export function buildReleaseDownloadPayload(
       format: release.format,
       size: release.size,
       size_bytes: release.size_bytes,
+      downloads: releaseDownloads(book, release),
       download_url: release.download_url,
       protocol: release.protocol,
       indexer: release.indexer,
@@ -63,6 +83,9 @@ export function buildReleaseDownloadPayload(
   }
   if (options.bookPlan) {
     payload.book_plan = options.bookPlan;
+  }
+  if (options.ignoredFiles && options.ignoredFiles.length > 0) {
+    payload.ignored_files = options.ignoredFiles;
   }
   return payload;
 }

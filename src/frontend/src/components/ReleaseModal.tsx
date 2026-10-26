@@ -21,6 +21,7 @@ import type {
   ContentType,
   RequestPolicyMode,
   PackBook,
+  InspectReleaseResponse,
   PackPlan,
 } from '../types';
 import { isMetadataBook } from '../types';
@@ -35,6 +36,7 @@ import {
   resolveSelectedDestinationKey,
   shouldShowDestinationPicker,
 } from '../utils/downloadDestinations';
+import { groupFilesByFormat, type FormatGroup } from '../utils/formatReview';
 import {
   LANGUAGE_OPTION_DEFAULT,
   getLanguageFilterValues,
@@ -60,6 +62,7 @@ import { BookDownloadButton } from './BookDownloadButton';
 import { BookTargetDropdown } from './BookTargetDropdown';
 import { Dropdown } from './Dropdown';
 import { DropdownList } from './DropdownList';
+import { FormatReviewPanel } from './FormatReviewPanel';
 import { LanguageMultiSelect } from './LanguageMultiSelect';
 import { PackReviewPanel } from './PackReviewPanel';
 import { ReleaseCell } from './ReleaseCell';
@@ -631,7 +634,7 @@ export const ReleaseRow = ({
           <ReleaseMatchBadges release={release} compact />
           {/* Plugin-provided info line (format, size, indexer, seeders, etc.) */}
           {mobileColumns.length > 0 && (
-            <div className="mt-1 flex items-center gap-1.5 text-[10px] text-zinc-500 dark:text-zinc-400">
+            <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-zinc-500 dark:text-zinc-400">
               {(() => {
                 // Pre-filter columns that will render content to avoid orphan dots
                 const columnsWithContent = mobileColumns.filter((col) => {
@@ -656,6 +659,11 @@ export const ReleaseRow = ({
                     if (!value || value === col.fallback) {
                       return Boolean(col.fallback);
                     }
+                  }
+
+                  if (col.render_type === 'text' || col.render_type === 'number') {
+                    // Optional detail columns (series, narrator, bitrate) are often blank
+                    return value.trim() !== '';
                   }
 
                   return true;
@@ -864,6 +872,13 @@ const ReleaseModalSession = ({
     books: PackBook[];
   } | null>(null);
   const [packSubmitting, setPackSubmitting] = useState(false);
+  // Format picker: `chooseFormats` is the header toggle; `formatReview` holds an inspected
+  // release with several formats awaiting the user's selection.
+  const [chooseFormats, setChooseFormats] = useState(false);
+  const [formatReview, setFormatReview] = useState<{
+    release: Release;
+    groups: FormatGroup[];
+  } | null>(null);
   const isCombinedMode = combinedMode != null;
   const combinedPhase = combinedMode?.phase ?? null;
   const combinedStepLabel = combinedMode?.stepLabel ?? '';
@@ -1330,6 +1345,7 @@ const ReleaseModalSession = ({
         // reviewed and filed as separate books instead of one mangled item.
         let inspected = false;
         let plan: PackPlan | null = null;
+        let inspectedFiles: InspectReleaseResponse['files'] = [];
         let reason: string | null = null;
         try {
           const inspection = await inspectRelease(
@@ -1339,6 +1355,7 @@ const ReleaseModalSession = ({
           );
           inspected = inspection.inspected;
           plan = inspection.plan;
+          inspectedFiles = inspection.files;
           reason = inspection.reason;
         } catch (error) {
           console.error('Release inspection failed:', error);
@@ -1346,6 +1363,16 @@ const ReleaseModalSession = ({
         if (inspected && plan?.is_pack) {
           setPackReview({ release, plan, books: plan.books });
           return;
+        }
+        if (inspected && chooseFormats && plan) {
+          const groups = groupFilesByFormat(
+            inspectedFiles,
+            new Set(plan.books.flatMap((planBook) => planBook.files)),
+          );
+          if (groups.length > 1) {
+            setFormatReview({ release, groups });
+            return;
+          }
         }
         // Not a pack (or couldn't be inspected): queue exactly as before. A release we
         // couldn't inspect might still be an unnoticed pack, so leave a console breadcrumb
@@ -1381,11 +1408,29 @@ const ReleaseModalSession = ({
       chosenDestinationKey,
       handleClose,
       multiBook,
+      chooseFormats,
     ],
   );
 
+  const handleFormatConfirm = useCallback(
+    async (ignoredFiles: string[]): Promise<void> => {
+      if (!book || !formatReview) {
+        return;
+      }
+      setPackSubmitting(true);
+      try {
+        await onDownload(book, formatReview.release, contentType, { ignoredFiles });
+        handleClose();
+      } finally {
+        setPackSubmitting(false);
+      }
+    },
+    // oxlint-disable-next-line react/memo-dependencies
+    [book, formatReview, onDownload, contentType, handleClose],
+  );
+
   const handlePackConfirm = useCallback(
-    async (books: PackBook[] | null): Promise<void> => {
+    async (books: PackBook[] | null, ignoredFiles: string[] = []): Promise<void> => {
       if (!book || !packReview) {
         return;
       }
@@ -1393,7 +1438,7 @@ const ReleaseModalSession = ({
       try {
         await onDownload(book, packReview.release, contentType, {
           destinationKey: chosenDestinationKey,
-          ...(books ? { multiBook: true, bookPlan: toBookPlanPayload(books) } : {}),
+          ...(books ? { multiBook: true, bookPlan: toBookPlanPayload(books), ignoredFiles } : {}),
         });
         handleClose();
       } finally {
@@ -1828,7 +1873,7 @@ const ReleaseModalSession = ({
                 </div>
               )}
               {!sourcesLoading && allTabs.length > 0 && (
-                <div className="flex items-center justify-between px-5">
+                <div className="flex items-center px-5">
                   {/* Tabs - scrollable on narrow screens */}
                   <div className="scrollbar-hide min-w-0 flex-1 overflow-x-auto">
                     <div className="relative flex gap-1">
@@ -1860,7 +1905,40 @@ const ReleaseModalSession = ({
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-3 pr-1 pl-2">
+                  {/* Results count from release sources. Deliberately not flex-1: a
+                      second growing child would halve the scrollable tab strip beside
+                      it, and it would claim that space even on tabs whose source
+                      reports no total (only direct_download does). Hidden below sm:
+                      the label is ~150px and the full-screen mobile modal has no room
+                      for it without pushing the tabs out of reach. */}
+                  <div className="hidden flex-none justify-center sm:flex">
+                    {(() => {
+                      const searchInfo = releasesBySource[activeTab]?.search_info?.[activeTab];
+                      const totalCount = searchInfo?.total_results;
+                      if (totalCount === undefined || totalCount === null || totalCount === 0)
+                        return null;
+                      const isCapped = totalCount === '500+';
+                      const totalCountNum = isCapped ? 500 : Number(totalCount);
+                      // AA-style: show page range + total
+                      if (totalCountNum === 1) {
+                        return (
+                          <span className="mx-2 shrink-0 text-xs whitespace-nowrap text-gray-500 dark:text-gray-400">
+                            Result 1 (1 Total)
+                          </span>
+                        );
+                      }
+                      const shownEnd = Math.min(totalCountNum, 50);
+                      const totalStr = isCapped ? '500+' : String(totalCountNum);
+                      return (
+                        <span className="mx-2 shrink-0 text-xs whitespace-nowrap text-gray-500 dark:text-gray-400">
+                          Results 1-{shownEnd} ({totalStr} Total)
+                        </span>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Right: Controls */}
+                  <div className="ml-auto flex items-center gap-3 pr-1 pl-2">
                     {/* Multi-book pack toggle (fallback for releases that can't be inspected) */}
                     {!isCombinedMode && (
                       <button
@@ -1887,6 +1965,37 @@ const ReleaseModalSession = ({
                           />
                         </svg>
                         {multiBook && (
+                          <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-emerald-500" />
+                        )}
+                      </button>
+                    )}
+
+                    {/* Format picker toggle: choose which formats of a release to download */}
+                    {!isCombinedMode && (
+                      <button
+                        type="button"
+                        onClick={() => setChooseFormats((prev) => !prev)}
+                        className={`hover-surface relative rounded-full p-2.5 text-zinc-500 transition-colors dark:text-zinc-400 ${
+                          chooseFormats ? 'text-emerald-600 dark:text-emerald-400' : ''
+                        }`}
+                        aria-label="Choose formats"
+                        aria-pressed={chooseFormats}
+                        title="Choose formats: when a release has several formats, pick which ones to download."
+                      >
+                        <svg
+                          className="h-4 w-4"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                          strokeWidth={1.5}
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="M10.5 6h9.75M10.5 6a1.5 1.5 0 1 1-3 0m3 0a1.5 1.5 0 1 0-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-9.75 0h9.75"
+                          />
+                        </svg>
+                        {chooseFormats && (
                           <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-emerald-500" />
                         )}
                       </button>
@@ -2319,6 +2428,17 @@ const ReleaseModalSession = ({
             {/* Release list content */}
             <div className="min-h-[200px]">
               {(() => {
+                if (formatReview) {
+                  return (
+                    <FormatReviewPanel
+                      release={formatReview.release}
+                      groups={formatReview.groups}
+                      onBack={() => setFormatReview(null)}
+                      onConfirm={handleFormatConfirm}
+                      isSubmitting={packSubmitting}
+                    />
+                  );
+                }
                 if (packReview) {
                   return (
                     <PackReviewPanel

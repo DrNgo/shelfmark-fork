@@ -13,9 +13,13 @@ Use the guides below to set up the app, connect your library tools, and understa
 ## Core Guides
 
 - [Users & Requests](users-and-requests.md)
+- [Hardcover Sync](hardcover-sync.md)
 - [Reverse Proxy](reverse-proxy.md)
 - [OIDC](oidc.md)
+- [API Access](api-access.md)
 - [URL Search Parameters](url-search-parameters.md)
+- [MyAnonamouse Enrichment](myanonamouse-enrichment.md)
+- [Library Check](library-check.md)
 - [Custom Scripts](custom-scripts.md)
 
 ## Help

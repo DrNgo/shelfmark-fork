@@ -1,7 +1,7 @@
 import type { RequestRecord } from '../../types';
 import type { CoverAspect } from '../../utils/coverAspect';
 
-export type ActivityKind = 'download' | 'request';
+type ActivityKind = 'download' | 'request';
 
 export type ActivityVisualStatus =
   | 'queued'
@@ -35,6 +35,7 @@ export interface ActivityItem {
   progress?: number;
   progressAnimated?: boolean;
   sizeRaw?: string;
+  downloads?: number;
 
   timestamp: number;
   username?: string;

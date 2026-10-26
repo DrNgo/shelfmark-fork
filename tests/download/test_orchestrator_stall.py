@@ -29,6 +29,7 @@ def _reset(orchestrator) -> None:
     orchestrator._last_progress_value.clear()
     orchestrator._last_status_event.clear()
     orchestrator._activity_grace.clear()
+    orchestrator._activity_grace_seconds.clear()
 
 
 def test_find_stalled_tasks_flags_task_past_stall_timeout():
@@ -287,5 +288,50 @@ def test_cancel_stalled_task_does_not_hold_the_progress_lock(monkeypatch):
 
     assert observed == [True], "_progress_lock was held while cancelling a stalled task"
     mock_queue.update_status_message.assert_called_once_with(
+        "book", f"Download stalled (no activity for {orchestrator.STALL_TIMEOUT}s)"
+    )
+
+
+def test_the_stall_reason_is_set_before_the_cancel_finalises_history(monkeypatch):
+    """The terminal hook copies the task's message into the history row, so a stall that
+    sets its message after the cancel is recorded with whatever the last poll said ("Queued")
+    and cannot be told apart from a user cancelling it."""
+    import shelfmark.download.orchestrator as orchestrator
+
+    _reset(orchestrator)
+    mock_queue = MagicMock()
+    monkeypatch.setattr(orchestrator, "book_queue", mock_queue)
+
+    orchestrator._cancel_stalled_task("book")
+
+    names = [call[0] for call in mock_queue.method_calls]
+    assert names.index("update_status_message") < names.index("cancel_download")
+
+
+def test_the_stall_message_reports_the_window_the_task_was_given(monkeypatch):
+    import shelfmark.download.orchestrator as orchestrator
+
+    _reset(orchestrator)
+    monkeypatch.setattr(orchestrator, "book_queue", MagicMock())
+    orchestrator.set_activity_grace("book", 1800)
+
+    orchestrator._cancel_stalled_task("book")
+
+    orchestrator.book_queue.update_status_message.assert_called_once_with(
+        "book", "Download stalled (no activity for 1800s)"
+    )
+
+
+def test_a_released_grace_goes_back_to_the_default_in_the_stall_message(monkeypatch):
+    import shelfmark.download.orchestrator as orchestrator
+
+    _reset(orchestrator)
+    monkeypatch.setattr(orchestrator, "book_queue", MagicMock())
+    orchestrator.set_activity_grace("book", 1800)
+    orchestrator.clear_activity_grace("book")
+
+    orchestrator._cancel_stalled_task("book")
+
+    orchestrator.book_queue.update_status_message.assert_called_once_with(
         "book", f"Download stalled (no activity for {orchestrator.STALL_TIMEOUT}s)"
     )

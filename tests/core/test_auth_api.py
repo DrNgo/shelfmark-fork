@@ -221,6 +221,108 @@ class TestLoginSemantics:
             assert "is_admin" not in sess
 
 
+class TestProxyProvisioningRole:
+    def _check(self, main_module, username, settings=None):
+        values = {"PROXY_AUTH_USER_HEADER": "X-Auth-User", **(settings or {})}
+        fresh_client = main_module.app.test_client()
+        with (
+            patch.object(main_module, "get_auth_mode", return_value="proxy"),
+            patch.object(
+                main_module.app_config,
+                "get",
+                side_effect=lambda key, default=None, user_id=None: values.get(key, default),
+            ),
+        ):
+            response = fresh_client.get("/api/auth/check", headers={"X-Auth-User": username})
+        assert response.status_code == 200
+        return response.get_json()
+
+    def test_first_proxy_user_is_admin_and_later_users_are_not(
+        self, main_module, temp_user_db, monkeypatch
+    ):
+        monkeypatch.setattr(main_module, "user_db", temp_user_db)
+
+        first = self._check(main_module, "alice")
+        second = self._check(main_module, "bob")
+
+        assert first["is_admin"] is True
+        assert second["is_admin"] is False
+        assert temp_user_db.get_user(username="alice")["role"] == "admin"
+        assert temp_user_db.get_user(username="bob")["role"] == "user"
+
+    def test_default_role_admin_restores_admin_for_everyone(
+        self, main_module, temp_user_db, monkeypatch
+    ):
+        monkeypatch.setattr(main_module, "user_db", temp_user_db)
+        settings = {"PROXY_AUTH_DEFAULT_ROLE": "admin"}
+
+        self._check(main_module, "alice", settings)
+        second = self._check(main_module, "bob", settings)
+
+        assert second["is_admin"] is True
+        assert temp_user_db.get_user(username="bob")["role"] == "admin"
+
+    def test_existing_admin_from_another_auth_source_counts_as_the_first_admin(
+        self, main_module, temp_user_db, monkeypatch
+    ):
+        monkeypatch.setattr(main_module, "user_db", temp_user_db)
+        temp_user_db.create_user(username="local_admin", role="admin", auth_source="builtin")
+
+        first_proxy_user = self._check(main_module, "alice")
+
+        assert first_proxy_user["is_admin"] is False
+        assert temp_user_db.get_user(username="alice")["role"] == "user"
+
+    def test_known_user_keeps_their_role_whatever_the_default(
+        self, main_module, temp_user_db, monkeypatch
+    ):
+        monkeypatch.setattr(main_module, "user_db", temp_user_db)
+        temp_user_db.create_user(username="ops", role="admin", auth_source="proxy")
+        temp_user_db.create_user(username="bob", role="user", auth_source="proxy")
+
+        bob = self._check(main_module, "bob", {"PROXY_AUTH_DEFAULT_ROLE": "admin"})
+
+        assert bob["is_admin"] is False
+        assert temp_user_db.get_user(username="bob")["role"] == "user"
+
+    def test_repeat_requests_reuse_the_user_lookups_until_the_user_changes(
+        self, main_module, temp_user_db, monkeypatch
+    ):
+        monkeypatch.setattr(main_module, "user_db", temp_user_db)
+        temp_user_db.create_user(username="ops", role="admin", auth_source="proxy")
+        bob = temp_user_db.create_user(username="bob", role="user", auth_source="proxy")
+        calls = []
+        real_get_user = temp_user_db.get_user
+
+        def counting_get_user(**kwargs):
+            calls.append(kwargs)
+            return real_get_user(**kwargs)
+
+        monkeypatch.setattr(temp_user_db, "get_user", counting_get_user)
+
+        def run_middleware():
+            with (
+                patch.object(main_module, "get_auth_mode", return_value="proxy"),
+                main_module.app.test_request_context(
+                    "/api/covers/abc", headers={"X-Auth-User": "bob"}
+                ),
+            ):
+                main_module.session["user_id"] = "bob"
+                main_module.session["db_user_id"] = bob["id"]
+                assert main_module.proxy_auth_middleware() is None
+                return main_module.session["is_admin"]
+
+        assert run_middleware() is False
+        lookups_per_request = len(calls)
+        assert lookups_per_request == 2
+
+        assert run_middleware() is False
+        assert len(calls) == lookups_per_request
+
+        temp_user_db.update_user(bob["id"], role="admin")
+        assert run_middleware() is True
+
+
 class TestLoginLockoutRepair:
     def test_is_account_locked_repairs_missing_timestamp(self, main_module):
         main_module.failed_login_attempts.clear()

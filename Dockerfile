@@ -4,7 +4,7 @@ ARG BUILDPLATFORM
 ARG BUILDARCH
 
 # Frontend build stage.
-FROM --platform=$BUILDPLATFORM node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 AS frontend-builder
+FROM --platform=$BUILDPLATFORM node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS frontend-builder
 
 # Helpful debug output to see what platforms BuildKit thinks it's using
 RUN echo "BUILDPLATFORM=$BUILDPLATFORM BUILDARCH=$BUILDARCH TARGETPLATFORM=$TARGETPLATFORM TARGETARCH=$TARGETARCH"
@@ -28,16 +28,10 @@ RUN npm run build
 # than copied into the image. A COPY here would land ~24 MB in a `base` layer that
 # every published image inherits, and a later `rm` cannot take it back out again --
 # a RUN adds a layer, it does not rewrite the one underneath.
-FROM ghcr.io/astral-sh/uv:0.12.5@sha256:e85be844203885286c60ffad8a858d48afb6c5a5c237ca0e67f12e74b8f174b1 AS uv
+FROM ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff AS uv
 
 # Use python-slim as the base image
-FROM python:3.14.7-slim@sha256:cae66f2ef0ec51a9891263eeee7f987dacf0a9879e8aa9353d5606e0530619a5 AS base
-
-# Add build argument for version
-ARG BUILD_VERSION
-ENV BUILD_VERSION=${BUILD_VERSION}
-ARG RELEASE_VERSION
-ENV RELEASE_VERSION=${RELEASE_VERSION}
+FROM python:3.14.8-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS base
 
 # Set shell to bash with pipefail option
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -63,11 +57,11 @@ ENV FLASK_PORT=8084
 # Configure locale, timezone, and perform initial cleanup in a single layer
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    # For building C-extensions (cffi, gevent, etc.)
-    gcc \
-    g++ \
-    libffi-dev \
-    python3-dev \
+    # No C toolchain: every compiled dependency (cffi, gevent, greenlet,
+    # zope-interface) ships a cp314 manylinux wheel for amd64 and arm64, and
+    # the sdist-only ones are pure Python. The toolchain was 290MB of the
+    # runtime image, and python3-dev pulled Debian's libpython3.13 into a 3.14
+    # image. If a dependency ever needs compiling, build it in a separate stage.
     # For locale
     locales tzdata \
     # For healthcheck
@@ -127,31 +121,13 @@ RUN rm -rf \
         /usr/local/lib/python*/site-packages/pip \
         /usr/local/lib/python*/site-packages/pip-*.dist-info
 
-# Copy application code *after* dependencies are installed
-COPY . .
-
-# Copy built frontend from frontend-builder stage
-COPY --from=frontend-builder /frontend/dist /app/frontend-dist
-
-# The frontend SOURCE cannot be excluded via .dockerignore — that file applies
-# to every stage and frontend-builder needs src/. Only the built dist (copied
-# above) is served at runtime, so drop the source here.
-RUN rm -rf /app/src
-
-# Final setup: create image-owned runtime paths for the fixed non-root user.
-# Root/PUID mode still re-homes ownership at startup when needed.
-RUN mkdir -p \
-        /config \
-        /books \
-        /var/log/shelfmark \
-        /tmp/shelfmark/seleniumbase/downloaded_files \
-        /tmp/shelfmark/seleniumbase/archived_files && \
-    rm -rf /app/downloaded_files /app/archived_files && \
-    ln -s /tmp/shelfmark/seleniumbase/downloaded_files /app/downloaded_files && \
-    ln -s /tmp/shelfmark/seleniumbase/archived_files /app/archived_files && \
-    chown -R 1000:1000 /config /books /home/shelfmark /tmp/shelfmark /var/log/shelfmark && \
-    chmod -R a+rX /app && \
-    chmod +x /app/entrypoint.sh /app/tor.sh /app/wireguard.sh /app/genDebug.sh
+# The application code is deliberately NOT copied here. `base` is shared by the
+# final stages, so a COPY of the source at this point invalidates every layer
+# built on top of it -- the Chromium install, the browser dependency sync and
+# the SeleniumBase driver download -- on any source change. Each stage copies
+# the source as its last step instead, so a code-only rebuild rewrites one small
+# layer and every expensive layer is reused. `[tool.uv] package = false` is what
+# makes this safe: no `uv sync` needs the project source.
 
 # Expose the application port
 EXPOSE ${FLASK_PORT}
@@ -177,20 +153,20 @@ ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 # purging THOSE stops Chromium starting). So the branch point is here.
 FROM base AS shelfmark-browser
 
-# --- Chromium (PINNED to 149.0.7827.196) ---
+# --- Chromium (PINNED to 155.0.8059.79) ---
 # Debian's chromium 150.0.7871.46-1~deb13u1 security update (trixie-security,
-# 2026-07-05) no longer opens the DevTools remote-debugging TCP port at all
-# (no listener, no DevToolsActivePort file, even with a custom --user-data-dir;
-# the RemoteDebuggingAllowed policy does not restore it). The SeleniumBase
-# Pure-CDP driver connects through that port (/json/version), so with 150 every
-# internal bypass dies with "Pure CDP browser startup failed" and all
-# CF-gated downloads fail. Install the last working version from
-# snapshot.debian.org until the bypasser can talk to Chromium >= 150 (e.g.
-# pipe-based DevTools / UC mode) or seleniumbase ships a fix.
+# 2026-07-05) stopped opening the DevTools remote-debugging TCP port that the
+# SeleniumBase Pure-CDP driver connects through (/json/version), so every
+# internal bypass died with "Pure CDP browser startup failed" and 149.0.7827.196
+# was pinned (#1105). Later Debian builds open the port again: 155.0.8059.79
+# starts Pure CDP with the bypasser's own arguments. Still installed from
+# snapshot.debian.org, so the build stays reproducible once trixie-security
+# moves past this version. Bump CHROMIUM_VERSION and CHROMIUM_SNAPSHOT together,
+# and check that the bypasser still starts before relaxing the pin.
 # Chrome 144+ requires --enable-unsafe-swiftshader for WebGL in Docker.
 # This flag is set in internal_bypasser.py _get_browser_args()
-ARG CHROMIUM_VERSION=149.0.7827.196-1~deb13u1
-ARG CHROMIUM_SNAPSHOT=20260704T000000Z
+ARG CHROMIUM_VERSION=155.0.8059.79-1~deb13u1
+ARG CHROMIUM_SNAPSHOT=20261016T000000Z
 
 RUN echo "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/${CHROMIUM_SNAPSHOT}/ trixie-security main" \
         > /etc/apt/sources.list.d/chromium-pin-snapshot.list && \
@@ -240,13 +216,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --python /app/.venv/bin/python --reinstall python-xlib==0.33 && \
     /app/.venv/bin/python -c "import Xlib.X; assert hasattr(Xlib.X, 'FamilyServerInterpreted'), 'Xlib.X.FamilyServerInterpreted missing after fix'; print('Xlib namespace OK:', Xlib.__version__)"
 
-# uv is only needed while building the image.
-# The venv's own pip goes too — the base image's system pip is already stripped
-# above, but uv seeded a second copy into /app/.venv. Nothing installs at
-# runtime. setuptools deliberately STAYS: several deps still import
+# The venv's own pip goes too. uv seeded a copy into /app/.venv and nothing
+# installs at runtime. setuptools deliberately STAYS: several deps still import
 # pkg_resources on the hot path.
-RUN rm -f /usr/bin/uv /usr/bin/uvx && \
-    rm -rf /app/.venv/bin/pip /app/.venv/bin/pip3 /app/.venv/bin/pip3.* \
+RUN rm -rf /app/.venv/bin/pip /app/.venv/bin/pip3 /app/.venv/bin/pip3.* \
            /app/.venv/lib/python*/site-packages/pip \
            /app/.venv/lib/python*/site-packages/pip-*.dist-info
 
@@ -287,6 +260,41 @@ RUN dpkg --force-depends --purge \
         libz3-4 && \
     chromium --version
 
+# --- Application code: last, so every expensive layer above stays cached ---
+# Keep this block identical in both leaf targets.
+
+COPY . .
+
+COPY --from=frontend-builder /frontend/dist /app/frontend-dist
+
+# The frontend SOURCE cannot be excluded via .dockerignore — that file applies
+# to every stage and frontend-builder needs src/. Only the built dist (copied
+# above) is served at runtime, so drop the source here.
+RUN rm -rf /app/src
+
+# Image-owned runtime paths for the fixed non-root user. Root/PUID mode still
+# re-homes ownership at startup when needed.
+RUN mkdir -p \
+        /config \
+        /books \
+        /var/log/shelfmark \
+        /tmp/shelfmark/seleniumbase/downloaded_files \
+        /tmp/shelfmark/seleniumbase/archived_files && \
+    rm -rf /app/downloaded_files /app/archived_files && \
+    ln -s /tmp/shelfmark/seleniumbase/downloaded_files /app/downloaded_files && \
+    ln -s /tmp/shelfmark/seleniumbase/archived_files /app/archived_files && \
+    chown -R 1000:1000 /config /books /home/shelfmark /tmp/shelfmark /var/log/shelfmark && \
+    chmod -R a+rX /app && \
+    chmod +x /app/entrypoint.sh /app/tor.sh /app/wireguard.sh /app/genDebug.sh
+
+# Version stamp last. These carry the commit sha, so they change on every
+# build and everything below them rebuilds. Kept here, the dependency and
+# browser layers above stay valid and a pull only fetches what changed.
+ARG BUILD_VERSION
+ENV BUILD_VERSION=${BUILD_VERSION}
+ARG RELEASE_VERSION
+ENV RELEASE_VERSION=${RELEASE_VERSION}
+
 CMD ["/app/entrypoint.sh"]
 
 
@@ -317,11 +325,82 @@ RUN dpkg --force-depends --purge \
         libz3-4 && \
     chromium --version
 
+# --- Application code: last, so every expensive layer above stays cached ---
+# Keep this block identical in both leaf targets.
+
+COPY . .
+
+COPY --from=frontend-builder /frontend/dist /app/frontend-dist
+
+# The frontend SOURCE cannot be excluded via .dockerignore — that file applies
+# to every stage and frontend-builder needs src/. Only the built dist (copied
+# above) is served at runtime, so drop the source here.
+RUN rm -rf /app/src
+
+# Image-owned runtime paths for the fixed non-root user. Root/PUID mode still
+# re-homes ownership at startup when needed.
+RUN mkdir -p \
+        /config \
+        /books \
+        /var/log/shelfmark \
+        /tmp/shelfmark/seleniumbase/downloaded_files \
+        /tmp/shelfmark/seleniumbase/archived_files && \
+    rm -rf /app/downloaded_files /app/archived_files && \
+    ln -s /tmp/shelfmark/seleniumbase/downloaded_files /app/downloaded_files && \
+    ln -s /tmp/shelfmark/seleniumbase/archived_files /app/archived_files && \
+    chown -R 1000:1000 /config /books /home/shelfmark /tmp/shelfmark /var/log/shelfmark && \
+    chmod -R a+rX /app && \
+    chmod +x /app/entrypoint.sh /app/tor.sh /app/wireguard.sh /app/genDebug.sh
+
+# Version stamp last. These carry the commit sha, so they change on every
+# build and everything below them rebuilds. Kept here, the dependency and
+# browser layers above stay valid and a pull only fetches what changed.
+ARG BUILD_VERSION
+ENV BUILD_VERSION=${BUILD_VERSION}
+ARG RELEASE_VERSION
+ENV RELEASE_VERSION=${RELEASE_VERSION}
+
+# Default command to run the application entrypoint script
 CMD ["/app/entrypoint.sh"]
 
 
 FROM base AS shelfmark-lite
 
 ENV USING_EXTERNAL_BYPASSER=true
+
+# --- Application code: last, so every expensive layer above stays cached ---
+
+COPY . .
+
+COPY --from=frontend-builder /frontend/dist /app/frontend-dist
+
+# The frontend SOURCE cannot be excluded via .dockerignore — that file applies
+# to every stage and frontend-builder needs src/. Only the built dist (copied
+# above) is served at runtime, so drop the source here.
+RUN rm -rf /app/src
+
+# Image-owned runtime paths for the fixed non-root user. Root/PUID mode still
+# re-homes ownership at startup when needed.
+RUN mkdir -p \
+        /config \
+        /books \
+        /var/log/shelfmark \
+        /tmp/shelfmark/seleniumbase/downloaded_files \
+        /tmp/shelfmark/seleniumbase/archived_files && \
+    rm -rf /app/downloaded_files /app/archived_files && \
+    ln -s /tmp/shelfmark/seleniumbase/downloaded_files /app/downloaded_files && \
+    ln -s /tmp/shelfmark/seleniumbase/archived_files /app/archived_files && \
+    chown -R 1000:1000 /config /books /home/shelfmark /tmp/shelfmark /var/log/shelfmark && \
+    chmod -R a+rX /app && \
+    chmod +x /app/entrypoint.sh /app/tor.sh /app/wireguard.sh /app/genDebug.sh
+
+
+# Version stamp last. These carry the commit sha, so they change on every
+# build and everything below them rebuilds. Kept here, the dependency and
+# browser layers above stay valid and a pull only fetches what changed.
+ARG BUILD_VERSION
+ENV BUILD_VERSION=${BUILD_VERSION}
+ARG RELEASE_VERSION
+ENV RELEASE_VERSION=${RELEASE_VERSION}
 
 CMD ["/app/entrypoint.sh"]

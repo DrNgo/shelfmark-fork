@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -329,6 +330,7 @@ def _post_process_booklore(
     *,
     preserve_source_on_failure: bool = False,
 ) -> str | None:
+    from shelfmark.download.postprocess.packs import drop_ignored_files
     from shelfmark.download.postprocess.pipeline import (
         CustomScriptContext,
         OutputPlan,
@@ -381,6 +383,8 @@ def _post_process_booklore(
     )
     if not prepared:
         return None
+    # Files the user skipped in the pack review are not uploaded.
+    prepared = replace(prepared, files=drop_ignored_files(prepared.files, task.ignored_files))
 
     logger.debug(
         "Task %s: prepared %d file(s) for Booklore upload",
@@ -390,6 +394,10 @@ def _post_process_booklore(
 
     success = False
     try:
+        if not prepared.files:
+            status_callback("error", "No book files found")
+            return None
+
         unsupported_files = [
             file_path
             for file_path in prepared.files

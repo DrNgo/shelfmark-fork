@@ -227,6 +227,18 @@ export function useReleaseSearchSession(
     [],
   );
 
+  // Editions of one work can share `provider_id`; the cache tells them apart by title
+  // and language (see releaseCache).
+  const cacheBook = useMemo(
+    () => ({
+      provider: book.provider,
+      provider_id: book.provider_id,
+      title: book.title,
+      language: book.language,
+    }),
+    [book.language, book.provider, book.provider_id, book.title],
+  );
+
   const fetchReleaseResults = useCallback(
     async (
       tabName: string,
@@ -267,7 +279,7 @@ export function useReleaseSearchSession(
       // Every query context has its own cache entry: a manual query's (unannotated)
       // results never stand in for the automatic search, and both stay cached.
       if (!expandSearch) {
-        const cached = getCachedReleases(provider, bookId, tabName, contentType, requestContext);
+        const cached = getCachedReleases(cacheBook, tabName, contentType, requestContext);
         if (cached) {
           displayedContextRef.current[tabName] = requestContext;
           setReleasesBySource((prev) => ({ ...prev, [tabName]: cached }));
@@ -308,7 +320,7 @@ export function useReleaseSearchSession(
           return;
         }
         if (!expandSearch) {
-          setCachedReleases(provider, bookId, tabName, contentType, requestContext, response);
+          setCachedReleases(cacheBook, tabName, contentType, requestContext, response);
         }
         displayedContextRef.current[tabName] = requestContext;
         setReleasesBySource((prev) => ({
@@ -335,6 +347,7 @@ export function useReleaseSearchSession(
       book.provider_id,
       book.title,
       bookLanguages,
+      cacheBook,
       clearSearchStatusForTab,
       contentType,
       defaultLanguages,
@@ -511,7 +524,7 @@ export function useReleaseSearchSession(
       }
 
       for (const tab of allTabs) {
-        invalidateCachedReleases(book.provider, book.provider_id, tab.name, contentType, nextQuery);
+        invalidateCachedReleases(cacheBook, tab.name, contentType, nextQuery);
       }
 
       supersedeRequests(requestSeqRef.current);
@@ -530,7 +543,15 @@ export function useReleaseSearchSession(
         manualQueryOverride: nextQuery,
       });
     },
-    [activeTab, allTabs, book.provider, book.provider_id, contentType, fetchReleaseResults],
+    [
+      activeTab,
+      allTabs,
+      book.provider,
+      book.provider_id,
+      cacheBook,
+      contentType,
+      fetchReleaseResults,
+    ],
   );
 
   const toggleManualQuery = useCallback(() => {
@@ -555,8 +576,7 @@ export function useReleaseSearchSession(
       releasesBySource[activeTab]?.column_config?.supported_filters?.includes('indexer') ?? false;
 
     invalidateCachedReleases(
-      book.provider,
-      book.provider_id,
+      cacheBook,
       activeTab,
       contentType,
       queryContext(appliedManualQueryRef.current),
@@ -586,6 +606,7 @@ export function useReleaseSearchSession(
     activeTab,
     book.provider,
     book.provider_id,
+    cacheBook,
     contentType,
     fetchReleaseResults,
     releasesBySource,

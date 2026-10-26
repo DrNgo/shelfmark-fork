@@ -11,16 +11,18 @@ import requests
 if TYPE_CHECKING:
     from shelfmark.core.search_plan import ReleaseSearchPlan
     from shelfmark.metadata_providers import BookMetadata
+    from shelfmark.release_sources.prowlarr.mam import MamSearchOptions
 
 from shelfmark.core import search_deadline
+from shelfmark.core.author_match import AUTHOR_UNKNOWN, author_affinity
 from shelfmark.core.config import config
 from shelfmark.core.languages import normalize_language
 from shelfmark.core.logger import setup_logger
-from shelfmark.core.request_helpers import normalize_optional_text
+from shelfmark.core.request_helpers import coerce_int, normalize_optional_text
 from shelfmark.core.search_plan import ReleaseSearchVariant
 from shelfmark.core.search_queries import any_identity_hit
 from shelfmark.core.utils import AUDIOBOOK_FORMATS as CORE_AUDIOBOOK_FORMATS
-from shelfmark.core.utils import normalize_http_url
+from shelfmark.core.utils import DEFAULT_EBOOK_FORMATS, normalize_format_list, normalize_http_url
 from shelfmark.release_sources import (
     ColumnAlign,
     ColumnColorHint,
@@ -41,11 +43,15 @@ from shelfmark.release_sources.prowlarr.api import (
     IndexerSeedSettings,
     ProwlarrClient,
     ProwlarrSearchError,
+    is_myanonamouse_indexer,
 )
 from shelfmark.release_sources.prowlarr.cache import cache_release
+from shelfmark.release_sources.prowlarr.mam import (
+    lookup_torrent_details,
+    mam_search_options,
+    mam_torrent_id,
+)
 from shelfmark.release_sources.prowlarr.utils import (
-    AUTHOR_UNKNOWN,
-    author_affinity,
     build_source_id,
     coerce_float_like,
     coerce_int_like,
@@ -65,6 +71,66 @@ _UNRANKED_INDEXER_RANK = 51
 # client raises requests exceptions (subclasses of OSError via IOError lineage
 # is not guaranteed), so include RequestException explicitly.
 _PROWLARR_REQUEST_ERRORS = (*_PROWLARR_SOURCE_ERRORS, requests.exceptions.RequestException)
+
+_BITRATE_NUMBER_RE = re.compile(r"(\d+(?:\.\d+)?)")
+
+
+def _get_mam_session_id() -> str:
+    return normalize_optional_text(config.get("PROWLARR_MAM_ID", "")) or ""
+
+
+def _parse_torznab_bitrate(value: object) -> int | None:
+    """Read a Torznab "bitrate" attribute ("320" or "320 kbps") as whole Kbps."""
+    if value is None:
+        return None
+    match = _BITRATE_NUMBER_RE.search(str(value))
+    if not match:
+        return None
+    kbps = round(float(match.group(1)))
+    return kbps or None
+
+
+def _enrich_mam_releases(
+    releases: list[Release],
+    mam_id: str,
+    queries: list[str],
+    options: MamSearchOptions,
+    deadline: float | None,
+) -> None:
+    """Fill narrator/series/bitrate on MyAnonamouse releases from MAM's own API."""
+    ids_by_source_id = {
+        release.source_id: torrent_id
+        for release in releases
+        if (torrent_id := mam_torrent_id(release.info_url)) is not None
+    }
+    if not ids_by_source_id:
+        return
+
+    details_by_id = lookup_torrent_details(
+        mam_id,
+        set(ids_by_source_id.values()),
+        queries,
+        options=options,
+        deadline=deadline,
+    )
+    for release in releases:
+        torrent_id = ids_by_source_id.get(release.source_id)
+        details = details_by_id.get(torrent_id) if torrent_id is not None else None
+        if details is None:
+            continue
+        if details.narrator:
+            release.extra["narrator"] = details.narrator
+        if details.series:
+            release.extra["series"] = details.series
+        # Queueing falls back to extra.series_name/series_position for the
+        # {Series}/{SeriesPosition} placeholders when the metadata provider has none.
+        if details.series_name:
+            release.extra["series_name"] = details.series_name
+            if details.series_position is not None:
+                release.extra["series_position"] = details.series_position
+        if details.bitrate and not release.extra.get("bitrate"):
+            release.extra["bitrate"] = details.bitrate
+            release.extra["bitrate_value"] = details.bitrate_kbps
 
 
 def _raise_invalid_indexer_id(item: object) -> NoReturn:
@@ -224,6 +290,22 @@ def _collapse_duplicate_indexer_results(
     return kept
 
 
+def _max_release_bytes(content_type: str) -> int | None:
+    """The size above which an ebook result is hidden, or None when no limit is set."""
+    if content_type == "audiobook":
+        return None
+    megabytes = coerce_int(config.get("PROWLARR_EBOOK_MAX_SIZE_MB", 0), 0)
+    return megabytes * _SIZE_UNIT_BASE * _SIZE_UNIT_BASE if megabytes > 0 else None
+
+
+def _is_over_size(result: dict, max_bytes: int | None) -> bool:
+    """Whether a raw result reports a size above the limit. An unknown size is never over."""
+    if max_bytes is None:
+        return False
+    size = coerce_int(result.get("size"), 0)
+    return size > max_bytes
+
+
 def _parse_size(size_bytes: int | None) -> str | None:
     """Convert bytes to human-readable size string."""
     if size_bytes is None or size_bytes <= 0:
@@ -264,6 +346,56 @@ AUDIOBOOK_FORMATS = list(CORE_AUDIOBOOK_FORMATS)
 
 # Combined list for format detection (audiobook formats first for priority)
 ALL_BOOK_FORMATS = AUDIOBOOK_FORMATS + EBOOK_FORMATS
+
+# A trailing file extension on a release title, e.g. "Author - Title.doc".
+_TITLE_EXTENSION_PATTERN = re.compile(r"\.([a-z][a-z0-9]{1,4})\s*$")
+
+# Extensions that are known to be files. Only these are hidden, so dotted titles
+# like "Jane.Eyre.by.Bronte" are not read as a ".bronte" file, and archive
+# containers (zip, rar, 7z) are never hidden.
+_KNOWN_FILE_EXTENSIONS = frozenset(ALL_BOOK_FORMATS) | {
+    "azw4",
+    "chm",
+    "djv",
+    "doc",
+    "docx",
+    "htm",
+    "html",
+    "kfx",
+    "lrf",
+    "lrx",
+    "md",
+    "odt",
+    "oxps",
+    "prc",
+    "rtf",
+    "snb",
+    "tcr",
+    "tpz",
+    "wps",
+    "xps",
+}
+
+
+def _unsupported_title_extension(title: str, content_type: str) -> str | None:
+    """Return the trailing extension of a title when it is a format the user did not enable.
+
+    Indexers that are not enriched return plain titles, so a single-file release
+    such as "Author - Title.doc" is only recognisable by its extension. Picking it
+    would download a file that post-processing then discards.
+    """
+    if content_type == "audiobook":
+        return None
+    match = _TITLE_EXTENSION_PATTERN.search(str(title or "").lower())
+    if not match:
+        return None
+    extension = match.group(1)
+    if extension not in _KNOWN_FILE_EXTENSIONS:
+        return None
+    supported = normalize_format_list(config.get("SUPPORTED_FORMATS", None), DEFAULT_EBOOK_FORMATS)
+    if extension in supported:
+        return None
+    return extension
 
 
 # Backend safeguard: cap total Prowlarr search time per request.
@@ -325,6 +457,7 @@ class _IndexerSearchOutcome:
     results: list[dict]
     attempted: int = 0
     failed: int = 0
+    skipped: int = 0
     last_error: str | None = None
     # A fallback pass stopped because the budget left could not cover another request.
     deadline_reached: bool = False
@@ -595,6 +728,14 @@ def _prowlarr_result_to_release(
     if any(flag.lower() in {"freeleech", "fl"} for flag in indexer_flags):
         is_freeleech = True
 
+    # Few indexers send a Torznab bitrate; MyAnonamouse's comes from MAM enrichment instead.
+    torznab_attrs = result.get("torznabAttrs")
+    bitrate_kbps = (
+        _parse_torznab_bitrate(torznab_attrs.get("bitrate"))
+        if isinstance(torznab_attrs, dict)
+        else None
+    )
+
     is_vip = "[vip]" in str(raw_title).lower()
     if is_vip:
         add_indexer_flag("VIP")
@@ -644,8 +785,10 @@ def _prowlarr_result_to_release(
             # Format tokens the indexer declared but Shelfmark can't process (e.g. a MAM
             # "[ENG / AVI]"). Lets the UI warn instead of showing a bare content icon.
             "unrecognized_formats": unrecognized_formats or None,
+            "bitrate": f"{bitrate_kbps} Kbps" if bitrate_kbps else None,
+            "bitrate_value": bitrate_kbps,
             # Raw torznab attributes for rich tooltips (enriched indexers)
-            "torznab_attrs": result.get("torznabAttrs"),
+            "torznab_attrs": torznab_attrs,
         },
     )
 
@@ -756,8 +899,58 @@ class ProwlarrSource(ReleaseSource):
             except _PROWLARR_SOURCE_ERRORS as e:
                 logger.warning("Failed to fetch indexer list for column config: %s", e)
 
+        # Series/narrator/bitrate only exist once MAM enrichment has a session ID;
+        # without it they would be empty for every row. The show/hide toggles and the
+        # audiobook-only gates are applied later by apply_column_visibility().
+        mam_columns: list[ColumnSchema] = []
+        mam_tracks = ""
+        mam_bitrate_columns: list[ColumnSchema] = []
+        mam_bitrate_track = ""
+        if _get_mam_session_id():
+            mam_columns = [
+                ColumnSchema(
+                    key="extra.series",
+                    label="Series",
+                    render_type=ColumnRenderType.TEXT,
+                    align=ColumnAlign.LEFT,
+                    width="minmax(90px, 1fr)",
+                    hide_mobile=False,
+                    fallback="",
+                    setting_key="SHOW_SERIES_COLUMN",
+                ),
+                ColumnSchema(
+                    key="extra.narrator",
+                    label="Narrator",
+                    render_type=ColumnRenderType.TEXT,
+                    align=ColumnAlign.LEFT,
+                    width="minmax(90px, 1fr)",
+                    hide_mobile=False,
+                    fallback="",
+                    setting_key="SHOW_NARRATOR_COLUMN",
+                    content_types=("audiobook",),
+                ),
+            ]
+            mam_tracks = " minmax(90px,1fr) minmax(90px,1fr)"
+            mam_bitrate_columns = [
+                ColumnSchema(
+                    key="extra.bitrate",
+                    label="Bitrate",
+                    render_type=ColumnRenderType.NUMBER,
+                    align=ColumnAlign.CENTER,
+                    width="72px",
+                    hide_mobile=False,
+                    fallback="",
+                    sortable=True,
+                    sort_key="extra.bitrate_value",
+                    setting_key="SHOW_BITRATE_COLUMN",
+                    content_types=("audiobook",),
+                ),
+            ]
+            mam_bitrate_track = " 72px"
+
         return ReleaseColumnConfig(
             columns=[
+                *mam_columns,
                 ColumnSchema(
                     key="indexer",
                     label="Indexer",
@@ -800,6 +993,7 @@ class ProwlarrSource(ReleaseSource):
                     uppercase=True,
                     fallback="",
                 ),
+                *mam_bitrate_columns,
                 ColumnSchema(
                     key="size",
                     label="Size",
@@ -819,7 +1013,10 @@ class ProwlarrSource(ReleaseSource):
                     default_direction="asc",
                 ),
             ],
-            grid_template="minmax(0,2fr) minmax(140px,1fr) 50px 50px 90px 80px",
+            grid_template=(
+                f"minmax(0,2fr){mam_tracks} minmax(140px,1fr) 50px 50px 90px"
+                f"{mam_bitrate_track} 80px"
+            ),
             leading_cell=LeadingCellConfig(
                 type=LeadingCellType.NONE
             ),  # No leading cell for Prowlarr
@@ -1040,6 +1237,12 @@ class ProwlarrSource(ReleaseSource):
                 restrict_to=indexer_ids, indexers=enabled_indexers
             )
             enriched_indexer_ids_set = set(enriched_indexer_ids)
+            mam_indexers = {
+                indexer_id: indexer
+                for indexer in enabled_indexers
+                if is_myanonamouse_indexer(indexer)
+                and (indexer_id := _coerce_indexer_id(indexer.get("id"))) is not None
+            }
             indexer_seed_settings = (
                 _fetch_indexer_seed_settings(client, indexer_ids)
                 if config.get("PROWLARR_USE_SEED_PREFERENCES", False)
@@ -1050,6 +1253,22 @@ class ProwlarrSource(ReleaseSource):
 
             def _timed_out() -> bool:
                 return time.monotonic() > deadline
+
+            # Prowlarr's own search skips an indexer in failure back-off; the
+            # per-indexer Torznab endpoint answers 429 instead.
+            try:
+                disabled_indexers = client.get_disabled_indexers()
+            except _PROWLARR_SOURCE_ERRORS as e:
+                logger.warning("Failed to load Prowlarr indexer status: %s", e)
+                disabled_indexers = {}
+            if disabled_indexers:
+                logger.info(
+                    "Prowlarr: skipping indexer(s) in failure back-off: %s",
+                    ", ".join(
+                        f"{indexer_id} (till {till})"
+                        for indexer_id, till in sorted(disabled_indexers.items())
+                    ),
+                )
 
             indexer_names = {
                 parsed_id: str(indexer.get("name") or parsed_id)
@@ -1084,6 +1303,7 @@ class ProwlarrSource(ReleaseSource):
                     indexer_id
                     for indexer_id in candidates
                     if indexer_id not in failed_indexers
+                    and indexer_id not in disabled_indexers
                     and fallback_requests.get(indexer_id, 0) < FALLBACK_REQUESTS_PER_INDEXER
                 ]
 
@@ -1125,6 +1345,9 @@ class ProwlarrSource(ReleaseSource):
                     return outcome
 
                 for indexer_id in target_indexer_ids:
+                    if indexer_id in disabled_indexers:
+                        outcome.skipped += 1
+                        continue
                     if fallback:
                         remaining = search_deadline.remaining_seconds(deadline)
                         if remaining < request_seconds:
@@ -1172,6 +1395,7 @@ class ProwlarrSource(ReleaseSource):
             all_results: list[dict] = []
             attempted_searches = 0
             failed_searches = 0
+            skipped_searches = 0
             last_search_error: str | None = None
 
             def add_results(
@@ -1183,10 +1407,11 @@ class ProwlarrSource(ReleaseSource):
                 failed" error; a failed fallback request only takes its indexer out
                 of the ladder (and is logged).
                 """
-                nonlocal attempted_searches, failed_searches, last_search_error
+                nonlocal attempted_searches, failed_searches, skipped_searches, last_search_error
                 if count_failures:
                     attempted_searches += outcome.attempted
                     failed_searches += outcome.failed
+                    skipped_searches += outcome.skipped
                     last_search_error = outcome.last_error or last_search_error
 
                 added: list[dict] = []
@@ -1233,6 +1458,7 @@ class ProwlarrSource(ReleaseSource):
                     not outcome.results
                     and not outcome.failed
                     and not outcome.timed_out
+                    and outcome.attempted
                     and categories
                     and auto_expand_enabled
                 ):
@@ -1247,6 +1473,7 @@ class ProwlarrSource(ReleaseSource):
                         outcome.results = expanded.results
                         outcome.attempted += expanded.attempted
                         outcome.failed += expanded.failed
+                        outcome.skipped += expanded.skipped
                         outcome.last_error = expanded.last_error or outcome.last_error
                         outcome.timed_out = expanded.timed_out
                         self.last_search_type = "expanded"
@@ -1373,11 +1600,20 @@ class ProwlarrSource(ReleaseSource):
             results: list[Release] = []
             enriched_source_ids: set[str] = set()
             affinity_by_source_id: dict[str, int] = {}
+            mam_releases: list[Release] = []
+            mam_indexer: dict | None = None
             # A manual query is the user's own words; ranking it against the
             # metadata author would second-guess what they typed.
             wanted_author = "" if plan.manual_query else plan.author
+            hide_unsupported_formats = config.get("PROWLARR_HIDE_UNSUPPORTED_FORMATS", True)
+            hidden_unsupported = 0
 
+            max_bytes = _max_release_bytes(content_type)
+            oversized = 0
             for raw_result in all_results:
+                if _is_over_size(raw_result, max_bytes):
+                    oversized += 1
+                    continue
                 result_with_seed_settings = _apply_indexer_seed_settings(
                     raw_result, indexer_seed_settings
                 )
@@ -1392,6 +1628,18 @@ class ProwlarrSource(ReleaseSource):
                     content_type,
                     enable_format_detection=is_enriched,
                 )
+                if hide_unsupported_formats:
+                    unsupported_extension = _unsupported_title_extension(
+                        release.title, content_type
+                    )
+                    if unsupported_extension:
+                        hidden_unsupported += 1
+                        logger.debug(
+                            "Prowlarr: hiding '%s', .%s is not a supported format",
+                            release.title,
+                            unsupported_extension,
+                        )
+                        continue
                 if idx_id_int is not None and idx_id_int in indexer_priority:
                     release.extra["indexer_priority"] = indexer_priority[idx_id_int]
                 results.append(release)
@@ -1401,6 +1649,34 @@ class ProwlarrSource(ReleaseSource):
 
                 if is_enriched:
                     enriched_source_ids.add(release.source_id)
+                if idx_id_int in mam_indexers:
+                    mam_releases.append(release)
+                    mam_indexer = mam_indexer or mam_indexers[idx_id_int]
+
+            if hidden_unsupported:
+                logger.info(
+                    "Prowlarr: hid %s result(s) in a format that is not enabled",
+                    hidden_unsupported,
+                )
+            if oversized:
+                logger.debug("Prowlarr: hid %s result(s) over the ebook size limit", oversized)
+
+            mam_session_id = _get_mam_session_id()
+            if mam_session_id and mam_releases:
+                # Rerun the search Prowlarr sent to MAM, so it returns the same torrents:
+                # the indexer's own options, and every category once the search expanded.
+                mam_categories = None if self.last_search_type == "expanded" else categories
+                try:
+                    _enrich_mam_releases(
+                        mam_releases,
+                        mam_session_id,
+                        [variant.title for variant in variants],
+                        mam_search_options(mam_indexer, mam_categories),
+                        deadline,
+                    )
+                except _PROWLARR_REQUEST_ERRORS:
+                    # Enrichment only decorates rows; never let it lose the search.
+                    logger.warning("MAM enrichment failed", exc_info=True)
 
             # Indexer priority first: it is an explicit user preference. Author
             # agreement then orders what one indexer returned, so the editions that
@@ -1454,6 +1730,10 @@ class ProwlarrSource(ReleaseSource):
                     f"{failed_searches} of {attempted_searches} indexer searches failed "
                     f"({last_search_error})"
                 )
+                raise SourceUnavailableError(msg)
+            if not results and not attempted_searches and skipped_searches:
+                until = max(disabled_indexers.values(), default="later")
+                msg = f"every indexer is disabled by Prowlarr after recent failures (until {until})"
                 raise SourceUnavailableError(msg)
             # Cut short before every fallback ran: not a completed "no releases".
             if not results and fallback_stop == "deadline":

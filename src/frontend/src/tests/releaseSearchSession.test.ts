@@ -43,7 +43,12 @@ function annotated(id: string, payload: Record<string, unknown>, title = id): Re
 }
 
 function plain(id: string): Release {
-  return { source: 'prowlarr', source_id: id, title: id, extra: { author: 'A' } };
+  return {
+    source: 'prowlarr',
+    source_id: id,
+    title: id,
+    extra: { author: 'A' },
+  };
 }
 
 function response(releases: Release[], title = 'High School DxD, Vol. 5'): ReleasesResponse {
@@ -62,7 +67,12 @@ function malformed(id: string, extra: unknown): Release {
   return release;
 }
 
-const KEY = ['hardcover', 'dxd5', 'prowlarr', 'ebook'] as const;
+const BOOK = {
+  provider: 'hardcover',
+  provider_id: 'dxd5',
+  title: 'High School DxD 5',
+};
+const KEY = [BOOK, 'prowlarr', 'ebook'] as const;
 const MANUAL = 'dxd volume 5';
 
 afterEach(() => {
@@ -130,12 +140,20 @@ describe('releaseResponseAction', () => {
       }),
     ).toBe('replace');
     // Manual list on screen, expansion of the automatic search (after a reopen).
-    expect(releaseResponseAction({ ...base, expandSearch: true, displayedContext: 'dxd 5' })).toBe(
-      'replace',
-    );
+    expect(
+      releaseResponseAction({
+        ...base,
+        expandSearch: true,
+        displayedContext: 'dxd 5',
+      }),
+    ).toBe('replace');
     // Nothing on screen yet.
     expect(
-      releaseResponseAction({ ...base, expandSearch: true, displayedContext: undefined }),
+      releaseResponseAction({
+        ...base,
+        expandSearch: true,
+        displayedContext: undefined,
+      }),
     ).toBe('replace');
   });
 
@@ -307,7 +325,7 @@ describe('useReleaseSearchSession uses the helpers', () => {
     const writes = hook.match(/setCachedReleases\(/g) ?? [];
     expect(writes).toHaveLength(1);
     expect(hook).toMatch(
-      /if \(!expandSearch\) \{\s*setCachedReleases\(provider, bookId, tabName, contentType, requestContext, response\)/,
+      /if \(!expandSearch\) \{\s*setCachedReleases\(cacheBook, tabName, contentType, requestContext, response\)/,
     );
   });
 
@@ -318,16 +336,14 @@ describe('useReleaseSearchSession uses the helpers', () => {
 
   it('reads the cache under the request context', () => {
     expect(hook).toMatch(
-      /if \(!expandSearch\) \{\s*const cached = getCachedReleases\(provider, bookId, tabName, contentType, requestContext\)/,
+      /if \(!expandSearch\) \{\s*const cached = getCachedReleases\(cacheBook, tabName, contentType, requestContext\)/,
     );
   });
 
   it('refreshes only the next context on a switch, and the current one on a filter change', () => {
-    expect(hook).toContain(
-      'invalidateCachedReleases(book.provider, book.provider_id, tab.name, contentType, nextQuery)',
-    );
+    expect(hook).toContain('invalidateCachedReleases(cacheBook, tab.name, contentType, nextQuery)');
     expect(hook).toMatch(
-      /invalidateCachedReleases\(\s*book\.provider,\s*book\.provider_id,\s*activeTab,\s*contentType,\s*queryContext\(appliedManualQueryRef\.current\),?\s*\)/,
+      /invalidateCachedReleases\(\s*cacheBook,\s*activeTab,\s*contentType,\s*queryContext\(appliedManualQueryRef\.current\),?\s*\)/,
     );
     expect(hook.match(/invalidateCachedReleases\(/g) ?? []).toHaveLength(2);
   });
@@ -381,7 +397,11 @@ describe('request bookkeeping', () => {
   });
 
   it('fetches a tab only when it has no list, request or error', () => {
-    const state = { releasesBySource: {}, loadingBySource: {}, errorBySource: {} };
+    const state = {
+      releasesBySource: {},
+      loadingBySource: {},
+      errorBySource: {},
+    };
     expect(tabNeedsFetch(state, 'b')).toBe(true);
     expect(tabNeedsFetch({ ...state, loadingBySource: { b: true } }, 'b')).toBe(false);
     expect(tabNeedsFetch({ ...state, errorBySource: { b: 'x' } }, 'b')).toBe(false);
@@ -396,7 +416,11 @@ describe('request bookkeeping', () => {
     const releases: Record<string, ReleasesResponse | null> = {};
     const displayed: Record<string, string> = {};
     const fetchTab = (tab: string) => {
-      const request = { tab, id: startRequest(seqs, tab), context: queryContext(applied) };
+      const request = {
+        tab,
+        id: startRequest(seqs, tab),
+        context: queryContext(applied),
+      };
       loading = { ...loading, [tab]: true };
       return request;
     };
@@ -427,7 +451,11 @@ describe('request bookkeeping', () => {
     };
     const activate = (tab: string) =>
       tabNeedsFetch(
-        { releasesBySource: releases, loadingBySource: loading, errorBySource: {} },
+        {
+          releasesBySource: releases,
+          loadingBySource: loading,
+          errorBySource: {},
+        },
         tab,
       )
         ? fetchTab(tab)

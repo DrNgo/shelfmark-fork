@@ -210,7 +210,9 @@ class TestEbookSearchAnnotates:
         assert seen == [
             {
                 "title": DXD5_TITLE,
-                "current_query": "Hellcat of the Underworld Training Camp",
+                # A title the provider record lacks is searched as sent (upstream #1451
+                # translations), so it is also the query the identity sees.
+                "current_query": DXD5_TITLE,
                 "series_name": DXD,
                 "series_position": 5,
                 "authors": ["Ichiei Ishibumi"],

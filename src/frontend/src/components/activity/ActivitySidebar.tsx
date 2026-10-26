@@ -7,8 +7,9 @@ import type { RequestRecord, StatusData } from '../../types';
 import { Dropdown } from '../Dropdown';
 import { ActivityCard } from './ActivityCard';
 import type { DownloadStatusKey } from './activityMappers';
-import { downloadToActivityItem } from './activityMappers';
+import { downloadToActivityItem, linkedDownloadIdForRequest } from './activityMappers';
 import type { ActivityItem } from './activityTypes';
+import { getClearCompletedTargets } from './clearCompleted';
 
 interface ActivitySidebarProps {
   isOpen: boolean;
@@ -41,6 +42,7 @@ interface ActivitySidebarProps {
     },
   ) => Promise<void> | void;
   onRequestReject?: (requestId: number, adminNote?: string) => Promise<void> | void;
+  onRequestReopen?: (requestId: number) => Promise<void> | void;
   onRequestDismiss?: (requestId: number) => void;
   onPinnedOpenChange?: (pinnedOpen: boolean) => void;
   pinnedTopOffset?: number;
@@ -146,25 +148,6 @@ const getActivityCategory = (item: ActivityItem): ActivityCategoryKey => {
   return 'in_progress';
 };
 
-const getLinkedDownloadIdFromRequestItem = (item: ActivityItem): string | null => {
-  if (item.kind !== 'request' || item.visualStatus !== 'fulfilled') {
-    return null;
-  }
-
-  const releaseData = item.requestRecord?.release_data;
-  if (!releaseData || typeof releaseData !== 'object') {
-    return null;
-  }
-
-  const sourceId = releaseData.source_id;
-  if (typeof sourceId !== 'string') {
-    return null;
-  }
-
-  const trimmed = sourceId.trim();
-  return trimmed ? trimmed : null;
-};
-
 const mergeRequestWithDownload = (
   requestItem: ActivityItem,
   downloadItem: ActivityItem,
@@ -253,6 +236,7 @@ export const ActivitySidebar = ({
   onRequestCancel,
   onRequestApprove,
   onRequestReject,
+  onRequestReopen,
   onRequestDismiss,
   onPinnedOpenChange,
   pinnedTopOffset = 0,
@@ -321,9 +305,17 @@ export const ActivitySidebar = ({
 
   const { mergedRequestItems, mergedDownloadItems } = useMemo(() => {
     const downloadsById = new Map<string, ActivityItem>();
+    // downloadItems is newest first, so a retried request keeps its latest download.
+    const latestDownloadIdByRequestId = new Map<number, string>();
     downloadItems.forEach((item) => {
       if (item.downloadBookId) {
         downloadsById.set(item.downloadBookId, item);
+        if (
+          typeof item.requestId === 'number' &&
+          !latestDownloadIdByRequestId.has(item.requestId)
+        ) {
+          latestDownloadIdByRequestId.set(item.requestId, item.downloadBookId);
+        }
       }
     });
 
@@ -346,7 +338,7 @@ export const ActivitySidebar = ({
     });
 
     const nextRequestItems = visibleRequestItems.map((requestItem) => {
-      const linkedDownloadId = getLinkedDownloadIdFromRequestItem(requestItem);
+      const linkedDownloadId = linkedDownloadIdForRequest(requestItem, latestDownloadIdByRequestId);
       if (!linkedDownloadId) {
         return requestItem;
       }
@@ -495,38 +487,10 @@ export const ActivitySidebar = ({
 
   const hasUserFilter = isAdmin && availableUsers.length > 1;
 
-  const clearCompletedTargets = useMemo(() => {
-    const targets: ActivityDismissTarget[] = [];
-    const seen = new Set<string>();
-
-    visibleItems.forEach((item) => {
-      const isTerminalDownload =
-        item.kind === 'download' &&
-        (item.visualStatus === 'complete' ||
-          item.visualStatus === 'error' ||
-          item.visualStatus === 'cancelled');
-
-      if (!isTerminalDownload || !item.downloadBookId) {
-        return;
-      }
-
-      const downloadKey = `download:${item.downloadBookId}`;
-      if (!seen.has(downloadKey)) {
-        seen.add(downloadKey);
-        targets.push({ itemType: 'download', itemKey: downloadKey });
-      }
-
-      if (item.requestId) {
-        const requestKey = `request:${item.requestId}`;
-        if (!seen.has(requestKey)) {
-          seen.add(requestKey);
-          targets.push({ itemType: 'request', itemKey: requestKey });
-        }
-      }
-    });
-
-    return targets;
-  }, [visibleItems]);
+  const clearCompletedTargets = useMemo(
+    () => getClearCompletedTargets(visibleItems, visibleRequestItems),
+    [visibleItems, visibleRequestItems],
+  );
 
   const visibleCategoryOrder = useMemo(
     () => getVisibleCategoryOrder(effectiveActiveTab),
@@ -838,7 +802,12 @@ export const ActivitySidebar = ({
             return (
               <div className="divide-y divide-[color-mix(in_srgb,var(--border-muted)_60%,transparent)]">
                 {visibleItems.map((item) => (
-                  <ActivityCard key={item.id} item={item} isAdmin={isAdmin} />
+                  <ActivityCard
+                    key={item.id}
+                    item={item}
+                    isAdmin={isAdmin}
+                    onRequestReopen={onRequestReopen}
+                  />
                 ))}
                 {historyHasMore && (
                   <div className="pt-3 text-center">
@@ -935,6 +904,7 @@ export const ActivitySidebar = ({
                                 }
                               : undefined
                           }
+                          onRequestReopen={onRequestReopen}
                           showRequestDetailsToggle={canShowRequestReview}
                           isRequestDetailsOpen={shouldShowRequestReview}
                           isSelected={shouldShowRequestReview || shouldShowRejectDialog}

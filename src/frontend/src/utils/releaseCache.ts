@@ -1,20 +1,34 @@
-import type { ReleasesResponse } from '../types';
+import type { Book, ReleasesResponse } from '../types';
+
+/** The book fields that identify one edition's release search. */
+export type ReleaseCacheBook = Pick<Book, 'provider' | 'provider_id' | 'title' | 'language'>;
 
 // Module-level cache for release search results
-// Key format: `${provider}:${provider_id}:${source}:${contentType}:${queryContext}`, where
-// the query context is '' for the automatic search, else the applied manual query: manual
-// and automatic responses never share an entry, and both stay cached.
+// Key format: `${provider}:${provider_id}:${language}:${title}:${source}:${contentType}:${queryContext}`,
+// where the query context is '' for the automatic search, else the applied manual query:
+// manual and automatic responses never share an entry, and both stay cached.
 // This persists across modal open/close cycles
 const releaseCache = new Map<string, ReleasesResponse>();
 
+// A provider can report every edition of a book under one ID - Open Library uses the
+// work ID for "The Way of Kings" and its German translation "Der Weg der Könige" alike -
+// and each edition searches for releases by its own title and language. Keying on the
+// ID alone would serve one edition's cached releases to the other.
 function getCacheKey(
-  provider: string,
-  providerId: string,
+  book: ReleaseCacheBook,
   source: string,
   contentType: string,
   context: string,
 ): string {
-  return `${provider}:${providerId}:${source}:${contentType}:${context}`;
+  return [
+    book.provider,
+    book.provider_id,
+    book.language ?? '',
+    book.title,
+    source,
+    contentType,
+    context,
+  ].join(':');
 }
 
 // Default cache TTL (5 minutes) - sources can override via column_config.cache_ttl_seconds
@@ -22,13 +36,12 @@ const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000;
 const cacheTimestamps = new Map<string, number>();
 
 export function getCachedReleases(
-  provider: string,
-  providerId: string,
+  book: ReleaseCacheBook,
   source: string,
   contentType: string,
   context: string,
 ): ReleasesResponse | null {
-  const key = getCacheKey(provider, providerId, source, contentType, context);
+  const key = getCacheKey(book, source, contentType, context);
   const timestamp = cacheTimestamps.get(key);
   const cached = releaseCache.get(key);
 
@@ -53,26 +66,24 @@ export function getCachedReleases(
 }
 
 export function setCachedReleases(
-  provider: string,
-  providerId: string,
+  book: ReleaseCacheBook,
   source: string,
   contentType: string,
   context: string,
   data: ReleasesResponse,
 ): void {
-  const key = getCacheKey(provider, providerId, source, contentType, context);
+  const key = getCacheKey(book, source, contentType, context);
   releaseCache.set(key, data);
   cacheTimestamps.set(key, Date.now());
 }
 
 export function invalidateCachedReleases(
-  provider: string,
-  providerId: string,
+  book: ReleaseCacheBook,
   source: string,
   contentType: string,
   context: string,
 ): void {
-  const key = getCacheKey(provider, providerId, source, contentType, context);
+  const key = getCacheKey(book, source, contentType, context);
   releaseCache.delete(key);
   cacheTimestamps.delete(key);
 }

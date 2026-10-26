@@ -8,7 +8,9 @@ from typing import TYPE_CHECKING, Any, NoReturn, Protocol, TypeGuard
 
 from shelfmark.core.settings_registry import (
     ActionButton,
+    CheckboxField,
     HeadingField,
+    NumberField,
     PasswordField,
     SelectField,
     SettingsField,
@@ -17,6 +19,7 @@ from shelfmark.core.settings_registry import (
     register_settings,
 )
 from shelfmark.core.utils import get_hardened_xmlrpc_client, normalize_http_url
+from shelfmark.download.activity import STALL_TIMEOUT_SECONDS
 from shelfmark.download.network import get_ssl_verify
 
 try:
@@ -177,6 +180,8 @@ def _test_qbittorrent_connection(current_values: dict[str, Any] | None = None) -
             password=password,
             api_key=api_key or None,
             VERIFY_WEBUI_CERTIFICATE=get_ssl_verify(url),
+            # Same scheme rule as QBittorrentClient (#1417).
+            FORCE_SCHEME_FROM_HOST=url.lower().startswith("https://"),
         )
         client.auth_log_in()
         api_version = client.app.web_api_version
@@ -548,6 +553,23 @@ def _test_alldebrid_connection(current_values: dict[str, Any] | None = None) -> 
     return {"success": success, "message": message}
 
 
+def _test_debridlink_connection(current_values: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Test the Debrid-Link API connection using current form values."""
+    from shelfmark.core.config import config
+    from shelfmark.download.clients.debridlink import DebridLinkClient
+
+    current_values = current_values or {}
+    api_key = _resolve_string_setting(current_values, config.get, "DEBRIDLINK_API_KEY")
+
+    if not api_key:
+        return {"success": False, "message": "Debrid-Link API Key is required"}
+
+    client = DebridLinkClient()
+    client._api_key = api_key
+    success, message = client.test_connection()
+    return {"success": success, "message": message}
+
+
 def _test_realdebrid_connection(current_values: dict[str, Any] | None = None) -> dict[str, Any]:
     """Test the Real-Debrid API connection using current form values."""
     from shelfmark.core.config import config
@@ -565,7 +587,31 @@ def _test_realdebrid_connection(current_values: dict[str, Any] | None = None) ->
     return {"success": success, "message": message}
 
 
+def _test_torbox_connection(current_values: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Test the TorBox API connection using current form values."""
+    from shelfmark.core.config import config
+    from shelfmark.download.clients.torbox import TorBoxClient
+
+    current_values = current_values or {}
+    api_key = _resolve_string_setting(current_values, config.get, "TORBOX_API_KEY")
+
+    if not api_key:
+        return {"success": False, "message": "TorBox API Key is required"}
+
+    client = TorBoxClient()
+    client._api_key = api_key
+    success, message = client.test_connection()
+    return {"success": success, "message": message}
+
+
 # ==================== Download Clients Tab ====================
+
+
+# Torrent stall window (see ExternalClientHandler._stall_window_seconds).
+STALL_TIMEOUT_SETTING = "TORRENT_STALL_TIMEOUT_MINUTES"
+STALL_TIMEOUT_DEFAULT_MINUTES = 15
+STALL_TIMEOUT_MIN_MINUTES = STALL_TIMEOUT_SECONDS // 60  # a shorter window cannot apply
+STALL_TIMEOUT_MAX_MINUTES = 60
 
 
 @register_settings(
@@ -590,13 +636,23 @@ def prowlarr_clients_settings() -> list[SettingsField]:
             options=[
                 {"value": "", "label": "None"},
                 {"value": "alldebrid", "label": "AllDebrid"},
+                {"value": "blackhole", "label": "Blackhole"},
+                {"value": "debridlink", "label": "Debrid-Link"},
                 {"value": "qbittorrent", "label": "qBittorrent"},
                 {"value": "realdebrid", "label": "Real-Debrid"},
+                {"value": "torbox", "label": "TorBox"},
                 {"value": "transmission", "label": "Transmission"},
                 {"value": "deluge", "label": "Deluge"},
                 {"value": "rtorrent", "label": "rTorrent"},
             ],
             default="",
+        ),
+        TextField(
+            key="BLACKHOLE_DIRECTORY",
+            label="Blackhole Directory",
+            description="Directory where Shelfmark saves .torrent files for another downloader",
+            placeholder="/blackhole",
+            show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "blackhole"},
         ),
         # --- AllDebrid Settings ---
         PasswordField(
@@ -613,6 +669,21 @@ def prowlarr_clients_settings() -> list[SettingsField]:
             callback=_test_alldebrid_connection,
             show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "alldebrid"},
         ),
+        # --- Debrid-Link Settings ---
+        PasswordField(
+            key="DEBRIDLINK_API_KEY",
+            label="API Key",
+            description="Debrid-Link API Key from your Debrid-Link account settings",
+            show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "debridlink"},
+        ),
+        ActionButton(
+            key="test_debridlink",
+            label="Test Connection",
+            description="Verify your Debrid-Link configuration",
+            style="primary",
+            callback=_test_debridlink_connection,
+            show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "debridlink"},
+        ),
         # --- Real-Debrid Settings ---
         PasswordField(
             key="REALDEBRID_API_KEY",
@@ -627,6 +698,21 @@ def prowlarr_clients_settings() -> list[SettingsField]:
             style="primary",
             callback=_test_realdebrid_connection,
             show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "realdebrid"},
+        ),
+        # --- TorBox Settings ---
+        PasswordField(
+            key="TORBOX_API_KEY",
+            label="API Key",
+            description="TorBox API Key from your TorBox account settings",
+            show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "torbox"},
+        ),
+        ActionButton(
+            key="test_torbox",
+            label="Test Connection",
+            description="Verify your TorBox configuration",
+            style="primary",
+            callback=_test_torbox_connection,
+            show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "torbox"},
         ),
         # --- qBittorrent Settings ---
         TextField(
@@ -679,12 +765,42 @@ def prowlarr_clients_settings() -> list[SettingsField]:
             default="",
             show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "qbittorrent"},
         ),
+        CheckboxField(
+            key="QBITTORRENT_SEPARATE_DOWNLOAD_DIRS",
+            label="Separate Book and Audiobook Directories",
+            description="Download books and audiobooks to different directories instead of one shared directory.",
+            default=False,
+            show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "qbittorrent"},
+        ),
         TextField(
             key="QBITTORRENT_DOWNLOAD_DIR",
             label="Download Directory",
             description="Server-side directory where torrents are downloaded (optional, uses qBittorrent default if not specified)",
             placeholder="/downloads",
-            show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "qbittorrent"},
+            show_when=[
+                {"field": "PROWLARR_TORRENT_CLIENT", "value": "qbittorrent"},
+                {"field": "QBITTORRENT_SEPARATE_DOWNLOAD_DIRS", "value": False},
+            ],
+        ),
+        TextField(
+            key="QBITTORRENT_DOWNLOAD_DIR_BOOK",
+            label="Book Download Directory",
+            description="Server-side directory where book torrents are downloaded (optional, uses qBittorrent default if not specified)",
+            placeholder="/downloads/books",
+            show_when=[
+                {"field": "PROWLARR_TORRENT_CLIENT", "value": "qbittorrent"},
+                {"field": "QBITTORRENT_SEPARATE_DOWNLOAD_DIRS", "value": True},
+            ],
+        ),
+        TextField(
+            key="QBITTORRENT_DOWNLOAD_DIR_AUDIOBOOK",
+            label="Audiobook Download Directory",
+            description="Server-side directory where audiobook torrents are downloaded (optional, uses qBittorrent default if not specified)",
+            placeholder="/downloads/audiobooks",
+            show_when=[
+                {"field": "PROWLARR_TORRENT_CLIENT", "value": "qbittorrent"},
+                {"field": "QBITTORRENT_SEPARATE_DOWNLOAD_DIRS", "value": True},
+            ],
         ),
         TagListField(
             key="QBITTORRENT_TAG",
@@ -739,12 +855,42 @@ def prowlarr_clients_settings() -> list[SettingsField]:
             default="",
             show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "transmission"},
         ),
+        CheckboxField(
+            key="TRANSMISSION_SEPARATE_DOWNLOAD_DIRS",
+            label="Separate Book and Audiobook Directories",
+            description="Download books and audiobooks to different directories instead of one shared directory.",
+            default=False,
+            show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "transmission"},
+        ),
         TextField(
             key="TRANSMISSION_DOWNLOAD_DIR",
             label="Download Directory",
             description="Server-side directory where torrents are downloaded (optional, uses Transmission default if not specified)",
             placeholder="/downloads",
-            show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "transmission"},
+            show_when=[
+                {"field": "PROWLARR_TORRENT_CLIENT", "value": "transmission"},
+                {"field": "TRANSMISSION_SEPARATE_DOWNLOAD_DIRS", "value": False},
+            ],
+        ),
+        TextField(
+            key="TRANSMISSION_DOWNLOAD_DIR_BOOK",
+            label="Book Download Directory",
+            description="Server-side directory where book torrents are downloaded (optional, uses Transmission default if not specified)",
+            placeholder="/downloads/books",
+            show_when=[
+                {"field": "PROWLARR_TORRENT_CLIENT", "value": "transmission"},
+                {"field": "TRANSMISSION_SEPARATE_DOWNLOAD_DIRS", "value": True},
+            ],
+        ),
+        TextField(
+            key="TRANSMISSION_DOWNLOAD_DIR_AUDIOBOOK",
+            label="Audiobook Download Directory",
+            description="Server-side directory where audiobook torrents are downloaded (optional, uses Transmission default if not specified)",
+            placeholder="/downloads/audiobooks",
+            show_when=[
+                {"field": "PROWLARR_TORRENT_CLIENT", "value": "transmission"},
+                {"field": "TRANSMISSION_SEPARATE_DOWNLOAD_DIRS", "value": True},
+            ],
         ),
         # --- Deluge Settings ---
         TextField(
@@ -793,12 +939,42 @@ def prowlarr_clients_settings() -> list[SettingsField]:
             default="",
             show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "deluge"},
         ),
+        CheckboxField(
+            key="DELUGE_SEPARATE_DOWNLOAD_DIRS",
+            label="Separate Book and Audiobook Directories",
+            description="Download books and audiobooks to different directories instead of one shared directory.",
+            default=False,
+            show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "deluge"},
+        ),
         TextField(
             key="DELUGE_DOWNLOAD_DIR",
             label="Download Directory",
             description="Server-side directory where torrents are downloaded (optional, uses Deluge default if not specified)",
             placeholder="/downloads",
-            show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "deluge"},
+            show_when=[
+                {"field": "PROWLARR_TORRENT_CLIENT", "value": "deluge"},
+                {"field": "DELUGE_SEPARATE_DOWNLOAD_DIRS", "value": False},
+            ],
+        ),
+        TextField(
+            key="DELUGE_DOWNLOAD_DIR_BOOK",
+            label="Book Download Directory",
+            description="Server-side directory where book torrents are downloaded (optional, uses Deluge default if not specified)",
+            placeholder="/downloads/books",
+            show_when=[
+                {"field": "PROWLARR_TORRENT_CLIENT", "value": "deluge"},
+                {"field": "DELUGE_SEPARATE_DOWNLOAD_DIRS", "value": True},
+            ],
+        ),
+        TextField(
+            key="DELUGE_DOWNLOAD_DIR_AUDIOBOOK",
+            label="Audiobook Download Directory",
+            description="Server-side directory where audiobook torrents are downloaded (optional, uses Deluge default if not specified)",
+            placeholder="/downloads/audiobooks",
+            show_when=[
+                {"field": "PROWLARR_TORRENT_CLIENT", "value": "deluge"},
+                {"field": "DELUGE_SEPARATE_DOWNLOAD_DIRS", "value": True},
+            ],
         ),
         # --- rTorrent Settings ---
         TextField(
@@ -843,24 +1019,80 @@ def prowlarr_clients_settings() -> list[SettingsField]:
             placeholder="audiobooks",
             show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "rtorrent"},
         ),
+        CheckboxField(
+            key="RTORRENT_SEPARATE_DOWNLOAD_DIRS",
+            label="Separate Book and Audiobook Directories",
+            description="Download books and audiobooks to different directories instead of one shared directory.",
+            default=False,
+            show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "rtorrent"},
+        ),
         TextField(
             key="RTORRENT_DOWNLOAD_DIR",
             label="Download Directory",
             description="Server-side directory where torrents are downloaded (optional, uses rTorrent default if not specified)",
             placeholder="/downloads",
-            show_when={"field": "PROWLARR_TORRENT_CLIENT", "value": "rtorrent"},
+            show_when=[
+                {"field": "PROWLARR_TORRENT_CLIENT", "value": "rtorrent"},
+                {"field": "RTORRENT_SEPARATE_DOWNLOAD_DIRS", "value": False},
+            ],
+        ),
+        TextField(
+            key="RTORRENT_DOWNLOAD_DIR_BOOK",
+            label="Book Download Directory",
+            description="Server-side directory where book torrents are downloaded (optional, uses rTorrent default if not specified)",
+            placeholder="/downloads/books",
+            show_when=[
+                {"field": "PROWLARR_TORRENT_CLIENT", "value": "rtorrent"},
+                {"field": "RTORRENT_SEPARATE_DOWNLOAD_DIRS", "value": True},
+            ],
+        ),
+        TextField(
+            key="RTORRENT_DOWNLOAD_DIR_AUDIOBOOK",
+            label="Audiobook Download Directory",
+            description="Server-side directory where audiobook torrents are downloaded (optional, uses rTorrent default if not specified)",
+            placeholder="/downloads/audiobooks",
+            show_when=[
+                {"field": "PROWLARR_TORRENT_CLIENT", "value": "rtorrent"},
+                {"field": "RTORRENT_SEPARATE_DOWNLOAD_DIRS", "value": True},
+            ],
         ),
         # Note: Torrent client download path must be mounted identically in both containers.
         SelectField(
             key="PROWLARR_TORRENT_ACTION",
             label="Torrent Completion Action",
-            description="Choose whether to keep, remove, or move the torrent to another category or label after import",
+            description="After a successful import, Remove keeps downloaded files in qBittorrent, Transmission, and Deluge; Remove & Delete Files also deletes them. rTorrent cannot delete download data, so this action leaves its torrent untouched. Blackhole does not support removal. Debrid clients delete temporary local files for either Remove action.",
             options=[
                 {"value": "keep", "label": "Keep"},
                 {"value": "remove", "label": "Remove"},
+                {"value": "remove_and_delete", "label": "Remove & Delete Files"},
                 {"value": "change_category", "label": "Change Category"},
             ],
             default="keep",
+            show_when={"field": "PROWLARR_TORRENT_CLIENT", "notEmpty": True},
+        ),
+        NumberField(
+            key="TORRENT_NO_SEEDERS_WAIT",
+            label="Give Up With No Seeders (minutes)",
+            description=(
+                "Give up on a torrent when its client sees no seed at all for this long, even "
+                "while it is still downloading, or fewer seeds than the minimum below while "
+                "nothing is downloading. The torrent is removed and the download marked failed, "
+                "so another release can be tried. The card shows the seed count and a countdown "
+                "while it waits. 0 keeps the default behaviour (only the stall timer ends it). "
+                "Only qBittorrent reports seed counts."
+            ),
+            default=0,
+            min_value=0,
+            max_value=240,
+            show_when={"field": "PROWLARR_TORRENT_CLIENT", "notEmpty": True},
+        ),
+        NumberField(
+            key="TORRENT_MIN_SEEDERS",
+            label="Minimum Seeders",
+            description="Seeds the client must see for a motionless torrent to keep waiting. 0 also turns the no-seed check off.",
+            default=1,
+            min_value=0,
+            max_value=1000,
             show_when={"field": "PROWLARR_TORRENT_CLIENT", "notEmpty": True},
         ),
         TextField(
@@ -870,6 +1102,20 @@ def prowlarr_clients_settings() -> list[SettingsField]:
             placeholder="imported",
             default="",
             show_when={"field": "PROWLARR_TORRENT_ACTION", "value": "change_category"},
+        ),
+        NumberField(
+            key=STALL_TIMEOUT_SETTING,
+            label="Stall Timeout (minutes)",
+            description=(
+                "How long a torrent can go without any progress before Shelfmark cancels it. "
+                "Applies from when the torrent starts and restarts each time it moves. "
+                "Raise it for slow swarms or magnets that take a while to find peers, or lower it "
+                "to give up on dead torrents sooner."
+            ),
+            default=STALL_TIMEOUT_DEFAULT_MINUTES,
+            min_value=STALL_TIMEOUT_MIN_MINUTES,
+            max_value=STALL_TIMEOUT_MAX_MINUTES,
+            show_when={"field": "PROWLARR_TORRENT_CLIENT", "notEmpty": True},
         ),
         # --- Usenet Client Selection ---
         HeadingField(

@@ -133,6 +133,29 @@ def _test_prowlarr_connection(current_values: dict[str, Any] | None = None) -> d
         return {"success": success, "message": message}
 
 
+def _test_mam_connection(current_values: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Check the MAM session ID by asking MAM which account it belongs to."""
+    from shelfmark.release_sources.prowlarr.mam import MamClient, MamError, reset_failures
+
+    current_values = current_values or {}
+    mam_id = _resolve_setting_text(current_values, "PROWLARR_MAM_ID")
+    if not mam_id:
+        return {"success": False, "message": "MAM session ID is required"}
+
+    try:
+        username = MamClient(mam_id).get_username()
+    except MamError as e:
+        return {"success": False, "message": str(e)}
+    except _PROWLARR_SETTINGS_ERRORS as e:
+        return {"success": False, "message": f"Connection failed: {e!s}"}
+
+    if not username:
+        return {"success": False, "message": "MyAnonamouse did not return an account for this ID"}
+    # A working session ends any back-off from earlier failed lookups.
+    reset_failures()
+    return {"success": True, "message": f"Connected to MyAnonamouse as {username}"}
+
+
 # ==================== Configuration Tab ====================
 
 
@@ -203,6 +226,20 @@ def prowlarr_config_settings() -> list[SettingsField]:
             max_value=MAX_INDEXER_TIMEOUT_SECONDS,
             show_when={"field": "PROWLARR_ENABLED", "value": True},
         ),
+        NumberField(
+            key="PROWLARR_EBOOK_MAX_SIZE_MB",
+            label="Maximum Ebook Size (MB)",
+            description=(
+                "Hide ebook results larger than this. Expanded searches and general indexers can "
+                "return TV series, courses and software next to the books. 0 shows everything, "
+                "and a result with no reported size is always shown. Audiobook searches are not "
+                "limited."
+            ),
+            default=0,
+            min_value=0,
+            max_value=100000,
+            show_when={"field": "PROWLARR_ENABLED", "value": True},
+        ),
         CheckboxField(
             key="PROWLARR_AUTO_EXPAND",
             label="Auto-expand search on no results",
@@ -223,10 +260,60 @@ def prowlarr_config_settings() -> list[SettingsField]:
             show_when={"field": "PROWLARR_ENABLED", "value": True},
         ),
         CheckboxField(
+            key="PROWLARR_HIDE_UNSUPPORTED_FORMATS",
+            label="Hide results in formats you did not enable",
+            default=True,
+            description=(
+                "Hide a result whose title ends in a file extension that is not in Supported "
+                "Book Formats, such as a .doc or .rtf file. Downloading it would only fail at "
+                "post-processing. Titles without an extension, archives and audiobook "
+                "searches are never hidden."
+            ),
+            show_when={"field": "PROWLARR_ENABLED", "value": True},
+        ),
+        CheckboxField(
             key="PROWLARR_USE_SEED_PREFERENCES",
             label="Use Prowlarr seed preferences",
             default=False,
             description="Apply per-indexer seed time and ratio preferences from Prowlarr when sending torrents to the download client",
+            show_when={"field": "PROWLARR_ENABLED", "value": True},
+        ),
+        HeadingField(
+            key="prowlarr_mam_heading",
+            title="MyAnonamouse Enrichment",
+            description=(
+                "Prowlarr drops the narrator and series from MyAnonamouse results. With a MAM "
+                "session ID, Shelfmark looks them up (plus bitrate, from the uploader's tags) "
+                "directly from MyAnonamouse. Create the session under Preferences > Security "
+                "on MyAnonamouse, locked to the IP or ASN Shelfmark connects from. Choose "
+                "which columns show under Search Mode > Release List Columns."
+            ),
+            link_url="https://www.myanonamouse.net/preferences/index.php?view=security",
+            link_text="MAM security settings",
+            show_when={"field": "PROWLARR_ENABLED", "value": True},
+        ),
+        PasswordField(
+            key="PROWLARR_MAM_ID",
+            label="MAM Session ID",
+            description=(
+                "The mam_id value MyAnonamouse shows when you create a session. MAM locks "
+                "each session to one IP or ASN, so reusing Prowlarr's or another client's "
+                "session often fails with a 403: you will likely need a separate session "
+                "for Shelfmark if it reaches MAM from another IP (different host, VPN or "
+                "proxy) or the existing session is ASN-locked to another network. Leave "
+                "empty to turn enrichment off."
+            ),
+            show_when={"field": "PROWLARR_ENABLED", "value": True},
+        ),
+        ActionButton(
+            key="test_prowlarr_mam",
+            label="Test MAM Session",
+            description=(
+                "Check that MyAnonamouse accepts the session ID. A passing test also resumes "
+                "enrichment after it stopped on repeated failures."
+            ),
+            style="primary",
+            callback=_test_mam_connection,
             show_when={"field": "PROWLARR_ENABLED", "value": True},
         ),
     ]

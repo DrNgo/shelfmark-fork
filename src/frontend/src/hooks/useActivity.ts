@@ -107,6 +107,7 @@ const parseHistoryBook = (value: unknown): Book | null => {
     ...(typeof value.retry_available === 'boolean'
       ? { retry_available: value.retry_available }
       : {}),
+    ...(typeof value.downloads === 'number' ? { downloads: value.downloads } : {}),
   };
 };
 
@@ -282,6 +283,7 @@ interface UseActivityResult {
   activityHistoryHasMore: boolean;
   prefetchActivityHistory: () => void;
   refreshActivitySnapshot: () => Promise<void>;
+  refreshHistoryIfLoaded: () => void;
   handleActivityTabChange: (tab: 'all' | 'downloads' | 'requests' | 'history') => void;
   resetActivity: () => void;
   handleActivityHistoryLoadMore: () => void;
@@ -573,6 +575,7 @@ export const useActivity = ({
     activityHistoryHasMore,
     prefetchActivityHistory,
     refreshActivitySnapshot,
+    refreshHistoryIfLoaded,
     handleActivityTabChange,
     resetActivity,
     handleActivityHistoryLoadMore,

@@ -1,0 +1,113 @@
+"""Tests for Shelfmark's logging configuration."""
+
+import io
+import logging
+from logging.handlers import RotatingFileHandler
+
+import pytest
+
+import shelfmark.core.logger as logger_module
+
+
+def test_setup_logger_shares_file_handler(monkeypatch, tmp_path):
+    """Module loggers must not open the shared log file independently."""
+    monkeypatch.setattr(logger_module, "ENABLE_LOGGING", True)
+    log_file = tmp_path / "shelfmark.log"
+
+    first_logger = logger_module.setup_logger("shelfmark.test.first", log_file)
+    second_logger = logger_module.setup_logger("shelfmark.test.second", log_file)
+
+    first_handler = next(
+        handler for handler in first_logger.handlers if isinstance(handler, RotatingFileHandler)
+    )
+    second_handler = next(
+        handler for handler in second_logger.handlers if isinstance(handler, RotatingFileHandler)
+    )
+
+    assert first_handler is second_handler
+    assert first_handler.stream is not None
+    assert second_handler.stream is not None
+    assert first_handler.stream.fileno() == second_handler.stream.fileno()
+
+    first_logger.removeHandler(first_handler)
+    second_logger.removeHandler(second_handler)
+    with logger_module._file_handlers_lock:
+        logger_module._file_handlers.pop(log_file)
+    first_handler.close()
+
+
+def test_setup_logger_keeps_separate_handlers_for_separate_files(monkeypatch, tmp_path):
+    """Explicitly different log destinations must remain independent."""
+    monkeypatch.setattr(logger_module, "ENABLE_LOGGING", True)
+    first_file = tmp_path / "first.log"
+    second_file = tmp_path / "second.log"
+
+    first_logger = logger_module.setup_logger("shelfmark.test.first_file", first_file)
+    second_logger = logger_module.setup_logger("shelfmark.test.second_file", second_file)
+
+    first_handler = next(
+        handler for handler in first_logger.handlers if isinstance(handler, RotatingFileHandler)
+    )
+    second_handler = next(
+        handler for handler in second_logger.handlers if isinstance(handler, RotatingFileHandler)
+    )
+
+    assert first_handler is not second_handler
+
+    for logger, handler, log_file in (
+        (first_logger, first_handler, first_file),
+        (second_logger, second_handler, second_file),
+    ):
+        logger.removeHandler(handler)
+        with logger_module._file_handlers_lock:
+            logger_module._file_handlers.pop(log_file)
+        handler.close()
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "Task 12:https://tracker.example/api?t=get&id=42&apikey=s3cr3t: starting download",
+            "Task 12:https://tracker.example/api?t=get&id=42&apikey=(removed): starting download",
+        ),
+        (
+            "https://t.example/dl.php?passkey=abc&torrent_pass=def&API_KEY=ghi&r=1",
+            "https://t.example/dl.php?passkey=(removed)&torrent_pass=(removed)"
+            "&API_KEY=(removed)&r=1",
+        ),
+        (
+            "url='http://prowlarr:9696/1/download?apikey=xyz&link=abc'",
+            "url='http://prowlarr:9696/1/download?apikey=(removed)&link=abc'",
+        ),
+        (
+            "https://t.example/rss?id=7&uid=99&key=k",
+            "https://t.example/rss?id=7&uid=(removed)&key=(removed)",
+        ),
+        ("download_id=7 api_key_set=True", "download_id=7 api_key_set=True"),
+    ],
+)
+def test_redact_secrets_masks_credential_query_params(text, expected):
+    assert logger_module.redact_secrets(text) == expected
+
+
+def test_setup_logger_redacts_messages_args_and_tracebacks(monkeypatch):
+    """Task ids built from Prowlarr guids carry tracker API keys (#1486)."""
+    monkeypatch.setattr(logger_module, "ENABLE_LOGGING", False)
+    logger = logger_module.setup_logger("shelfmark.test.redaction")
+    stream = io.StringIO()
+    for handler in logger.handlers:
+        assert isinstance(handler, logging.StreamHandler)
+        handler.setStream(stream)
+
+    task_id = "3:https://tracker.example/api?t=get&id=42&apikey=s3cr3t"
+    logger.info("Task %s: starting download (%s) - %s", task_id, "Prowlarr", "Title")
+    try:
+        raise RuntimeError(f"refresh failed for {task_id}")
+    except RuntimeError:
+        logger.exception("Prowlarr release refresh failed: %s", task_id)
+
+    output = stream.getvalue()
+    assert "s3cr3t" not in output
+    assert output.count("apikey=(removed)") == 3
+    assert "id=42" in output

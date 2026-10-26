@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import importlib
+import io
 import sqlite3
 import uuid
+import zipfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, patch
 
 import pytest
+
+from shelfmark.core.models import DownloadTask, QueueStatus
+from shelfmark.core.viewer_redaction import public_download_id
 
 
 @pytest.fixture(scope="module")
@@ -73,6 +79,7 @@ def _record_terminal_download(
         preview=None,
         content_type="ebook",
         cover_aspect=cover_aspect,
+        downloads=None,
         origin=origin,
     )
     svc.finalize_download(
@@ -164,15 +171,16 @@ class TestActivityRoutes:
         assert dismiss_response.status_code == 200
         assert dismiss_response.json["status"] == "dismissed"
 
+        # A request-linked download reaches its non-admin owner under an opaque id (#1418).
         assert snapshot_response.status_code == 200
         assert {
             "item_type": "download",
-            "item_key": "download:test-task",
+            "item_key": f"download:{public_download_id('test-task')}",
         } in snapshot_response.json["dismissed"]
 
         assert history_response.status_code == 200
         assert len(history_response.json) == 1
-        assert history_response.json[0]["item_key"] == "download:test-task"
+        assert history_response.json[0]["item_key"] == f"download:{public_download_id('test-task')}"
         assert history_response.json[0]["snapshot"]["kind"] == "download"
         assert history_response.json[0]["snapshot"]["download"]["title"] == "Dismiss Me"
 
@@ -320,6 +328,8 @@ class TestActivityRoutes:
             source="direct_download",
             title="Queued Local Download",
             download_path=str(file_path),
+            # The route only serves a non-admin their own task.
+            user_id=user["id"],
         )
 
         with (
@@ -337,10 +347,8 @@ class TestActivityRoutes:
         assert ranged.status_code == 206
         assert ranged.data == file_bytes[:10]
 
-    def test_localdownload_missing_queue_file_clears_download_path(
-        self, main_module, client, tmp_path
-    ):
-        """A vanished file still clears `task.download_path` without reading the file."""
+    def test_localdownload_missing_queue_file_is_not_found(self, main_module, client, tmp_path):
+        """A vanished file is a 404, not a read error."""
         from shelfmark.core.models import DownloadTask
 
         user = _create_user(main_module, prefix="reader")
@@ -351,6 +359,7 @@ class TestActivityRoutes:
             source="direct_download",
             title="Vanished Download",
             download_path=str(tmp_path / "gone.epub"),
+            user_id=user["id"],
         )
 
         with (
@@ -360,7 +369,6 @@ class TestActivityRoutes:
             response = client.get("/api/localdownload?id=queue-localdownload-missing")
 
         assert response.status_code == 404
-        assert task.download_path is None
 
     def test_localdownload_falls_back_to_download_history_file(self, main_module, client, tmp_path):
         user = _create_user(main_module, prefix="reader")
@@ -386,6 +394,145 @@ class TestActivityRoutes:
         assert response.status_code == 200
         assert response.data == file_bytes
         assert "attachment" in response.headers.get("Content-Disposition", "").lower()
+
+    def test_localdownload_serves_own_live_queue_task(self, main_module, client, tmp_path):
+        user = _create_user(main_module, prefix="reader")
+        _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
+
+        task_id = f"live-localdownload-{uuid.uuid4().hex[:8]}"
+        file_path = tmp_path / "live-owned.epub"
+        file_bytes = b"live download payload"
+        file_path.write_bytes(file_bytes)
+
+        task = DownloadTask(
+            task_id=task_id,
+            source="direct_download",
+            title="Live Local Download",
+            user_id=user["id"],
+            username=user["username"],
+            download_path=str(file_path),
+        )
+        assert main_module.backend.book_queue.add(task) is True
+
+        try:
+            main_module.backend.book_queue.update_status(task_id, QueueStatus.COMPLETE)
+            with patch.object(main_module, "get_auth_mode", return_value="builtin"):
+                response = client.get(f"/api/localdownload?id={task_id}")
+        finally:
+            main_module.backend.book_queue.cancel_download(task_id)
+
+        assert response.status_code == 200
+        assert response.data == file_bytes
+
+    def test_localdownload_error_does_not_reveal_the_server_path(
+        self, main_module, client, tmp_path
+    ):
+        """A failed read answers with a fixed message, not the OSError text and its path."""
+        user = _create_user(main_module, prefix="reader")
+        _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
+
+        task_id = f"live-localdownload-{uuid.uuid4().hex[:8]}"
+        file_path = tmp_path / "Hidden Author" / "Hidden Title.epub"
+        file_path.parent.mkdir()
+        file_path.write_bytes(b"payload")
+
+        task = DownloadTask(
+            task_id=task_id,
+            source="direct_download",
+            title="Live Local Download",
+            user_id=user["id"],
+            username=user["username"],
+            download_path=str(file_path),
+        )
+        assert main_module.backend.book_queue.add(task) is True
+
+        failure = FileNotFoundError(2, "No such file or directory", str(file_path))
+        try:
+            main_module.backend.book_queue.update_status(task_id, QueueStatus.COMPLETE)
+            with (
+                patch.object(main_module, "get_auth_mode", return_value="builtin"),
+                patch.object(main_module, "send_file", side_effect=failure),
+            ):
+                response = client.get(f"/api/localdownload?id={task_id}")
+        finally:
+            main_module.backend.book_queue.cancel_download(task_id)
+
+        assert response.status_code == 500
+        assert response.get_json() == {"error": "Could not read the file"}
+        assert "Hidden" not in response.get_data(as_text=True)
+        assert str(tmp_path) not in response.get_data(as_text=True)
+
+    def test_localdownload_zips_a_live_multi_file_download(self, main_module, client, tmp_path):
+        user = _create_user(main_module, prefix="reader")
+        _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
+
+        task_id = f"live-localdownload-{uuid.uuid4().hex[:8]}"
+        book_dir = tmp_path / "Chapters"
+        book_dir.mkdir()
+        parts = [book_dir / "Part 1.mp3", book_dir / "Part 2.mp3"]
+        for index, part in enumerate(parts, start=1):
+            part.write_bytes(f"chapter {index}".encode())
+
+        task = DownloadTask(
+            task_id=task_id,
+            source="direct_download",
+            title="Zipped Audiobook",
+            author="Some Author",
+            user_id=user["id"],
+            username=user["username"],
+            download_path=str(parts[0]),
+            download_paths=[str(part) for part in parts],
+        )
+        assert main_module.backend.book_queue.add(task) is True
+
+        try:
+            main_module.backend.book_queue.update_status(task_id, QueueStatus.COMPLETE)
+            with patch.object(main_module, "get_auth_mode", return_value="builtin"):
+                response = client.get(f"/api/localdownload?id={task_id}")
+        finally:
+            main_module.backend.book_queue.cancel_download(task_id)
+
+        assert response.status_code == 200
+        assert response.mimetype == "application/zip"
+        assert (
+            'filename="Some Author - Zipped Audiobook.zip"'
+            in response.headers["Content-Disposition"]
+        )
+        with zipfile.ZipFile(io.BytesIO(response.data)) as archive:
+            assert archive.namelist() == ["Part 1.mp3", "Part 2.mp3"]
+            assert archive.read("Part 2.mp3") == b"chapter 2"
+
+    def test_localdownload_returns_not_found_for_other_users_live_queue_task(
+        self, main_module, client, tmp_path
+    ):
+        owner = _create_user(main_module, prefix="owner")
+        viewer = _create_user(main_module, prefix="reader")
+        _set_session(client, user_id=viewer["username"], db_user_id=viewer["id"], is_admin=False)
+
+        task_id = f"live-localdownload-{uuid.uuid4().hex[:8]}"
+        file_path = tmp_path / "live-other.epub"
+        file_bytes = b"live download payload"
+        file_path.write_bytes(file_bytes)
+
+        task = DownloadTask(
+            task_id=task_id,
+            source="direct_download",
+            title="Live Local Download",
+            user_id=owner["id"],
+            username=owner["username"],
+            download_path=str(file_path),
+        )
+        assert main_module.backend.book_queue.add(task) is True
+
+        try:
+            main_module.backend.book_queue.update_status(task_id, QueueStatus.COMPLETE)
+            with patch.object(main_module, "get_auth_mode", return_value="builtin"):
+                response = client.get(f"/api/localdownload?id={task_id}")
+        finally:
+            main_module.backend.book_queue.cancel_download(task_id)
+
+        assert response.status_code == 404
+        assert response.json == {"error": "File not found"}
 
     def test_dismiss_legacy_fulfilled_request_creates_minimal_history_snapshot(
         self, main_module, client
@@ -481,6 +628,7 @@ class TestActivityRoutes:
             size="1 MB",
             preview=None,
             content_type="ebook",
+            downloads=None,
             origin="direct",
         )
         active_status = _sample_status_payload()
@@ -530,6 +678,99 @@ class TestActivityRoutes:
 
         assert response.status_code == 409
         assert response.json["error"] == "Only terminal requests can be dismissed"
+
+    def test_dismiss_many_skips_a_request_that_is_no_longer_terminal(self, main_module, client):
+        user = _create_user(main_module, prefix="reader")
+        _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
+
+        def _make(provider_id, status):
+            return main_module.user_db.create_request(
+                user_id=user["id"],
+                content_type="ebook",
+                request_level="book",
+                policy_mode="request_book",
+                book_data={
+                    "title": f"Request {provider_id}",
+                    "author": "Author",
+                    "provider": "openlibrary",
+                    "provider_id": provider_id,
+                },
+                status=status,
+            )
+
+        done = _make("skip-1", "rejected")
+        reopened = _make("skip-2", "pending")  # the list was drawn before it was reopened
+
+        with patch.object(main_module, "get_auth_mode", return_value="builtin"):
+            response = client.post(
+                "/api/activity/dismiss-many",
+                json={
+                    "items": [
+                        {"item_type": "request", "item_key": f"request:{reopened['id']}"},
+                        {"item_type": "request", "item_key": f"request:{done['id']}"},
+                    ]
+                },
+            )
+
+        assert response.status_code == 200
+        assert response.json["count"] == 1
+        assert response.json["skipped_item_keys"] == [f"request:{reopened['id']}"]
+
+    def test_dismiss_many_skips_a_download_that_is_running_again(self, main_module, client):
+        user = _create_user(main_module, prefix="reader")
+        _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
+        _record_terminal_download(
+            main_module,
+            task_id="dismiss-many-skip-done",
+            user_id=user["id"],
+            username=user["username"],
+        )
+        running = "dismiss-many-skip-running"
+        main_module.download_history_service.record_download(
+            task_id=running,
+            user_id=user["id"],
+            username=user["username"],
+            request_id=None,
+            source="direct_download",
+            source_display_name="Direct Download",
+            title="Running Again",
+            author="Author",
+            file_format="epub",
+            size="1 MB",
+            preview=None,
+            content_type="ebook",
+            downloads=None,
+            origin="direct",
+            retry_payload=None,
+        )
+        live_status = _sample_status_payload()
+        live_status["downloading"] = {
+            running: {
+                "id": running,
+                "title": "Running Again",
+                "author": "Author",
+                "source": "direct_download",
+                "status_message": "Downloading",
+            }
+        }
+
+        with (
+            patch.object(main_module, "get_auth_mode", return_value="builtin"),
+            patch.object(main_module.backend, "queue_status", return_value=live_status),
+        ):
+            response = client.post(
+                "/api/activity/dismiss-many",
+                json={
+                    "items": [
+                        {"item_type": "download", "item_key": f"download:{running}"},
+                        {"item_type": "download", "item_key": "download:dismiss-many-skip-done"},
+                    ]
+                },
+            )
+
+        assert response.status_code == 200
+        assert response.json["count"] == 1
+        assert response.json["skipped_item_keys"] == [f"download:{running}"]
 
     def test_dismiss_emits_activity_update_to_user_room(self, main_module, client):
         user = _create_user(main_module, prefix="reader")
@@ -664,6 +905,7 @@ class TestActivityRoutes:
             size="1 MB",
             preview=None,
             content_type="ebook",
+            downloads=None,
             origin="direct",
         )
 
@@ -719,6 +961,7 @@ class TestActivityRoutes:
             size="1 MB",
             preview=None,
             content_type="ebook",
+            downloads=None,
             origin="requested",
             retry_payload=retry_payload,
         )
@@ -737,7 +980,7 @@ class TestActivityRoutes:
         assert dismiss_many_response.json["status"] == "dismissed"
         assert history_response.status_code == 200
         assert len(history_response.json) == 1
-        assert history_response.json[0]["item_key"] == f"download:{task_id}"
+        assert history_response.json[0]["item_key"] == f"download:{public_download_id(task_id)}"
         assert history_response.json[0]["snapshot"]["download"]["status_message"] == "Interrupted"
         assert history_response.json[0]["snapshot"]["download"]["retry_available"] is True
 
@@ -985,18 +1228,161 @@ class TestActivityRoutes:
                     },
                 )
 
-        assert response.status_code == 403
-        assert response.json["error"] == "Forbidden"
-        mock_warning.assert_called_once()
-        log_message = mock_warning.call_args.args[0]
-        assert "Activity dismiss_many rejected" in log_message
-        assert "status=403" in log_message
-        assert "reason=Forbidden" in log_message
-        assert "auth_mode=builtin" in log_message
-        assert f"viewer_scope=user:{intruder['id']}" in log_message
-        assert f"owner_user_id={owner['id']}" in log_message
-        assert "final_status=complete" in log_message
-        assert "request_id=321" in log_message
+        # Another user's row is answered exactly like a missing one, so the id cannot
+        # be probed. The log still carries the owner context for the operator.
+        assert response.status_code == 404
+        assert response.json == {
+            "error": "One or more activity items were not found",
+            "missing_item_keys": ["download:forbidden-download-task"],
+        }
+        log_messages = [call.args[0] for call in mock_warning.call_args_list]
+        assert any(
+            "Activity dismiss_many rejected" in message
+            and "status=404" in message
+            and "auth_mode=builtin" in message
+            and f"viewer_scope=user:{intruder['id']}" in message
+            and f"owner_user_id={owner['id']}" in message
+            and "final_status=complete" in message
+            and "request_id=321" in message
+            for message in log_messages
+        )
+
+    def test_dismiss_answers_another_users_download_like_a_missing_one(self, main_module, client):
+        owner = _create_user(main_module, prefix="owner")
+        intruder = _create_user(main_module, prefix="intruder")
+        _set_session(
+            client, user_id=intruder["username"], db_user_id=intruder["id"], is_admin=False
+        )
+        _record_terminal_download(
+            main_module,
+            task_id="foreign-dismiss-task",
+            user_id=owner["id"],
+            username=owner["username"],
+        )
+
+        with patch.object(main_module, "get_auth_mode", return_value="builtin"):
+            foreign = client.post(
+                "/api/activity/dismiss",
+                json={"item_type": "download", "item_key": "download:foreign-dismiss-task"},
+            )
+            missing = client.post(
+                "/api/activity/dismiss",
+                json={"item_type": "download", "item_key": "download:no-such-task"},
+            )
+
+        assert foreign.status_code == missing.status_code == 404
+        assert foreign.json == missing.json == {"error": "Download not found"}
+        assert "download:foreign-dismiss-task" not in _hidden_item_keys(
+            main_module, viewer_scope=f"user:{intruder['id']}"
+        )
+
+    def test_dismiss_answers_another_users_request_like_a_missing_one(self, main_module, client):
+        owner = _create_user(main_module, prefix="owner")
+        intruder = _create_user(main_module, prefix="intruder")
+        _set_session(
+            client, user_id=intruder["username"], db_user_id=intruder["id"], is_admin=False
+        )
+        request_row = main_module.user_db.create_request(
+            user_id=owner["id"],
+            content_type="ebook",
+            request_level="book",
+            policy_mode="request_book",
+            book_data={"title": "Owner's Request", "provider": "openlibrary", "provider_id": "x"},
+            status="fulfilled",
+            delivery_state="none",
+        )
+
+        with patch.object(main_module, "get_auth_mode", return_value="builtin"):
+            foreign = client.post(
+                "/api/activity/dismiss",
+                json={"item_type": "request", "item_key": f"request:{request_row['id']}"},
+            )
+            missing = client.post(
+                "/api/activity/dismiss",
+                json={"item_type": "request", "item_key": "request:987654321"},
+            )
+            many = client.post(
+                "/api/activity/dismiss-many",
+                json={
+                    "items": [
+                        {"item_type": "request", "item_key": f"request:{request_row['id']}"},
+                        {"item_type": "request", "item_key": "request:987654321"},
+                    ]
+                },
+            )
+
+        assert foreign.status_code == missing.status_code == 404
+        assert foreign.json == missing.json == {"error": "Request not found"}
+        assert many.status_code == 404
+        assert many.json["missing_item_keys"] == [
+            f"request:{request_row['id']}",
+            "request:987654321",
+        ]
+
+    def test_admin_still_dismisses_another_users_download(self, main_module, client):
+        owner = _create_user(main_module, prefix="owner")
+        admin = _create_user(main_module, prefix="admin", role="admin")
+        _set_session(client, user_id=admin["username"], db_user_id=admin["id"], is_admin=True)
+        _record_terminal_download(
+            main_module,
+            task_id="admin-foreign-dismiss-task",
+            user_id=owner["id"],
+            username=owner["username"],
+        )
+
+        with patch.object(main_module, "get_auth_mode", return_value="builtin"):
+            response = client.post(
+                "/api/activity/dismiss",
+                json={"item_type": "download", "item_key": "download:admin-foreign-dismiss-task"},
+            )
+
+        assert response.status_code == 200
+        assert "download:admin-foreign-dismiss-task" in _hidden_item_keys(
+            main_module, viewer_scope="admin:shared"
+        )
+
+    def test_history_skips_rows_the_viewer_does_not_own(self, main_module, client):
+        owner = _create_user(main_module, prefix="owner")
+        viewer = _create_user(main_module, prefix="viewer")
+        _set_session(client, user_id=viewer["username"], db_user_id=viewer["id"], is_admin=False)
+        _record_terminal_download(
+            main_module,
+            task_id="history-own-task",
+            user_id=viewer["id"],
+            username=viewer["username"],
+        )
+        _record_terminal_download(
+            main_module,
+            task_id="history-foreign-task",
+            user_id=owner["id"],
+            username=owner["username"],
+        )
+        foreign_request = main_module.user_db.create_request(
+            user_id=owner["id"],
+            content_type="ebook",
+            request_level="book",
+            policy_mode="request_book",
+            book_data={"title": "Owner's Request", "provider": "openlibrary", "provider_id": "y"},
+            status="fulfilled",
+            delivery_state="none",
+        )
+        # Viewer state that references rows this viewer does not own.
+        for item_type, item_key in (
+            ("download", "download:history-foreign-task"),
+            ("request", f"request:{foreign_request['id']}"),
+            ("download", "download:history-own-task"),
+        ):
+            main_module.activity_view_state_service.dismiss(
+                viewer_scope=f"user:{viewer['id']}",
+                item_type=item_type,
+                item_key=item_key,
+            )
+
+        with patch.object(main_module, "get_auth_mode", return_value="builtin"):
+            response = client.get("/api/activity/history?limit=10&offset=0")
+
+        assert response.status_code == 200
+        assert [row["item_key"] for row in response.json] == ["download:history-own-task"]
 
     def test_snapshot_backfills_undismissed_terminal_download_from_download_history(
         self, main_module, client
@@ -1098,6 +1484,7 @@ class TestActivityRoutes:
             size="1 MB",
             preview=None,
             content_type="ebook",
+            downloads=None,
             origin="direct",
         )
 
@@ -1146,6 +1533,7 @@ class TestActivityRoutes:
             size="1 MB",
             preview=None,
             content_type="ebook",
+            downloads=None,
             origin="requested",
             retry_payload=retry_payload,
         )
@@ -1157,8 +1545,9 @@ class TestActivityRoutes:
                 response = client.get("/api/activity/snapshot")
 
         assert response.status_code == 200
-        assert response.json["status"]["error"][task_id]["status_message"] == "Interrupted"
-        assert response.json["status"]["error"][task_id]["retry_available"] is True
+        viewer_id = public_download_id(task_id)
+        assert response.json["status"]["error"][viewer_id]["status_message"] == "Interrupted"
+        assert response.json["status"]["error"][viewer_id]["retry_available"] is True
 
     def test_snapshot_includes_retry_available_for_live_terminal_downloads(
         self, main_module, client
@@ -1190,9 +1579,8 @@ class TestActivityRoutes:
                 response = client.get("/api/activity/snapshot")
 
         assert response.status_code == 200
-        assert (
-            response.json["status"]["error"]["retryable-terminal-task"]["retry_available"] is True
-        )
+        viewer_id = public_download_id("retryable-terminal-task")
+        assert response.json["status"]["error"][viewer_id]["retry_available"] is True
 
     def test_snapshot_reopens_request_when_error_retry_is_no_longer_available(
         self, main_module, client
@@ -1245,6 +1633,7 @@ class TestActivityRoutes:
             size="1 MB",
             preview=None,
             content_type="ebook",
+            downloads=None,
             origin="requested",
             retry_payload=retry_payload,
         )
@@ -1290,6 +1679,7 @@ class TestActivityRoutes:
             size="2 MB",
             preview=None,
             content_type="ebook",
+            downloads=None,
             origin="direct",
         )
 
@@ -1692,3 +2082,217 @@ class TestActivityRoutes:
             ANY,
             to="admins",
         )
+
+
+class TestNonAdminReleaseRedaction:
+    """A requester never sees the release an admin picked for them (#1418)."""
+
+    @staticmethod
+    def _approved_tracker_download(main_module, tmp_path, *, user: dict) -> tuple[dict, str, Path]:
+        """A book-level request fulfilled from a private tracker, and its finished file."""
+        source_id = f"21:https://www.myanonamouse.net/t/{uuid.uuid4().int % 10**6}"
+        pending = main_module.user_db.create_request(
+            user_id=user["id"],
+            content_type="audiobook",
+            request_level="book",
+            policy_mode="request_book",
+            book_data={
+                "title": "Example Book Title",
+                "author": "Example Author",
+                "provider": "openlibrary",
+                "provider_id": "ol-1418",
+            },
+        )
+        # Approval attaches the release the admin picked, as fulfil_request does.
+        request_row = main_module.user_db.update_request(
+            pending["id"],
+            status="fulfilled",
+            delivery_state="complete",
+            release_data={
+                "source": "prowlarr",
+                "source_id": source_id,
+                "indexer": "MyAnonamouse",
+                "info_url": source_id.split(":", 1)[1],
+                "title": "Example Book Title",
+                "format": "m4b",
+                "size": "300 MB",
+                "extra": {"info_hash": "abc123", "indexer_id": 21},
+            },
+        )
+        book_file = (
+            tmp_path / "audiobooks" / "Example Author" / "Example Book Title" / "Book Title.m4b"
+        )
+        book_file.parent.mkdir(parents=True)
+        book_file.write_bytes(b"audiobook bytes")
+        _record_terminal_download(
+            main_module,
+            task_id=source_id,
+            user_id=user["id"],
+            username=user["username"],
+            title="Example Book Title",
+            source="prowlarr",
+            source_display_name="Prowlarr",
+            origin="requested",
+            request_id=request_row["id"],
+            download_path=str(book_file),
+        )
+        return request_row, source_id, book_file
+
+    def test_snapshot_hides_the_tracker_and_server_paths(self, main_module, client, tmp_path):
+        user = _create_user(main_module, prefix="requester")
+        request_row, source_id, _ = self._approved_tracker_download(
+            main_module, tmp_path, user=user
+        )
+        _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
+
+        with patch.object(main_module, "get_auth_mode", return_value="builtin"):
+            with patch.object(
+                main_module.backend, "queue_status", return_value=_sample_status_payload()
+            ):
+                response = client.get("/api/activity/snapshot")
+
+        assert response.status_code == 200
+        body = response.get_data(as_text=True)
+        assert "myanonamouse" not in body.lower()
+        assert str(tmp_path) not in body
+
+        request = next(row for row in response.json["requests"] if row["id"] == request_row["id"])
+        assert request["release_data"] == {
+            "source": "prowlarr",
+            "title": "Example Book Title",
+            "format": "m4b",
+            "size": "300 MB",
+        }
+        viewer_id = public_download_id(source_id)
+        download = response.json["status"]["complete"][viewer_id]
+        assert download["id"] == viewer_id
+        assert download["request_id"] == request_row["id"]
+        assert download["download_path"] == "Book Title.m4b"
+
+    def test_admin_snapshot_keeps_the_release_details(self, main_module, client, tmp_path):
+        user = _create_user(main_module, prefix="requester")
+        admin = _create_user(main_module, prefix="admin", role="admin")
+        _, source_id, book_file = self._approved_tracker_download(main_module, tmp_path, user=user)
+        _set_session(client, user_id=admin["username"], db_user_id=admin["id"], is_admin=True)
+
+        with patch.object(main_module, "get_auth_mode", return_value="builtin"):
+            with patch.object(
+                main_module.backend, "queue_status", return_value=_sample_status_payload()
+            ):
+                response = client.get("/api/activity/snapshot")
+
+        assert response.status_code == 200
+        assert response.json["status"]["complete"][source_id]["download_path"] == str(book_file)
+
+    def test_a_direct_download_keeps_its_release_id(self, main_module, client, tmp_path):
+        """The user picked that release from search results showing its id already."""
+        user = _create_user(main_module, prefix="reader")
+        book_file = tmp_path / "library" / "Direct Book.epub"
+        book_file.parent.mkdir(parents=True)
+        book_file.write_bytes(b"epub")
+        task_id = f"direct-{uuid.uuid4().hex[:8]}"
+        _record_terminal_download(
+            main_module,
+            task_id=task_id,
+            user_id=user["id"],
+            username=user["username"],
+            download_path=str(book_file),
+        )
+        _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
+
+        with patch.object(main_module, "get_auth_mode", return_value="builtin"):
+            with patch.object(
+                main_module.backend, "queue_status", return_value=_sample_status_payload()
+            ):
+                response = client.get("/api/activity/snapshot")
+
+        download = response.json["status"]["complete"][task_id]
+        assert download["id"] == task_id
+        assert download["download_path"] == "Direct Book.epub"
+
+    def test_live_status_is_rekeyed_for_the_requester(self, main_module, client):
+        user = _create_user(main_module, prefix="requester")
+        source_id = "21:https://www.myanonamouse.net/t/777"
+        queue_status_payload = _sample_status_payload()
+        queue_status_payload["downloading"][source_id] = {
+            "id": source_id,
+            "title": "Live Book",
+            "request_id": 99,
+            "preview": f"/api/covers/{source_id}?url=aHR0cHM6Ly9leGFtcGxlLmNvbS9jLmpwZw==",
+            "download_path": None,
+        }
+        _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
+
+        with patch.object(main_module, "get_auth_mode", return_value="builtin"):
+            with patch.object(
+                main_module.backend, "queue_status", return_value=queue_status_payload
+            ):
+                response = client.get("/api/status")
+
+        assert response.status_code == 200
+        assert "myanonamouse" not in response.get_data(as_text=True).lower()
+        viewer_id = public_download_id(source_id)
+        live = response.json["downloading"][viewer_id]
+        assert live["id"] == viewer_id
+        assert live["preview"].startswith(f"/api/covers/{viewer_id}?url=")
+
+    def test_request_list_withholds_the_release(self, main_module, client, tmp_path):
+        user = _create_user(main_module, prefix="requester")
+        request_row, _, _ = self._approved_tracker_download(main_module, tmp_path, user=user)
+        _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
+
+        with patch.object(main_module, "get_auth_mode", return_value="builtin"):
+            response = client.get("/api/requests")
+
+        assert response.status_code == 200
+        assert "myanonamouse" not in response.get_data(as_text=True).lower()
+        listed = next(row for row in response.json if row["id"] == request_row["id"])
+        assert "source_id" not in listed["release_data"]
+
+    def test_localdownload_resolves_the_opaque_id_only_for_its_owner(
+        self, main_module, client, tmp_path
+    ):
+        owner = _create_user(main_module, prefix="requester")
+        other = _create_user(main_module, prefix="other")
+        _, source_id, _ = self._approved_tracker_download(main_module, tmp_path, user=owner)
+        url = f"/api/localdownload?id={public_download_id(source_id)}"
+
+        with patch.object(main_module, "get_auth_mode", return_value="builtin"):
+            _set_session(client, user_id=owner["username"], db_user_id=owner["id"], is_admin=False)
+            owner_response = client.get(url)
+            _set_session(client, user_id=other["username"], db_user_id=other["id"], is_admin=False)
+            other_response = client.get(url)
+
+        assert owner_response.status_code == 200
+        assert owner_response.data == b"audiobook bytes"
+        assert other_response.status_code == 404
+
+    def test_dismiss_and_history_speak_the_opaque_id(self, main_module, client, tmp_path):
+        user = _create_user(main_module, prefix="requester")
+        _, source_id, _ = self._approved_tracker_download(main_module, tmp_path, user=user)
+        viewer_key = f"download:{public_download_id(source_id)}"
+        _set_session(client, user_id=user["username"], db_user_id=user["id"], is_admin=False)
+
+        with patch.object(main_module, "get_auth_mode", return_value="builtin"):
+            with patch.object(
+                main_module.backend, "queue_status", return_value=_sample_status_payload()
+            ):
+                dismiss_response = client.post(
+                    "/api/activity/dismiss",
+                    json={"item_type": "download", "item_key": viewer_key},
+                )
+                history_response = client.get("/api/activity/history?limit=10&offset=0")
+
+        assert dismiss_response.status_code == 200
+        assert dismiss_response.json["item"]["item_key"] == viewer_key
+        # Stored under the real task id, so the admin view and the queue hooks still match it.
+        assert f"download:{source_id}" in _hidden_item_keys(
+            main_module, viewer_scope=f"user:{user['id']}"
+        )
+
+        assert history_response.status_code == 200
+        assert "myanonamouse" not in history_response.get_data(as_text=True).lower()
+        entry = history_response.json[0]
+        assert entry["item_key"] == viewer_key
+        assert entry["source_id"] == public_download_id(source_id)
+        assert entry["snapshot"]["download"]["download_path"] == "Book Title.m4b"

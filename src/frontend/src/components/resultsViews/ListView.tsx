@@ -2,6 +2,7 @@ import { useState } from 'react';
 
 import { useSearchMode } from '../../contexts/SearchModeContext';
 import type { Book, ButtonStateInfo, DisplayField } from '../../types';
+import { getDownloadsCount } from '../../types';
 import { bookSupportsTargets } from '../../utils/bookTargetLoader';
 import { getFormatColor, getLanguageColor } from '../../utils/colorMaps';
 import type { CoverAspect } from '../../utils/coverAspect';
@@ -12,7 +13,13 @@ import type { BothFormatMatches, LibraryMatch } from '../../utils/libraryMatches
 import { isBookRequested } from '../../utils/requestedBooks';
 import { BookActionButton } from '../BookActionButton';
 import { BookTargetDropdown } from '../BookTargetDropdown';
-import { DisplayFieldIcon, DisplayFieldBadge, InLibraryBadge, RequestedBadge } from '../shared';
+import {
+  DisplayFieldIcon,
+  DisplayFieldBadge,
+  InLibraryBadge,
+  LibraryBadge,
+  RequestedBadge,
+} from '../shared';
 
 interface ListViewProps {
   books: Book[];
@@ -184,7 +191,7 @@ export const ListView = ({
                 className={`grid w-full items-center gap-2 sm:gap-x-0.5 sm:gap-y-1 ${
                   searchMode === 'universal'
                     ? 'grid-cols-[auto_minmax(0,1fr)_auto_auto] sm:grid-cols-[auto_minmax(0,2fr)_minmax(50px,0.25fr)_minmax(90px,0.5fr)_minmax(90px,0.5fr)_minmax(120px,0.7fr)_auto]'
-                    : 'grid-cols-[auto_minmax(0,1fr)_auto_auto] sm:grid-cols-[auto_minmax(0,2fr)_minmax(50px,0.25fr)_minmax(60px,0.3fr)_minmax(60px,0.3fr)_minmax(60px,0.3fr)_auto]'
+                    : 'grid-cols-[auto_minmax(0,1fr)_auto_auto] sm:grid-cols-[auto_minmax(0,2fr)_minmax(50px,0.25fr)_minmax(60px,0.3fr)_minmax(60px,0.3fr)_minmax(60px,0.3fr)_minmax(70px,0.35fr)_auto]'
                 }`}
               >
                 {/* Thumbnail */}
@@ -225,6 +232,7 @@ export const ListView = ({
                     {book.author || 'Unknown author'}
                     {book.year && <span className="sm:hidden"> • {book.year}</span>}
                   </p>
+                  <LibraryBadge library={book.library} className="mt-0.5" />
                 </div>
 
                 {/* Mobile universal mode info */}
@@ -318,6 +326,16 @@ export const ListView = ({
                 {searchMode !== 'universal' && (
                   <div className="hidden justify-center text-xs text-gray-700 sm:flex dark:text-gray-200">
                     {book.size || '-'}
+                  </div>
+                )}
+
+                {/* Direct mode: Downloads - Desktop only */}
+                {searchMode !== 'universal' && (
+                  <div className="hidden justify-center text-xs text-gray-700 sm:flex dark:text-gray-200">
+                    {(() => {
+                      const d = getDownloadsCount(book);
+                      return d != null && d > 0 ? d.toLocaleString() : '-';
+                    })()}
                   </div>
                 )}
 

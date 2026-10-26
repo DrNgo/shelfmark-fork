@@ -51,6 +51,7 @@ def test_config_endpoint_uses_user_scope_and_runtime_flags(main_module, client):
             "AUDIBLE_REGION": "us",
             "DOWNLOAD_TO_BROWSER_CONTENT_TYPES": ["book", "audiobook"],
             "BOOK_LANGUAGE": ["de", "en"],
+            "DEFAULT_CONTENT_TYPE": "audiobook",
             "AUTO_OPEN_DOWNLOADS_SIDEBAR": False,
             "HARDCOVER_AUTO_REMOVE_ON_DOWNLOAD": True,
             "AA_DEFAULT_SORT": "newest",
@@ -81,6 +82,7 @@ def test_config_endpoint_uses_user_scope_and_runtime_flags(main_module, client):
     assert data["default_discover_topic_core_key"] == "topic_fantasy"
     assert data["download_to_browser_content_types"] == ["book", "audiobook"]
     assert data["default_language"] == ["de", "en"]
+    assert data["default_content_type"] == "audiobook"
     assert data["settings_enabled"] is True
     assert data["metadata_default_sort"] == "relevance"
 
@@ -89,6 +91,7 @@ def test_config_endpoint_uses_user_scope_and_runtime_flags(main_module, client):
     assert ("DOWNLOAD_TO_BROWSER_CONTENT_TYPES", 42) in calls
     assert ("DEFAULT_DISCOVER_TOPIC", 42) in calls
     assert ("BOOK_LANGUAGE", 42) in calls
+    assert ("DEFAULT_CONTENT_TYPE", 42) in calls
 
 
 @pytest.mark.parametrize(

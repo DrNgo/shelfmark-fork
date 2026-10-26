@@ -4,6 +4,7 @@ import {
   cancelRequest as cancelUserRequest,
   fulfilAdminRequest,
   rejectAdminRequest,
+  reopenAdminRequest,
 } from '../services/api';
 
 interface UseRequestsOptions {
@@ -20,6 +21,7 @@ interface UseRequestsReturn {
     destinationKey?: string,
   ) => Promise<void>;
   rejectRequest: (id: number, adminNote?: string) => Promise<void>;
+  reopenRequest: (id: number) => Promise<void>;
 }
 
 const toErrorMessage = (error: unknown, fallback: string): string => {
@@ -84,9 +86,26 @@ export const useRequests = ({ isAdmin }: UseRequestsOptions): UseRequestsReturn 
     [isAdmin],
   );
 
+  const reopenRequest = useCallback(
+    async (id: number) => {
+      if (!isAdmin) {
+        throw new Error('Admin access required');
+      }
+
+      try {
+        await reopenAdminRequest(id);
+      } catch (err) {
+        const message = toErrorMessage(err, 'Failed to reopen request');
+        throw new Error(message, { cause: err });
+      }
+    },
+    [isAdmin],
+  );
+
   return {
     cancelRequest,
     fulfilRequest,
     rejectRequest,
+    reopenRequest,
   };
 };

@@ -57,6 +57,13 @@ def _format_not_supported_error(rejected_files: list[Path], task: DownloadTask) 
     )
 
 
+# rarfile extracts by running `unrar` as a subprocess. Under gevent a subprocess can only be
+# started on the thread that owns the default loop, so in the IO threadpool it raises
+# "TypeError: child watchers are only available on the default loop" and the download fails. The
+# patched subprocess waits cooperatively, so these archives are extracted in place instead.
+_SUBPROCESS_ARCHIVE_SUFFIXES = frozenset({".rar"})
+
+
 def extract_archive_files(
     archive_path: Path,
     output_dir: Path,
@@ -68,12 +75,17 @@ def extract_archive_files(
     content_type = task.content_type
 
     try:
-        extracted_files, warnings, rejected_files = run_blocking_io(
-            extract_archive,
-            archive_path,
-            output_dir,
-            content_type,
-        )
+        if archive_path.suffix.lower() in _SUBPROCESS_ARCHIVE_SUFFIXES:
+            extracted_files, warnings, rejected_files = extract_archive(
+                archive_path, output_dir, content_type
+            )
+        else:
+            extracted_files, warnings, rejected_files = run_blocking_io(
+                extract_archive,
+                archive_path,
+                output_dir,
+                content_type,
+            )
     except ArchiveExtractionError as exc:
         logger.warning(
             "Task %s: archive extraction failed for %s: %s",
@@ -187,7 +199,9 @@ def scan_directory_tree(
                 file_path = Path(root) / filename
                 suffix = file_path.suffix.lower()
 
-                if suffix in supported_exts:
+                # zip/rar can also be enabled as supported formats. Keep archives
+                # out of book_files so they are extracted rather than imported whole.
+                if suffix in supported_exts and not is_archive(file_path):
                     book_files.append(file_path)
                 elif suffix in trackable_exts:
                     rejected_files.append(file_path)

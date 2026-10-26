@@ -25,9 +25,19 @@ from shelfmark.download.fs import (
     atomic_move,
     run_blocking_io,
 )
-from shelfmark.download.postprocess.policy import get_file_organization, get_template
+from shelfmark.download.postprocess.policy import (
+    get_file_organization,
+    get_template,
+    get_word_separator,
+)
 
-from .packs import BookGroup, PackBook, group_files_into_books, match_plan_to_files
+from .packs import (
+    BookGroup,
+    PackBook,
+    drop_ignored_files,
+    group_files_into_books,
+    match_plan_to_files,
+)
 from .scan import collect_directory_files, scan_directory_tree
 from .types import TransferPlan
 from .workspace import safe_cleanup_path
@@ -67,6 +77,7 @@ def build_metadata_dict(task: DownloadTask) -> dict:
         "Year": task.year,
         "Series": task.series_name,
         "SeriesPosition": task.series_position,
+        "Narrator": task.narrator,
         "Language": normalize_language_code(task.language),
         "User": task.username,
     }
@@ -193,11 +204,13 @@ def transfer_book_files(
     source_root: Path | None = None,
 ) -> tuple[list[Path], str | None, dict[str, int]]:
     """Transfer discovered book files into their final destination layout."""
+    book_files = drop_ignored_files(book_files, task.ignored_files)
     if not book_files:
         return [], "No book files found", {"hardlink": 0, "copy": 0, "move": 0}
 
     is_audiobook = check_audiobook(task.content_type)
     organization_mode = organization_mode or get_file_organization(is_audiobook=is_audiobook)
+    word_separator = get_word_separator()
 
     groups = resolve_book_groups(task, book_files, organization_mode=organization_mode)
     if groups is not None:
@@ -229,6 +242,7 @@ def transfer_book_files(
                 template,
                 file_metadata,
                 extension=ext or None,
+                word_separator=word_separator,
             )
             run_blocking_io(dest_path.parent.mkdir, parents=True, exist_ok=True)
 
@@ -256,6 +270,7 @@ def transfer_book_files(
                     template,
                     file_metadata,
                     extension=ext or None,
+                    word_separator=word_separator,
                 )
                 run_blocking_io(dest_path.parent.mkdir, parents=True, exist_ok=True)
 
@@ -289,7 +304,9 @@ def transfer_book_files(
             metadata = build_file_metadata(task, book_file)
             extension = book_file.suffix.lstrip(".") or task.format or ""
 
-            filename = parse_naming_template(template, metadata, allow_path_separators=False)
+            filename = parse_naming_template(
+                template, metadata, allow_path_separators=False, word_separator=word_separator
+            )
             filename = Path(filename).name if filename else ""
             if filename and extension:
                 filename = f"{sanitize_filename(filename)}.{extension}"
@@ -346,7 +363,10 @@ def resolve_book_groups(
         groups = group_files_into_books(
             book_files, series_name=task.series_name, author_name=task.author
         )
-    return groups if len(groups) > 1 else None
+    # An approved plan that lost books to the user's skips still carries the titles they
+    # reviewed, so a single remaining group keeps them instead of the searched title.
+    keeps_plan = bool(task.book_plan and task.ignored_files)
+    return groups if len(groups) > 1 or (keeps_plan and groups) else None
 
 
 def _transfer_book_groups(
@@ -378,6 +398,7 @@ def _transfer_book_groups(
             series_position=group.series_position,
             multi_book=False,
             book_plan=None,
+            ignored_files=None,
         )
         paths, error, op_counts = transfer_book_files(
             group.files,
@@ -483,7 +504,12 @@ def transfer_file_to_library(
     template_metadata = dict(metadata)
     template_metadata.setdefault("OriginalName", source_path.stem)
     dest_path = run_blocking_io(
-        build_library_path, library_base, template, template_metadata, extension
+        build_library_path,
+        library_base,
+        template,
+        template_metadata,
+        extension,
+        word_separator=get_word_separator(),
     )
     run_blocking_io(dest_path.parent.mkdir, parents=True, exist_ok=True)
 
@@ -538,12 +564,14 @@ def transfer_directory_to_library(
             safe_cleanup_path(temp_file, task)
         return None
 
+    word_separator = get_word_separator()
     base_library_path = run_blocking_io(
         build_library_path,
         library_base,
         template,
         metadata,
         extension=None,
+        word_separator=word_separator,
     )
     run_blocking_io(base_library_path.parent.mkdir, parents=True, exist_ok=True)
 
@@ -574,7 +602,12 @@ def transfer_directory_to_library(
             ext = source_file.suffix.lstrip(".")
             file_metadata = {**metadata, "PartNumber": part_number}
             file_path = run_blocking_io(
-                build_library_path, library_base, template, file_metadata, extension=ext
+                build_library_path,
+                library_base,
+                template,
+                file_metadata,
+                extension=ext,
+                word_separator=word_separator,
             )
             run_blocking_io(file_path.parent.mkdir, parents=True, exist_ok=True)
 

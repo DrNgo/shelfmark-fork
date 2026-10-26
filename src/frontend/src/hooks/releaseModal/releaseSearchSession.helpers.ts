@@ -73,7 +73,7 @@ export function mergeExpandedReleases(
   });
   const added = incoming.releases.filter((release) => !existingIds.has(release.source_id));
 
-  return { ...existing, releases: [...refreshed, ...added] };
+  return { ...existing, releases: [...refreshed, ...added], search_info: incoming.search_info };
 }
 
 /** Start a request for a tab: its new sequence number, which supersedes older ones. */

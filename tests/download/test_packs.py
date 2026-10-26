@@ -307,3 +307,137 @@ class TestMatchPlanToFiles:
         plan = [PackBook(title="Alpha", series_position=1.0, year=None, files=["Book 1 - A/a.m4b"])]
         groups = match_plan_to_files(plan, [a, c])
         assert [(g.title, g.files) for g in groups] == [("Alpha", [a]), ("C", [c])]
+
+    def test_unmatched_chaptered_audio_files_share_group_in_same_folder(self, tmp_path: Path):
+        # Issue #1176: Indexer/metadata lists only a subset of tracks, remaining tracks in
+        # the same folder must append to the existing book group rather than splitting.
+        root = tmp_path / "Westwell - Hot & Cold (2023)"
+        root.mkdir(parents=True)
+        files = [root / f"track_{i:03d}.flac" for i in range(1, 6)]
+        for f in files:
+            f.write_bytes(b"x")
+
+        plan = [
+            PackBook(
+                title="Westwell - Hot & Cold (2023)",
+                series_position=None,
+                year=2023,
+                files=[
+                    f"Westwell - Hot & Cold (2023)/{files[0].name}",
+                    f"Westwell - Hot & Cold (2023)/{files[1].name}",
+                ],
+            )
+        ]
+        groups = match_plan_to_files(plan, files)
+        assert len(groups) == 1
+        assert groups[0].title == "Westwell - Hot & Cold (2023)"
+        assert groups[0].files == files
+
+    def test_single_book_plan_chaptered_audio_multi_disc_grouped_together(self, tmp_path: Path):
+        # Single-book plan with multi-disc audio files: unmatched CD2 tracks belong to the book
+        root = tmp_path / "Audiobook"
+        cd1_file = root / "CD1" / "01.mp3"
+        cd2_file = root / "CD2" / "01.mp3"
+        for f in (cd1_file, cd2_file):
+            f.parent.mkdir(parents=True)
+            f.write_bytes(b"x")
+
+        plan = [
+            PackBook(
+                title="Audiobook",
+                series_position=1.0,
+                year=None,
+                files=["Audiobook/CD1/01.mp3"],
+            )
+        ]
+        groups = match_plan_to_files(plan, [cd1_file, cd2_file])
+        assert len(groups) == 1
+        assert groups[0].title == "Audiobook"
+        assert cd1_file in groups[0].files
+        assert cd2_file in groups[0].files
+
+    def test_multi_book_pack_unmatched_chaptered_audio_attaches_to_corresponding_book(
+        self, tmp_path: Path
+    ):
+        # In a multi-book pack, unmatched tracks in Book 1's folder stay in Book 1
+        root = tmp_path / "Series Pack"
+        b1_t1 = root / "Book 1" / "01.mp3"
+        b1_t2 = root / "Book 1" / "02.mp3"
+        b2_t1 = root / "Book 2" / "01.mp3"
+        b2_t2 = root / "Book 2" / "02.mp3"
+        for f in (b1_t1, b1_t2, b2_t1, b2_t2):
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(b"x")
+
+        plan = [
+            PackBook(
+                title="Book 1", series_position=1.0, year=None, files=["Series Pack/Book 1/01.mp3"]
+            ),
+            PackBook(
+                title="Book 2", series_position=2.0, year=None, files=["Series Pack/Book 2/01.mp3"]
+            ),
+        ]
+        groups = match_plan_to_files(plan, [b1_t1, b1_t2, b2_t1, b2_t2])
+        assert len(groups) == 2
+        assert groups[0].title == "Book 1"
+        assert set(groups[0].files) == {b1_t1, b1_t2}
+        assert groups[1].title == "Book 2"
+        assert set(groups[1].files) == {b2_t1, b2_t2}
+
+
+class TestDropIgnoredFiles:
+    def test_drops_by_relative_path_and_keeps_others(self, tmp_path: Path):
+        from shelfmark.download.postprocess.packs import drop_ignored_files
+
+        files = [tmp_path / "A" / "a.m4b", tmp_path / "A" / "a.epub", tmp_path / "B" / "b.m4b"]
+        assert drop_ignored_files(files, ["A/a.epub"]) == [files[0], files[2]]
+
+    def test_basename_fallback_only_when_unique(self, tmp_path: Path):
+        from shelfmark.download.postprocess.packs import drop_ignored_files
+
+        files = [tmp_path / "A" / "01.mp3", tmp_path / "B" / "01.mp3", tmp_path / "B" / "x.mp3"]
+        assert drop_ignored_files(files, ["x.mp3"]) == files[:2]
+        assert drop_ignored_files(files, ["Z/01.mp3"]) == files
+
+    def test_no_ignored_is_a_noop(self, tmp_path: Path):
+        from shelfmark.download.postprocess.packs import drop_ignored_files
+
+        files = [tmp_path / "a.m4b"]
+        assert drop_ignored_files(files, None) is files
+
+    @pytest.mark.parametrize("skipped", ["Extras/Book.epub", "Pack/Extras/Book.epub"])
+    def test_a_skipped_subfolder_file_keeps_the_root_file_of_the_same_name(
+        self, tmp_path: Path, skipped: str
+    ):
+        from shelfmark.download.postprocess.packs import drop_ignored_files
+
+        kept = tmp_path / "Pack" / "Book.epub"
+        files = [kept, tmp_path / "Pack" / "Extras" / "Book.epub"]
+        assert drop_ignored_files(files, [skipped]) == [kept]
+
+    def test_an_ambiguous_skip_drops_nothing(self, tmp_path: Path):
+        from shelfmark.download.postprocess.packs import drop_ignored_files
+
+        files = [tmp_path / "X" / "Book.epub", tmp_path / "Y" / "Book.epub"]
+        assert drop_ignored_files(files, ["Book.epub"]) == files
+
+    def test_drops_audiobookbay_glued_folder_and_file_names(self, tmp_path: Path):
+        from shelfmark.download.postprocess.packs import drop_ignored_files
+
+        root = tmp_path / "Cradle - Will Wight Books 1-10"
+        skysworn = root / "Will Wight - Skysworn Cradle, Book 4" / "Skysworn Cradle, Book 4.m4b"
+        uncrowned = root / "Uncrowned Cradle, Book 7.m4b"
+        files = [skysworn, uncrowned]
+        glued = "Will Wight - Skysworn Cradle, Book 4 Skysworn Cradle, Book 4.m4b"
+        assert drop_ignored_files(files, [glued]) == [uncrowned]
+
+    def test_glued_names_pick_the_right_folder_for_chaptered_tracks(self, tmp_path: Path):
+        from shelfmark.download.postprocess.packs import drop_ignored_files
+
+        files = [
+            tmp_path / "Pack" / "Book 1" / "01.mp3",
+            tmp_path / "Pack" / "Book 1" / "02.mp3",
+            tmp_path / "Pack" / "Book 2" / "01.mp3",
+            tmp_path / "Pack" / "Book 2" / "02.mp3",
+        ]
+        assert drop_ignored_files(files, ["Book 2 01.mp3", "Book 2 02.mp3"]) == files[:2]

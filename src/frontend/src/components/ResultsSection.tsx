@@ -36,6 +36,8 @@ interface ResultsSectionProps {
   isLoadingMore?: boolean;
   onLoadMore?: () => void;
   totalFound?: number;
+  // Direct mode: total result count from release sources
+  directTotalResults?: number | string | null;
   onShowToast?: (message: string, type: 'success' | 'error' | 'info') => void;
   resultsSourceUrl?: string;
   /** Identities with a request still awaiting a decision, from the sidebar's records. */
@@ -68,6 +70,7 @@ export const ResultsSection = ({
   isLoadingMore,
   onLoadMore,
   totalFound,
+  directTotalResults,
   onShowToast,
   resultsSourceUrl,
   openRequestKeys = NO_OPEN_REQUESTS,
@@ -110,34 +113,62 @@ export const ResultsSection = ({
 
   return (
     <section id="results-section" className="mb-4 w-full sm:mb-8">
-      <div className="relative z-10 mb-2 flex items-center justify-between sm:mb-3">
-        {showSortControl && (
-          <SortControl
-            value={sortValue}
-            onChange={onSortChange}
-            metadataSortOptions={metadataSortOptions}
-          />
-        )}
-        {!showSortControl && resultsSourceUrl && (
-          <a
-            href={resultsSourceUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="animate-pop-up inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200"
-          >
-            View list on Hardcover
-            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"
-              />
-            </svg>
-          </a>
-        )}
+      <div className="relative z-10 mb-2 flex items-center sm:mb-3">
+        {/* Left: Sort control or Hardcover link */}
+        <div>
+          {showSortControl && (
+            <SortControl
+              value={sortValue}
+              onChange={onSortChange}
+              metadataSortOptions={metadataSortOptions}
+            />
+          )}
+          {!showSortControl && resultsSourceUrl && (
+            <a
+              href={resultsSourceUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="animate-pop-up inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200"
+            >
+              View list on Hardcover
+              <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"
+                />
+              </svg>
+            </a>
+          )}
+        </div>
 
-        {/* View toggle buttons - Desktop: show all 3, Mobile: show Compact and List only */}
+        {/* Center: Results count */}
+        <div className="flex flex-1 justify-center">
+          {(() => {
+            const count = directTotalResults ?? null;
+            if (count === null || count === 0) return null;
+            const isCapped = directTotalResults === '500+';
+            const totalCount = isCapped ? 500 : Number(count);
+            // AA-style: show page range + total
+            if (totalCount === 1) {
+              return (
+                <span className="mx-2 mt-4 px-2 text-xs whitespace-nowrap text-gray-500 dark:text-gray-400">
+                  Result 1 (1 Total)
+                </span>
+              );
+            }
+            const shownEnd = Math.min(totalCount, 50);
+            const totalStr = isCapped ? '500+' : String(totalCount);
+            return (
+              <span className="mx-2 mt-4 px-2 text-xs whitespace-nowrap text-gray-500 dark:text-gray-400">
+                Results 1-{shownEnd} ({totalStr} Total)
+              </span>
+            );
+          })()}
+        </div>
+
+        {/* Right: View toggle buttons - Desktop: show all 3, Mobile: show Compact and List only */}
         <div className="ml-auto flex items-center gap-2">
           {isDesktop && (
             <button

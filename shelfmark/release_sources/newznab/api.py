@@ -81,11 +81,7 @@ class NewznabClient:
             params["apikey"] = self.api_key
 
         url = self._api_url()
-        logger.debug(
-            "Newznab API: GET %s params=%s",
-            url,
-            {k: ("REDACTED" if k == "apikey" else v) for k, v in params.items()},
-        )
+        logger.debug("Newznab API: GET %s params=%s", url, sorted(params))
 
         headers = {}
         if accept_xml:

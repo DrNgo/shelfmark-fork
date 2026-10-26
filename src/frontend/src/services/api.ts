@@ -283,14 +283,20 @@ async function fetchJSON<T>(
 }
 
 // API functions
-export const searchBooks = async (query: string): Promise<Book[]> => {
-  if (!query) return [];
+export const searchBooks = async (
+  query: string,
+): Promise<{ books: Book[]; totalResults: number | string | null }> => {
+  if (!query) return { books: [], totalResults: null };
   const response = await fetchJSON<ReleasesResponse>(
     `${API_BASE}/releases?source=direct_download&${query}`,
     {},
     searchTimeoutMs,
   );
-  return response.releases.map(transformReleaseToDirectBook);
+  // Extract total count from search_info if available
+  const firstSource = response.sources_searched?.[0];
+  const searchInfo = firstSource ? response.search_info?.[firstSource] : undefined;
+  const totalResults = searchInfo?.total_results ?? null;
+  return { books: response.releases.map(transformReleaseToDirectBook), totalResults };
 };
 
 // Metadata search response type (internal)
@@ -575,6 +581,7 @@ export type DownloadReleasePayload = {
   format?: string;
   size?: string;
   size_bytes?: number;
+  downloads?: number;
   download_url?: string;
   protocol?: string;
   indexer?: string;
@@ -600,6 +607,7 @@ export type DownloadReleasePayload = {
   destination_key?: string;
   multi_book?: boolean; // Split a multi-book pack into one book per subfolder/file
   book_plan?: PackBook[]; // The split the user approved before download
+  ignored_files?: string[]; // Pack files the user chose to skip
 };
 
 /** Inspect a release's file list before download (same body as downloadRelease). */
@@ -765,6 +773,16 @@ export const rejectAdminRequest = async (
   });
 };
 
+export const reopenAdminRequest = async (
+  id: number,
+  body: RejectAdminRequestBody = {},
+): Promise<RequestRecord> => {
+  return fetchJSON<RequestRecord>(buildAdminRequestActionUrl(API.adminRequests, id, 'reopen'), {
+    method: 'POST',
+    body: JSON.stringify(buildRejectAdminRequestBody(body)),
+  });
+};
+
 // Authentication functions
 export const login = async (credentials: LoginCredentials): Promise<AuthResponse> => {
   return fetchJSON<AuthResponse>(API.login, {
@@ -919,7 +937,7 @@ export const getReleases = async (
 
 export type AdminAuthSource = 'builtin' | 'oidc' | 'proxy' | 'cwa' | 'abs';
 
-export interface AdminUserEditCapabilities {
+interface AdminUserEditCapabilities {
   authSource: AdminAuthSource;
   canSetPassword: boolean;
   canEditRole: boolean;
@@ -1122,6 +1140,7 @@ export const getSelfUserEditContext = async (): Promise<SelfUserEditContext> => 
 export const updateSelfUser = async (
   data: Partial<Pick<AdminUser, 'email' | 'display_name'>> & {
     password?: string;
+    current_password?: string;
     settings?: Record<string, unknown>;
   },
 ): Promise<AdminUser> => {

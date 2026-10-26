@@ -280,8 +280,9 @@ class TestSearch:
             client.search(query="book")
         get_lines = [line for line in lines if line.startswith("Newznab API: GET")]
         assert len(get_lines) == 1
-        assert "'q': 'book'" in get_lines[0]
-        assert "'apikey': 'REDACTED'" in get_lines[0]
+        # Parameter names only: a value can carry a credential.
+        assert "'q'" in get_lines[0]
+        assert "'book'" not in get_lines[0]
         assert not any("SECRET" in line for line in lines)
 
     def test_http_429_is_a_rate_limited_failure(self):
@@ -375,3 +376,21 @@ class TestSearch:
             client.search(query="book", search_type="book")
 
         assert captured[0]["t"] == "book"
+
+
+class TestRequestLogging:
+    def test_debug_line_formats_and_leaves_the_api_key_out(self):
+        client = NewznabClient("http://nzbhydra:5076", "s3cret")
+        response = MagicMock(status_code=200, text=CAPS_XML, content=CAPS_XML.encode())
+        response.raise_for_status = MagicMock()
+
+        with (
+            patch.object(client._session, "get", return_value=response),
+            patch("shelfmark.release_sources.newznab.api.logger") as log,
+        ):
+            client._get({"t": "caps"})
+
+        fmt, *args = log.debug.call_args.args
+        line = fmt % tuple(args)
+        assert "'apikey'" in line
+        assert "s3cret" not in line

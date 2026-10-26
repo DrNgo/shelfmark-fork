@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
+import shelfmark.core.release_search as release_search
 import shelfmark.core.search_plan as search_plan
 
 
@@ -65,7 +66,7 @@ def test_the_plan_is_built_for_the_requested_content_type(
 
     with (
         patch.object(main_module, "get_auth_mode", return_value="none"),
-        patch.object(search_plan, "build_release_search_plan", _spy),
+        patch.object(release_search, "build_release_search_plan", _spy),
         patch(
             "shelfmark.release_sources.list_available_sources",
             return_value=[{"name": "prowlarr", "enabled": True}],

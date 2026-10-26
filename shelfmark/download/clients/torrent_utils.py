@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import ipaddress
 import re
+import socket
 import time
 from binascii import Error as BinasciiError
 from dataclasses import dataclass
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from threading import Lock
-from urllib.parse import ParseResult, parse_qs, urljoin, urlparse
+from urllib.parse import ParseResult, parse_qs, urljoin, urlparse, urlunparse
 
 import requests
 
@@ -49,6 +52,28 @@ _torrent_fetch_cache_lock = Lock()
 _torrent_fetch_cache: dict[str, tuple[float, TorrentInfo]] = {}
 
 type BencodeValue = dict[str | bytes, BencodeValue] | list[BencodeValue] | int | bytes | str
+
+
+def _safe_url(url: str, *, limit: int = 120) -> str:
+    """Return a log-safe URL: scheme/host/path kept, query and fragment dropped.
+
+    Torrent download URLs commonly carry credentials in their query string
+    (Prowlarr's ``apikey=...`` proxy links among them), so raw URLs must never
+    reach logs or exception messages.
+    """
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        return f"<unparsed url: {type(url).__name__}>"
+    safe = urlunparse(parsed._replace(query="", fragment=""))
+    return safe[:limit]
+
+
+_URL_IN_TEXT_PATTERN = re.compile(r"https?://\S+")
+
+
+def _redact_urls_in_text(text: str) -> str:
+    """Scrub credential-bearing URLs out of free-form text such as exception messages."""
+    return _URL_IN_TEXT_PATTERN.sub(lambda match: _safe_url(match.group(0)), text)
 
 
 @dataclass
@@ -133,7 +158,7 @@ def resolve_debrid_upload(url: str, *, expected_hash: str | None = None) -> Debr
         return DebridMagnet(magnet_url=f"magnet:?xt=urn:btih:{info.info_hash}")
 
     reason = info.fetch_error or "no magnet link, info hash, or torrent file was available"
-    msg = f"Could not resolve a torrent to send from {url[:120]} ({reason})"
+    msg = f"Could not resolve a torrent to send from {_safe_url(url)} ({reason})"
     raise ValueError(msg)
 
 
@@ -185,7 +210,7 @@ def _get_cached_torrent_fetch(url: str) -> TorrentInfo | None:
         if time.monotonic() - fetched_at > _TORRENT_FETCH_CACHE_TTL_SECONDS:
             del _torrent_fetch_cache[url]
             return None
-    logger.debug("Reusing recently fetched torrent data for: %s...", url[:80])
+    logger.debug("Reusing recently fetched torrent data for: %s...", _safe_url(url))
     return info
 
 
@@ -231,7 +256,7 @@ def _fetch_torrent_info(url: str) -> TorrentInfo:
         return urljoin(current, location)
 
     try:
-        logger.debug("Fetching torrent file from: %s...", url[:80])
+        logger.debug("Fetching torrent file from: %s...", _safe_url(url))
 
         # Redirects are followed manually: some indexers redirect download URLs
         # to magnet links, and each hop must decide anew whether it may see the
@@ -239,8 +264,10 @@ def _fetch_torrent_info(url: str) -> TorrentInfo:
         current_url = url
         redirects_remaining = _TORRENT_FETCH_MAX_REDIRECTS
         while True:
+            trusted = _is_trusted_torrent_fetch_url(current_url)
+            _check_torrent_fetch_hop(current_url, trusted=trusted)
             request_headers = dict(headers)
-            if not _is_trusted_torrent_fetch_url(current_url):
+            if not trusted:
                 request_headers.pop("X-Api-Key", None)
 
             resp = requests.get(
@@ -264,7 +291,7 @@ def _fetch_torrent_info(url: str) -> TorrentInfo:
                     magnet_url=redirect_url,
                 )
             if redirects_remaining <= 0:
-                logger.warning("Too many redirects fetching torrent file: %s...", url[:80])
+                logger.warning("Too many redirects fetching torrent file: %s...", _safe_url(url))
                 return TorrentInfo(
                     info_hash=None,
                     torrent_data=None,
@@ -272,7 +299,7 @@ def _fetch_torrent_info(url: str) -> TorrentInfo:
                     fetch_error="too many redirects",
                 )
             redirects_remaining -= 1
-            logger.debug("Following redirect to: %s...", redirect_url[:80])
+            logger.debug("Following redirect to: %s...", _safe_url(redirect_url))
             current_url = redirect_url
 
         resp.raise_for_status()
@@ -298,8 +325,39 @@ def _fetch_torrent_info(url: str) -> TorrentInfo:
             logger.warning("Could not extract hash from torrent file")
         return TorrentInfo(info_hash=info_hash, torrent_data=torrent_data, is_magnet=False)
     except _TORRENT_FETCH_ERRORS as e:
-        logger.warning("Could not fetch torrent file: %s", e)
-        return TorrentInfo(info_hash=None, torrent_data=None, is_magnet=False, fetch_error=str(e))
+        # Exception messages can repeat the source or redirect URL, including its
+        # credentials; scrub them before logging or storing the reason.
+        message = _redact_urls_in_text(str(e))
+        logger.warning("Could not fetch torrent file: %s: %s", type(e).__name__, message)
+        return TorrentInfo(info_hash=None, torrent_data=None, is_magnet=False, fetch_error=message)
+
+
+def _resolve_host_addresses(host: str) -> list[str]:
+    """Resolve a host with the system resolver; raises OSError when it does not resolve."""
+    return [str(info[4][0]) for info in socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)]
+
+
+def _is_public_address(address: str) -> bool:
+    ip = ipaddress.ip_address(address.split("%", 1)[0])
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_global
+
+
+def _check_torrent_fetch_hop(url: str, *, trusted: bool) -> None:
+    """Refuse a fetch hop that is not http(s) or that resolves to a non-public address.
+
+    The configured Prowlarr/Newznab origin is exempt because it commonly lives
+    on the LAN and its own download links point back at it.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("torrent fetch refused: URL is not http or https")
+    if trusted:
+        return
+    addresses = _resolve_host_addresses(parsed.hostname)
+    if not addresses or not all(_is_public_address(address) for address in addresses):
+        raise ValueError("torrent fetch refused: address is not public")
 
 
 def _is_trusted_torrent_fetch_url(url: str) -> bool:
@@ -563,3 +621,37 @@ def extract_hash_from_magnet(magnet_url: str) -> str | None:
                 return btmh_hash
 
     return None
+
+
+def safe_relative_path(name: str, target_dir: Path, service: str) -> Path:
+    """Validate a service-supplied file name before anything is written below ``target_dir``.
+
+    Debrid services pass torrent file names straight through, and a torrent can name a
+    file ``../../etc/cron.d/x``. Absolute paths, drive letters and ``..`` segments are
+    refused, and the resolved destination must stay inside ``target_dir``.
+    """
+    if not name:
+        msg = f"{service} returned a file without a name"
+        raise RuntimeError(msg)
+
+    relative_path = PurePosixPath(name.replace("\\", "/"))
+    windows_path = PureWindowsPath(name)
+    if (
+        relative_path.is_absolute()
+        or windows_path.is_absolute()
+        or windows_path.drive
+        or ".." in relative_path.parts
+    ):
+        msg = f"{service} returned an unsafe file path: {name}"
+        raise RuntimeError(msg)
+    if relative_path == PurePosixPath("."):
+        msg = f"{service} returned a file without a usable name"
+        raise RuntimeError(msg)
+
+    destination = (target_dir / Path(*relative_path.parts)).resolve()
+    try:
+        destination.relative_to(target_dir.resolve())
+    except ValueError:
+        msg = f"{service} returned an unsafe file path: {name}"
+        raise RuntimeError(msg) from None
+    return Path(*relative_path.parts)

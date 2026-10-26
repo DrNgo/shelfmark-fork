@@ -42,7 +42,7 @@ import { useRequests } from './hooks/useRequests';
 import { useSearch } from './hooks/useSearch';
 import { primeSettingsCache } from './hooks/useSettings';
 import { useToast } from './hooks/useToast';
-import { useUrlSearch } from './hooks/useUrlSearch';
+import { useExternalHashChange, useSyncUrlSearchHash, useUrlSearch } from './hooks/useUrlSearch';
 import { primeUsersCache } from './hooks/useUsersFetch';
 import { LoginPage } from './pages/LoginPage';
 import {
@@ -102,7 +102,7 @@ import { getConfiguredMetadataProviderForContentType } from './utils/metadataPro
 import { getEffectiveMetadataSort } from './utils/metadataSort';
 import { isRecord } from './utils/objectHelpers';
 import { policyTrace } from './utils/policyTrace';
-import { buildQueryTargets, getDefaultQueryTargetKey } from './utils/queryTargets';
+import { buildQueryTargets, findQueryTarget, getDefaultQueryTargetKey } from './utils/queryTargets';
 import { buildReleaseDownloadPayload, type ReleaseDownloadOptions } from './utils/releasePayload';
 import { applyRequestNoteToPayload } from './utils/requestConfirmation';
 import { buildOpenRequestKeys } from './utils/requestedBooks';
@@ -120,6 +120,8 @@ import {
   applyDirectPolicyModeToButtonState,
   applyUniversalPolicyModeToButtonState,
 } from './utils/requestPolicyUi';
+import { getSearchByPreference, setSearchByPreference } from './utils/searchByPreference';
+import { buildUrlSearchHash } from './utils/urlSearchHash';
 
 // eslint-disable-next-line import/no-unassigned-import -- global app stylesheet is loaded for side effects
 import './styles.css';
@@ -308,9 +310,13 @@ function App() {
     showToast,
   });
 
+  // Declared here because the content type default below reads from it
+  const [config, setConfig] = useState<AppConfig | null>(null);
+
   // Content type state (ebook vs audiobook) - defined before useSearch since it's passed to it
-  const { contentType, setContentType, combinedMode, setCombinedMode } =
-    useContentTypePreferences();
+  const { contentType, setContentType, combinedMode, setCombinedMode } = useContentTypePreferences(
+    config?.default_content_type,
+  );
 
   const {
     policy: requestPolicy,
@@ -352,6 +358,7 @@ function App() {
     cancelRequest: cancelUserRequest,
     fulfilRequest: fulfilSidebarRequest,
     rejectRequest: rejectSidebarRequest,
+    reopenRequest: reopenSidebarRequest,
   } = useRequests({
     isAdmin: requestRoleIsAdmin,
   });
@@ -368,6 +375,7 @@ function App() {
     activityHistoryHasMore,
     prefetchActivityHistory,
     refreshActivitySnapshot,
+    refreshHistoryIfLoaded,
     resetActivity,
     handleActivityTabChange,
     handleActivityHistoryLoadMore,
@@ -478,6 +486,7 @@ function App() {
     updateAdvancedFilters,
     handleSearch,
     handleResetSearch,
+    reSortByDownloads,
     searchFieldValues,
     updateSearchFieldValue,
     searchFieldLabels,
@@ -486,6 +495,7 @@ function App() {
     isLoadingMore,
     loadMore,
     totalFound,
+    directTotalResults,
     resultsSourceUrl,
   } = useSearch({
     showToast,
@@ -611,7 +621,6 @@ function App() {
   // Combined mode state (ebook + audiobook in one transaction)
   const [combinedState, setCombinedState] = useState<CombinedSelectionState | null>(null);
 
-  const [config, setConfig] = useState<AppConfig | null>(null);
   const [metadataProviders, setMetadataProviders] = useState<MetadataProviderSummary[]>([]);
   const [configuredMetadataProvider, setConfiguredMetadataProvider] = useState<string | null>(null);
   const [configuredAudiobookMetadataProvider, setConfiguredAudiobookMetadataProvider] = useState<
@@ -620,7 +629,12 @@ function App() {
   const [configuredCombinedMetadataProvider, setConfiguredCombinedMetadataProvider] = useState<
     string | null
   >(null);
-  const [activeQueryTarget, setActiveQueryTarget] = useState('general');
+  // Falls back to the stored "Search By" default from the user's last-used mode;
+  // an invalid/stale value is harmless since effectiveActiveQueryTarget below re-validates
+  // it against the current queryTargets once config/search fields are known.
+  const [activeQueryTarget, setActiveQueryTarget] = useState(
+    () => getSearchByPreference() || 'general',
+  );
   const [downloadsSidebarOpen, setDownloadsSidebarOpen] = useState(false);
   const [sidebarPinnedOpen, setSidebarPinnedOpen] = useState<boolean>(() =>
     getInitialPinnedPreference(),
@@ -696,8 +710,22 @@ function App() {
 
   // URL-based search: parse URL params for automatic search on page load
   const urlSearchEnabled = isAuthenticated && config !== null;
-  const { parsedParams, wasProcessed } = useUrlSearch({ enabled: urlSearchEnabled });
+  // Bumped when the hash changes to something we didn't write - a shared link pasted into
+  // an already-open tab. Re-parses the URL and remounts the bootstrap so it applies.
+  const [urlSearchNonce, setUrlSearchNonce] = useState(0);
+  const { parsedParams, wasProcessed } = useUrlSearch({
+    enabled: urlSearchEnabled,
+    nonce: urlSearchNonce,
+  });
   const [hasExecutedUrlSearchBootstrap, setHasExecutedUrlSearchBootstrap] = useState(false);
+  // Same fact as the state above, readable from loadConfig's async continuation, which
+  // closes over the render it started in and would otherwise see a stale `false`.
+  const urlSearchBootstrapAppliedRef = useRef(false);
+  useExternalHashChange(() => {
+    urlSearchBootstrapAppliedRef.current = false;
+    setHasExecutedUrlSearchBootstrap(false);
+    setUrlSearchNonce((value) => value + 1);
+  });
 
   const prevSearchModeRef = useRef<string | undefined>(undefined);
 
@@ -811,6 +839,8 @@ function App() {
         }
 
         prevSearchModeRef.current = cfg.search_mode;
+        // The browser tab follows the configured search page title.
+        document.title = cfg.search_page_title?.trim() || 'Shelfmark';
         setConfig({
           ...cfg,
           metadata_default_sort: resolvedMetadataDefaultSort,
@@ -828,12 +858,16 @@ function App() {
 
         // Determine the default sort based on search mode
         const defaultSort =
-          cfg.search_mode === 'universal'
-            ? resolvedMetadataDefaultSort
-            : cfg.default_sort || 'relevance';
+          cfg.search_mode === 'universal' ? resolvedMetadataDefaultSort : (cfg.default_sort ?? '');
 
         if (cfg?.supported_formats) {
-          if (mode === 'initial') {
+          // Seeding the defaults must not undo filters a shared link already applied.
+          // The URL bootstrap is gated on config being loaded, so normally it runs after
+          // this and wins on its own - but nothing guarantees this is the only 'initial'
+          // load (React's StrictMode double-invokes the mount effect that triggers it in
+          // development), and a late one would reset `formats` to the full supported list
+          // and drop the link's own sort.
+          if (mode === 'initial' && !urlSearchBootstrapAppliedRef.current) {
             setAdvancedFilters((prev) => ({
               ...prev,
               formats: cfg.supported_formats,
@@ -935,6 +969,7 @@ function App() {
       contentTypeOverride?: ContentType;
       searchModeOverride?: SearchMode;
       providerOverride?: string;
+      sort?: string;
     }) => {
       void refreshRequestPolicy();
       void handleSearch({
@@ -944,6 +979,7 @@ function App() {
         contentTypeOverride: opts.contentTypeOverride,
         searchMode: opts.searchModeOverride,
         providerOverride: opts.providerOverride,
+        sort: opts.sort,
       });
     },
     [refreshRequestPolicy, handleSearch, config],
@@ -1813,6 +1849,30 @@ function App() {
     [refreshActivitySnapshot, requestRoleIsAdmin, rejectSidebarRequest, showToast],
   );
 
+  const handleRequestReopen = useCallback(
+    async (requestId: number) => {
+      if (!requestRoleIsAdmin) {
+        return;
+      }
+
+      try {
+        await reopenSidebarRequest(requestId);
+        await refreshActivitySnapshot();
+        refreshHistoryIfLoaded();
+        showToast('Request reopened', 'success');
+      } catch (error) {
+        showToast(getErrorMessage(error, 'Failed to reopen request'), 'error');
+      }
+    },
+    [
+      refreshActivitySnapshot,
+      refreshHistoryIfLoaded,
+      requestRoleIsAdmin,
+      reopenSidebarRequest,
+      showToast,
+    ],
+  );
+
   const handleRequestApprove = useCallback(
     async (
       requestId: number,
@@ -2001,6 +2061,15 @@ function App() {
     return getDefaultQueryTargetKey(queryTargets);
   }, [queryTargets, activeQueryTarget]);
 
+  // Persist only what the user explicitly picked in the selector. Persisting the derived
+  // `effectiveActiveQueryTarget` instead would overwrite the stored default with `general`
+  // every time it collapses for reasons the user didn't choose: a cold load before the
+  // metadata search fields resolve, the logo reset, logout, or a `view_series` browse.
+  const handleQueryTargetChange = useCallback((nextTarget: string) => {
+    setActiveQueryTarget(nextTarget);
+    setSearchByPreference(nextTarget);
+  }, []);
+
   const activeQueryOption = useMemo(
     () =>
       queryTargets.find((target) => target.key === effectiveActiveQueryTarget) ?? queryTargets[0],
@@ -2052,6 +2121,40 @@ function App() {
 
     return searchFieldValues[activeQueryOption.field.key] ?? '';
   }, [activeQueryOption, searchInput, searchFieldValues]);
+
+  // The sort the app applies with no user choice, mirroring what loadConfig seeds
+  // advancedFilters.sort with - a sort equal to it is a default, not a shared intent.
+  const urlHashDefaultSort =
+    effectiveSearchMode === 'universal'
+      ? resolvedMetadataDefaultSort
+      : (config?.default_sort ?? '');
+
+  // Keep the URL hash fragment live as search state changes. Gated until any URL-driven
+  // bootstrap has applied (or there was nothing to apply), so we don't clobber a shared
+  // link's params with the initial default state before they've been read.
+  const readyToSyncUrlHash = wasProcessed && (!parsedParams || hasExecutedUrlSearchBootstrap);
+  const urlSearchHash = useMemo(
+    () =>
+      buildUrlSearchHash({
+        queryValue: activeQueryValue,
+        searchBy: effectiveActiveQueryTarget,
+        contentType,
+        combinedMode,
+        advancedFilters,
+        defaultSort: urlHashDefaultSort,
+        defaultFormats: supportedFormats,
+      }),
+    [
+      activeQueryValue,
+      effectiveActiveQueryTarget,
+      contentType,
+      combinedMode,
+      advancedFilters,
+      urlHashDefaultSort,
+      supportedFormats,
+    ],
+  );
+  useSyncUrlSearchHash({ enabled: readyToSyncUrlHash, hash: urlSearchHash });
 
   const activeQueryValueLabel = useMemo(() => {
     if (!activeQueryOption?.field) {
@@ -2357,6 +2460,7 @@ function App() {
       fieldValues: request.fieldValues,
       searchModeOverride: effectiveSearchMode,
       providerOverride: request.providerOverride,
+      sort: advancedFilters.sort,
     });
   }, [
     activeQueryOption,
@@ -2479,7 +2583,7 @@ function App() {
           onCombinedModeChange={combinedModeAllowed ? setCombinedMode : undefined}
           queryTargets={queryTargets}
           activeQueryTarget={effectiveActiveQueryTarget}
-          onQueryTargetChange={setActiveQueryTarget}
+          onQueryTargetChange={handleQueryTargetChange}
           activeQueryField={activeQueryField}
         />
       </div>
@@ -2546,7 +2650,7 @@ function App() {
             onQueryValueChange={handleActiveQueryValueChange}
             queryTargets={queryTargets}
             activeQueryTarget={effectiveActiveQueryTarget}
-            onQueryTargetChange={setActiveQueryTarget}
+            onQueryTargetChange={handleQueryTargetChange}
             showAdvanced={effectiveShowAdvanced}
             onAdvancedToggle={
               hasAdvancedContent ? () => setShowAdvanced(!effectiveShowAdvanced) : undefined
@@ -2612,11 +2716,19 @@ function App() {
                 updateAdvancedFilters({ sort: request.appliedSort });
               }
               setActiveResultsSort(request.appliedSort);
+
+              // "Most downloads" is a client-side sort — just re-sort existing books
+              if (request.appliedSort === 'downloads' && effectiveSearchMode === 'direct') {
+                reSortByDownloads();
+                return;
+              }
+
               runSearchWithPolicyRefresh({
                 query: request.query,
                 fieldValues: request.fieldValues,
                 searchModeOverride: effectiveSearchMode,
                 providerOverride: request.providerOverride,
+                sort: request.appliedSort,
               });
             }}
             metadataSortOptions={resolvedMetadataSortOptions}
@@ -2626,6 +2738,7 @@ function App() {
               void loadMore(config, effectiveSearchMode);
             }}
             totalFound={totalFound}
+            directTotalResults={directTotalResults}
             onShowToast={showToast}
             resultsSourceUrl={resultsSourceUrl}
           />
@@ -2774,6 +2887,7 @@ function App() {
         onRequestCancel={showRequestsTab ? handleRequestCancel : undefined}
         onRequestApprove={requestRoleIsAdmin ? handleRequestApprove : undefined}
         onRequestReject={requestRoleIsAdmin ? handleRequestReject : undefined}
+        onRequestReopen={requestRoleIsAdmin ? handleRequestReopen : undefined}
         onRequestDismiss={showRequestsTab ? handleRequestDismiss : undefined}
         onPinnedOpenChange={setSidebarPinnedOpen}
         pinnedTopOffset={headerHeight}
@@ -2857,14 +2971,31 @@ function App() {
   const adminSettingsWarmup = adminSettingsWarmupKey ? (
     <AdminSettingsWarmupMount key={adminSettingsWarmupKey} />
   ) : null;
+  // A `search_by` deep link can name a metadata provider field that isn't in queryTargets
+  // until the search-fields fetch resolves. Bootstrapping before then runs the search
+  // against the wrong target *and* lets the sync effect rewrite the shared hash without
+  // `search_by`, so hold the one-shot mount until the fields have settled (the session
+  // resolves to null on failure, so this can't hang).
+  const searchFieldsSettled =
+    metadataConfigSessionKey === null ||
+    activeMetadataConfigState?.sessionKey === metadataConfigSessionKey;
+  const awaitingSearchByTarget = Boolean(
+    parsedParams?.searchBy && !findQueryTarget(queryTargets, parsedParams.searchBy),
+  );
   const urlSearchBootstrapMount =
-    wasProcessed && parsedParams && config && !hasExecutedUrlSearchBootstrap ? (
+    wasProcessed &&
+    parsedParams &&
+    config &&
+    !hasExecutedUrlSearchBootstrap &&
+    (searchFieldsSettled || !awaitingSearchByTarget) ? (
       <UrlSearchBootstrapMount
+        key={urlSearchNonce}
         parsedParams={parsedParams}
         config={config}
         contentType={contentType}
         combinedMode={combinedMode}
         combinedModeAllowed={combinedModeAllowed}
+        queryTargets={queryTargets}
         advancedFilters={advancedFilters}
         resolvedMetadataDefaultSort={resolvedMetadataDefaultSort}
         resolvedMetadataSortOptions={resolvedMetadataSortOptions}
@@ -2874,8 +3005,10 @@ function App() {
         setAdvancedFilters={setAdvancedFilters}
         setShowAdvanced={setShowAdvanced}
         setActiveQueryTarget={setActiveQueryTarget}
+        setSearchFieldValue={updateSearchFieldValue}
         runSearchWithPolicyRefresh={runSearchWithPolicyRefresh}
         onComplete={() => {
+          urlSearchBootstrapAppliedRef.current = true;
           setHasExecutedUrlSearchBootstrap(true);
         }}
       />

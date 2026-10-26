@@ -12,6 +12,8 @@ export interface NamingTemplateToken {
 
 interface RenderOptions {
   allowPathSeparators: boolean;
+  /** Mirrors `word_separator` in shelfmark/core/naming.py. Defaults to ' ' (no change). */
+  wordSeparator?: string;
 }
 
 interface RenderResult {
@@ -25,6 +27,20 @@ export const NAMING_TEMPLATE_TOKENS: NamingTemplateToken[] = [
     label: 'Author',
     description: 'Primary author',
     value: 'Arthur Conan Doyle',
+    group: 'Core',
+  },
+  {
+    token: 'FirstAuthor',
+    label: 'First author',
+    description: 'First author only, when metadata lists several',
+    value: 'Arthur Conan Doyle',
+    group: 'Core',
+  },
+  {
+    token: 'AuthorSort',
+    label: 'Author (surname first)',
+    description: 'First author as "Last, First"',
+    value: 'Doyle, Arthur Conan',
     group: 'Core',
   },
   {
@@ -77,6 +93,15 @@ export const NAMING_TEMPLATE_TOKENS: NamingTemplateToken[] = [
     group: 'Universal',
   },
   {
+    token: 'Narrator',
+    label: 'Narrator',
+    description:
+      'Release narrator (MyAnonamouse via Prowlarr, needs a MAM session ID). {{Narrator}} gives "{Name}"',
+    value: 'Simon Vance',
+    group: 'Universal',
+    audiobookOnly: true,
+  },
+  {
     token: 'Subtitle',
     label: 'Subtitle',
     description: 'Subtitle from metadata',
@@ -104,8 +129,11 @@ const KNOWN_TOKENS = [
   'seriesposition',
   'primarytitle',
   'originalname',
+  'firstauthor',
+  'authorsort',
   'partnumber',
   'language',
+  'narrator',
   'subtitle',
   'author',
   'series',
@@ -114,8 +142,42 @@ const KNOWN_TOKENS = [
   'user',
 ];
 
+// Mirrors AUTHOR_LIST_SEPARATOR in shelfmark/core/naming.py: authors arrive
+// pre-joined with ',' or ';' and {FirstAuthor} keeps only the first entry.
+const firstAuthor = (value: string): string => value.split(/\s*[,;]\s*/)[0]?.trim() ?? '';
+
+// Mirrors author_sort() in shelfmark/core/naming.py.
+const NAME_SUFFIXES = new Set(['jr', 'jr.', 'sr', 'sr.', 'ii', 'iii', 'iv']);
+
+const authorSort = (value: string): string => {
+  const text = value.split(/\s+/).filter(Boolean).join(' ');
+  const entries = text.split(/\s*[,;]\s*/).filter(Boolean);
+  const [first, second] = entries;
+  if (!first) {
+    return '';
+  }
+  if (entries.length === 2 && second && !first.includes(' ') && !text.includes(';')) {
+    return `${first}, ${second}`;
+  }
+
+  const words = first.split(' ');
+  let suffix = '';
+  if (second && NAME_SUFFIXES.has(second.toLowerCase())) {
+    suffix = second;
+  } else if (words.length > 2 && NAME_SUFFIXES.has(words[words.length - 1].toLowerCase())) {
+    suffix = words.pop() ?? '';
+  }
+
+  if (words.length < 2) {
+    return first;
+  }
+  const sorted = `${words[words.length - 1]}, ${words.slice(0, -1).join(' ')}`;
+  return suffix ? `${sorted}, ${suffix}` : sorted;
+};
+
 const BRACE_PATTERN = /\{([^}]+)\}/g;
 const INVALID_CHARS_PATTERN = /[\\/:*?"<>|]/g;
+const WHITESPACE_RUN_PATTERN = /\s+/g;
 
 export const SAMPLE_NAMING_METADATA = NAMING_TEMPLATE_TOKENS.reduce<Record<string, string>>(
   (metadata, token) => {
@@ -163,6 +225,12 @@ export const renderNamingTemplate = (
   const unknownTokens: string[] = [];
 
   const placeholderValue = (placeholderName: string): string => {
+    if (placeholderName === 'firstauthor' && !normalized['firstauthor']) {
+      return firstAuthor(normalized['author'] ?? '');
+    }
+    if (placeholderName === 'authorsort' && !normalized['authorsort']) {
+      return authorSort(normalized['author'] ?? '');
+    }
     return (normalized[placeholderName] ?? '').trim();
   };
 
@@ -178,9 +246,14 @@ export const renderNamingTemplate = (
 
     const prefix = content.slice(0, index);
     const suffix = content.slice(index + name.length);
-    const rawValue = placeholderValue(name);
+    let rawValue = placeholderValue(name);
     if (!rawValue) {
       return '';
+    }
+
+    const wordSeparator = options.wordSeparator ?? ' ';
+    if (wordSeparator !== ' ') {
+      rawValue = rawValue.replace(WHITESPACE_RUN_PATTERN, wordSeparator);
     }
 
     const value = sanitizeFilename(
@@ -222,11 +295,20 @@ export const renderNamingTemplate = (
       }
 
       cursor = match.index + match[0].length;
+      if (rendered === '') {
+        // Mirrors naming.py: "{{Narrator}}" drops the closing braces it opened when empty.
+        const opened = (content.match(/\{/g) ?? []).length;
+        for (let i = 0; i < opened && template[cursor] === '}'; i += 1) {
+          cursor += 1;
+        }
+      }
     });
     result += template.slice(cursor);
   }
 
   result = result.replace(/\/+/g, '/');
+  result = result.replace(/[ \t]+\//g, '/');
+  result = result.replace(/\/[ \t]+/g, '/');
   result = result.replace(/^\/+|\/+$/g, '');
   result = result.replace(/^[\s\-_.]+/g, '');
   result = result.replace(/[\s\-_.]+$/g, '');
@@ -238,13 +320,20 @@ export const renderNamingTemplate = (
   return { value: result, unknownTokens };
 };
 
+// Mirrors get_word_separator() in shelfmark/download/postprocess/policy.py.
+export const resolveWordSeparator = (value: unknown): string => {
+  return (typeof value === 'string' ? value : '') || ' ';
+};
+
 export const buildNamingTemplatePreview = (
   template: string,
   mode: NamingTemplateMode,
   content: NamingTemplateContent,
+  wordSeparator = ' ',
 ): RenderResult => {
   const rendered = renderNamingTemplate(template, SAMPLE_NAMING_METADATA, {
     allowPathSeparators: mode === 'path',
+    wordSeparator,
   });
   const fallback = SAMPLE_NAMING_METADATA.PrimaryTitle;
   const extension = content === 'audiobook' ? 'mp3' : 'epub';
