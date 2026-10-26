@@ -10,10 +10,8 @@ from shelfmark.core.settings_registry import (
     CheckboxField,
     HeadingField,
     NumberField,
-    PasswordField,
     SettingsField,
     TableField,
-    TextField,
     register_on_save,
     register_settings,
 )
@@ -27,6 +25,9 @@ if TYPE_CHECKING:
     from shelfmark.audiobookshelf.client import AudiobookshelfClient, AudiobookshelfLibrary
 
 logger = setup_logger(__name__)
+
+# Saved by the fork's own token field before the connection moved under General.
+LEGACY_TOKEN_KEY = "AUDIOBOOKSHELF_API_TOKEN"  # noqa: S105 - a config key name, not a secret
 
 _SETTINGS_ERRORS = (
     AttributeError,
@@ -52,6 +53,15 @@ def _resolve_setting_text(current_values: dict[str, Any], key: str, *, default: 
     return default
 
 
+def _connection_token(current_values: dict[str, Any]) -> str:
+    """The token from upstream's General-tab field, else the fork's old one."""
+    # The connection fields live under General (upstream's library check); the
+    # token saved on this tab before that is still honored until replaced there.
+    return _resolve_setting_text(current_values, "AUDIOBOOKSHELF_TOKEN") or _resolve_setting_text(
+        current_values, LEGACY_TOKEN_KEY
+    )
+
+
 def build_client_from_config() -> AudiobookshelfClient | None:
     """Build a client from saved settings, or None when ABS isn't usable.
 
@@ -64,8 +74,8 @@ def build_client_from_config() -> AudiobookshelfClient | None:
     if not config.get("AUDIOBOOKSHELF_ENABLED", False):
         return None
 
-    url = normalize_http_url(normalize_optional_text(config.get("AUDIOBOOKSHELF_URL", "")) or "")
-    token = normalize_optional_text(config.get("AUDIOBOOKSHELF_API_TOKEN", "")) or ""
+    url = normalize_http_url(_resolve_setting_text({}, "AUDIOBOOKSHELF_URL"))
+    token = _connection_token({})
     if not url or not token:
         return None
 
@@ -81,7 +91,7 @@ def check_audiobookshelf_connection(
     current_values = current_values or {}
 
     raw_url = _resolve_setting_text(current_values, "AUDIOBOOKSHELF_URL")
-    token = _resolve_setting_text(current_values, "AUDIOBOOKSHELF_API_TOKEN")
+    token = _connection_token(current_values)
 
     if not raw_url:
         return {"success": False, "message": "Audiobookshelf URL is required"}
@@ -302,7 +312,8 @@ def audiobookshelf_settings() -> list[SettingsField]:
             description=(
                 "Read-only access to your Audiobookshelf server, used to name your "
                 "libraries when routing audiobook downloads and to flag books you "
-                "already own. Shelfmark never writes to Audiobookshelf."
+                "already own. Shelfmark never writes to Audiobookshelf. The server "
+                "URL and API token are set under General, with the library check."
             ),
             link_url="https://www.audiobookshelf.org",
             link_text="audiobookshelf.org",
@@ -312,25 +323,6 @@ def audiobookshelf_settings() -> list[SettingsField]:
             label="Enable Audiobookshelf integration",
             default=False,
             description="Turn on library-aware routing and duplicate detection.",
-        ),
-        TextField(
-            key="AUDIOBOOKSHELF_URL",
-            label="Audiobookshelf URL",
-            description=(
-                "Base URL Shelfmark uses to reach Audiobookshelf. This is a "
-                "server-to-server address and may differ from the browser link set "
-                "as the Audiobook Library URL under General."
-            ),
-            placeholder="http://audiobookshelf:13378",
-            required=True,
-            show_when={"field": "AUDIOBOOKSHELF_ENABLED", "value": True},
-        ),
-        PasswordField(
-            key="AUDIOBOOKSHELF_API_TOKEN",
-            label="API Token",
-            description="Found in Audiobookshelf: Settings > Users > (your user) > API Token",
-            required=True,
-            show_when={"field": "AUDIOBOOKSHELF_ENABLED", "value": True},
         ),
         ActionButton(
             key="test_audiobookshelf",

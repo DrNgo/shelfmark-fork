@@ -590,8 +590,3 @@ class TestSecurityOnSave:
 
         assert result["error"] is False
         assert result["values"]["PROXY_AUTH_LOGOUT_URL"] == "https://auth.example.com/logout"
-
-
-def _abs_app_config(enabled=True, url="https://abs.example.com"):
-    values = {"AUDIOBOOKSHELF_ENABLED": enabled, "AUDIOBOOKSHELF_URL": url}
-    return lambda key, default=None: values.get(key, default)

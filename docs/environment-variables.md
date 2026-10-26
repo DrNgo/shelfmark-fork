@@ -897,7 +897,7 @@ Select the authentication method for accessing Shelfmark. Restart container afte
 
 - **Type:** string (choice)
 - **Default:** `none`
-- **Options:** `none` (No Authentication), `builtin` (Local), `proxy` (Proxy Authentication), `oidc` (OIDC (OpenID Connect)), `cwa` (Calibre-Web Database), `abs` (Audiobookshelf)
+- **Options:** `none` (No Authentication), `builtin` (Local), `proxy` (Proxy Authentication), `oidc` (OIDC (OpenID Connect)), `cwa` (Calibre-Web Database)
 
 #### `PROXY_AUTH_USER_HEADER`
 
@@ -1924,8 +1924,6 @@ How long to keep cached search results before they expire.
 | Variable | Description | Type | Default |
 |----------|-------------|------|---------|
 | `AUDIOBOOKSHELF_ENABLED` | Turn on library-aware routing and duplicate detection. | boolean | `false` |
-| `AUDIOBOOKSHELF_URL` | Base URL Shelfmark uses to reach Audiobookshelf. This is a server-to-server address and may differ from the browser link set as the Audiobook Library URL under General. | string | _none_ |
-| `AUDIOBOOKSHELF_API_TOKEN` | Found in Audiobookshelf: Settings > Users > (your user) > API Token | string (secret) | _none_ |
 | `AUDIOBOOK_DESTINATIONS` | Only libraries with a path can be chosen when approving a request. Skip a library to keep it out of the picker. | string | _empty list_ |
 | `AUDIOBOOKSHELF_LIBRARY_INDEX_ENABLED` | Turn off to stop indexing and hide the badges. | boolean | `true` |
 | `AUDIOBOOKSHELF_INDEX_INTERVAL_HOURS` | How often the index is rebuilt. Books added to Audiobookshelf since the last refresh will not be flagged yet. | number | `1` |
@@ -1941,26 +1939,6 @@ Turn on library-aware routing and duplicate detection.
 
 - **Type:** boolean
 - **Default:** `false`
-
-#### `AUDIOBOOKSHELF_URL`
-
-**Audiobookshelf URL**
-
-Base URL Shelfmark uses to reach Audiobookshelf. This is a server-to-server address and may differ from the browser link set as the Audiobook Library URL under General.
-
-- **Type:** string
-- **Default:** _none_
-- **Required:** Yes
-
-#### `AUDIOBOOKSHELF_API_TOKEN`
-
-**API Token**
-
-Found in Audiobookshelf: Settings > Users > (your user) > API Token
-
-- **Type:** string (secret)
-- **Default:** _none_
-- **Required:** Yes
 
 #### `AUDIOBOOK_DESTINATIONS`
 

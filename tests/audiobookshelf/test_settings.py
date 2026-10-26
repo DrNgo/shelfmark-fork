@@ -4,7 +4,7 @@ from typing import Any
 from unittest.mock import patch
 
 from shelfmark.audiobookshelf import settings as abs_settings
-from shelfmark.core.settings_registry import ActionButton, PasswordField, TextField
+from shelfmark.core.settings_registry import ActionButton
 
 
 def config_getter(values: dict[str, Any]):
@@ -42,20 +42,39 @@ class FakeClient:
 class TestSettingsFields:
     """The tab exposes the fields the integration needs."""
 
-    def test_exposes_enable_url_token_and_test_button(self):
+    def test_exposes_enable_and_test_button_but_no_connection_fields(self):
+        """URL and token are upstream's General-tab fields; this tab must not duplicate them."""
         fields = abs_settings.audiobookshelf_settings()
 
-        assert isinstance(get_field(fields, "AUDIOBOOKSHELF_URL"), TextField)
-        assert isinstance(get_field(fields, "AUDIOBOOKSHELF_API_TOKEN"), PasswordField)
         assert isinstance(get_field(fields, "test_audiobookshelf"), ActionButton)
         assert get_field(fields, "AUDIOBOOKSHELF_ENABLED") is not None
+        for key in ("AUDIOBOOKSHELF_URL", "AUDIOBOOKSHELF_TOKEN", "AUDIOBOOKSHELF_API_TOKEN"):
+            assert get_field(fields, key) is None
 
-    def test_token_field_is_a_password_field(self):
-        """The ABS token grants full library read access — never render it in clear text."""
-        fields = abs_settings.audiobookshelf_settings()
-        token_field = get_field(fields, "AUDIOBOOKSHELF_API_TOKEN")
 
-        assert type(token_field).__name__ == "PasswordField"
+class TestConnectionKeys:
+    """The client reads upstream's token, falling back to the fork's old one."""
+
+    def _built_args(self, values):
+        with (
+            patch_config({"AUDIOBOOKSHELF_ENABLED": True, **values}),
+            patch("shelfmark.audiobookshelf.client.AudiobookshelfClient", FakeClient),
+        ):
+            FakeClient.last_args = None
+            abs_settings.build_client_from_config()
+        return FakeClient.last_args
+
+    def test_upstream_token_wins(self):
+        values = {
+            "AUDIOBOOKSHELF_URL": "http://abs:13378",
+            "AUDIOBOOKSHELF_TOKEN": "new",
+            "AUDIOBOOKSHELF_API_TOKEN": "old",
+        }
+        assert self._built_args(values) == ("http://abs:13378", "new")
+
+    def test_legacy_token_still_works(self):
+        values = {"AUDIOBOOKSHELF_URL": "http://abs:13378", "AUDIOBOOKSHELF_API_TOKEN": "old"}
+        assert self._built_args(values) == ("http://abs:13378", "old")
 
 
 class TestConnectionCallback:

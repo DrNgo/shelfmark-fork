@@ -4,7 +4,6 @@ import pytest
 
 from shelfmark.core.library_index import match_entries
 from shelfmark.core.library_providers import all_providers
-from shelfmark.core.library_providers import audiobookshelf as abs_provider
 from shelfmark.core.library_providers.grimmory import GrimmoryLibrary
 from shelfmark.library import index as index_module
 from shelfmark.library.index import SOURCE_GRIMMORY, LibraryItem
@@ -73,14 +72,3 @@ def test_a_hardcover_id_or_the_title_marks_the_book_owned(grimmory, index):
     assert match_entries(by_id, entries) == "owned"
     assert match_entries(by_title, entries) == "owned"
     assert match_entries(other, entries) is None
-
-
-def test_audiobookshelf_check_falls_back_to_the_integration_token(monkeypatch):
-    values = {"AUDIOBOOKSHELF_URL": "http://abs:13378", "AUDIOBOOKSHELF_API_TOKEN": "tok"}
-    monkeypatch.setattr(
-        abs_provider.app_config, "get", lambda key, default="": values.get(key, default)
-    )
-
-    _enabled, url, token, _ids = abs_provider._config()
-
-    assert (url, token) == ("http://abs:13378", "tok")
