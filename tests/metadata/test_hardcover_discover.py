@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
+from shelfmark.core import discover_hardcover
 from shelfmark.metadata_providers.hardcover import HardcoverGraphQLError, HardcoverProvider
 
 
@@ -31,7 +32,7 @@ class TestDiscoverTrending:
         with patch.object(
             provider, "_execute_query", side_effect=[ids_payload, books_payload]
         ) as mock_q:
-            result = provider.discover_trending(limit=3)
+            result = discover_hardcover.trending(provider, limit=3)
         assert result is not None
         assert [b.provider_id for b in result] == ["7", "3", "9"]
         # Step 1 over-fetches ids at 3x the row limit.
@@ -41,27 +42,27 @@ class TestDiscoverTrending:
         ids_payload = {"books_trending": {"error": None, "ids": [1, 2, 3]}}
         books_payload = {"books": [_book(1), _book(2), _book(3)]}
         with patch.object(provider, "_execute_query", side_effect=[ids_payload, books_payload]):
-            result = provider.discover_trending(limit=2)
+            result = discover_hardcover.trending(provider, limit=2)
         assert result is not None
         assert len(result) == 2
 
     def test_trending_error_payload_returns_none(self, provider):
         ids_payload = {"books_trending": {"error": "boom", "ids": [1]}}
         with patch.object(provider, "_execute_query", return_value=ids_payload):
-            assert provider.discover_trending() is None
+            assert discover_hardcover.trending(provider) is None
 
     def test_transport_failure_returns_none(self, provider):
         with patch.object(provider, "_execute_query", side_effect=RuntimeError("down")):
-            assert provider.discover_trending() is None
+            assert discover_hardcover.trending(provider) is None
 
     def test_graphql_rejection_returns_none(self, provider):
         with patch.object(provider, "_execute_query", side_effect=HardcoverGraphQLError("no")):
-            assert provider.discover_trending() is None
+            assert discover_hardcover.trending(provider) is None
 
     def test_empty_ids_returns_empty_list(self, provider):
         ids_payload = {"books_trending": {"error": None, "ids": []}}
         with patch.object(provider, "_execute_query", return_value=ids_payload) as mock_q:
-            assert provider.discover_trending() == []
+            assert discover_hardcover.trending(provider) == []
         assert mock_q.call_count == 1  # no hydration call
 
     def test_malformed_record_is_skipped_not_fatal(self, provider):
@@ -71,7 +72,7 @@ class TestDiscoverTrending:
         bad["contributions"] = [{"author": "not-a-dict"}]
         books_payload = {"books": [bad, _book(2)]}
         with patch.object(provider, "_execute_query", side_effect=[ids_payload, books_payload]):
-            result = provider.discover_trending()
+            result = discover_hardcover.trending(provider)
         assert result is not None
         assert [b.provider_id for b in result] == ["2"]
 
@@ -81,13 +82,13 @@ class TestDiscoverTrending:
         with patch.object(
             provider, "_execute_query", side_effect=[ids_payload, books_payload]
         ) as mock_q:
-            result = provider.discover_trending(audio_only=True)
+            result = discover_hardcover.trending(provider, audio_only=True)
         assert result is not None
         hydration_query = mock_q.call_args_list[1].args[0]
         assert "default_audio_edition_id" in hydration_query
 
     def test_no_api_key_returns_none(self):
-        assert HardcoverProvider(api_key="").discover_trending() is None
+        assert discover_hardcover.trending(HardcoverProvider(api_key="")) is None
 
 
 class TestDiscoverNewReleases:
@@ -95,7 +96,7 @@ class TestDiscoverNewReleases:
         with patch.object(
             provider, "_execute_query", return_value={"books": [_book(1), _book(2)]}
         ) as mock_q:
-            result = provider.discover_new_releases(limit=5)
+            result = discover_hardcover.new_releases(provider, limit=5)
         assert result is not None
         assert [b.provider_id for b in result] == ["1", "2"]
         variables = mock_q.call_args.args[1]
@@ -104,17 +105,17 @@ class TestDiscoverNewReleases:
 
     def test_failure_returns_none(self, provider):
         with patch.object(provider, "_execute_query", side_effect=RuntimeError("down")):
-            assert provider.discover_new_releases() is None
+            assert discover_hardcover.new_releases(provider) is None
 
     def test_non_list_books_payload_returns_none(self, provider):
         with patch.object(provider, "_execute_query", return_value={"books": "garbage"}):
-            assert provider.discover_new_releases() is None
+            assert discover_hardcover.new_releases(provider) is None
 
     def test_empty_returns_empty_list(self, provider):
         with patch.object(provider, "_execute_query", return_value={"books": []}):
-            assert provider.discover_new_releases() == []
+            assert discover_hardcover.new_releases(provider) == []
 
     def test_audio_only_uses_audio_query(self, provider):
         with patch.object(provider, "_execute_query", return_value={"books": []}) as mock_q:
-            provider.discover_new_releases(audio_only=True)
+            discover_hardcover.new_releases(provider, audio_only=True)
         assert "default_audio_edition_id" in mock_q.call_args.args[0]

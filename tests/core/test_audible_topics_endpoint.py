@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pytest
 
 import shelfmark.main as main_module
+from shelfmark.core import discover_routes
 from shelfmark.core.audible_topics import AudibleTopicTree
 from shelfmark.metadata_providers.audible_taxonomy import AudibleTopicNode
 
@@ -44,9 +45,7 @@ def test_auth_required_returns_401(client):
 
 
 def test_success_returns_browser_safe_public_tree_and_stale_flag(client, no_auth):
-    with patch.object(
-        main_module, "get_audible_topic_tree_service", return_value=_tree(stale=True)
-    ):
+    with patch.object(discover_routes, "get_audible_topic_tree", return_value=_tree(stale=True)):
         response = client.get("/api/metadata/audible/topics")
     assert response.status_code == 200
     assert response.get_json() == {
@@ -69,7 +68,7 @@ def test_success_returns_browser_safe_public_tree_and_stale_flag(client, no_auth
 
 
 def test_service_failure_returns_503(client, no_auth):
-    with patch.object(main_module, "get_audible_topic_tree_service", return_value=None):
+    with patch.object(discover_routes, "get_audible_topic_tree", return_value=None):
         response = client.get("/api/metadata/audible/topics")
     assert response.status_code == 503
     assert response.get_json() == {"error": "Audible topics are temporarily unavailable"}

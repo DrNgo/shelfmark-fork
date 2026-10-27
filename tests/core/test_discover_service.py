@@ -26,6 +26,23 @@ def clean_cache():
     get_metadata_cache().clear()
 
 
+@pytest.fixture(autouse=True)
+def _hardcover_rows_call_the_provider_mock(monkeypatch):
+    """Hardcover rows are module functions taking the provider; route them to its mocks."""
+    from shelfmark.core import discover_hardcover
+
+    monkeypatch.setattr(
+        discover_hardcover,
+        "trending",
+        lambda p, limit, *, audio_only=False: p.discover_trending(limit, audio_only=audio_only),
+    )
+    monkeypatch.setattr(
+        discover_hardcover,
+        "new_releases",
+        lambda p, limit, *, audio_only=False: p.discover_new_releases(limit, audio_only=audio_only),
+    )
+
+
 def _patch_provider(name: str, provider: MagicMock, *, enabled: bool = True):
     return (
         patch.object(discover, "get_configured_provider_name", return_value=name),

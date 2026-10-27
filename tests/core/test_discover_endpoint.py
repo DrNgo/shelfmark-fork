@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pytest
 
 import shelfmark.main as main_module
+from shelfmark.core import discover_routes
 from shelfmark.core.discover import DiscoverRow
 from shelfmark.metadata_providers import BookMetadata
 
@@ -41,7 +42,7 @@ class TestDiscoverEndpointAuth:
 
 class TestDiscoverEndpoint:
     def test_toggle_off_returns_404(self, client, no_auth):
-        with patch.object(main_module, "app_config") as cfg:
+        with patch.object(discover_routes, "app_config") as cfg:
             cfg.get.side_effect = lambda key, default=None, **kw: (
                 False if key == "SHOW_DISCOVER_ROWS" else default
             )
@@ -59,8 +60,8 @@ class TestDiscoverEndpoint:
     @pytest.mark.parametrize("row_key", ["topic_fantasy", "preferred_topic"])
     def test_topic_rows_are_valid_and_user_scoped(self, client, no_auth, row_key):
         with (
-            patch.object(main_module, "get_session_db_user_id", return_value=8),
-            patch.object(main_module, "get_discover_row_service", return_value=None) as service,
+            patch.object(discover_routes, "get_session_db_user_id", return_value=8),
+            patch.object(discover_routes, "get_discover_row", return_value=None) as service,
         ):
             resp = client.get(f"/api/discover?content_type=audiobook&row={row_key}")
         assert resp.status_code == 200
@@ -68,13 +69,13 @@ class TestDiscoverEndpoint:
         service.assert_called_once_with("audiobook", row_key, user_id=8)
 
     def test_unavailable_provider_returns_empty_row(self, client, no_auth):
-        with patch.object(main_module, "get_discover_row_service", return_value=None):
+        with patch.object(discover_routes, "get_discover_row", return_value=None):
             resp = client.get("/api/discover?content_type=ebook&row=trending")
         assert resp.status_code == 200
         assert resp.get_json() == {"row": "trending", "books": []}
 
     def test_success_serializes_books(self, client, no_auth):
-        with patch.object(main_module, "get_discover_row_service", return_value=_row()):
+        with patch.object(discover_routes, "get_discover_row", return_value=_row()):
             resp = client.get("/api/discover?content_type=ebook&row=trending")
         data = resp.get_json()
         assert resp.status_code == 200
@@ -100,9 +101,9 @@ class TestDiscoverEndpoint:
             stale=False,
         )
         with (
-            patch.object(main_module, "get_discover_row_service", return_value=row),
+            patch.object(discover_routes, "get_discover_row", return_value=row),
             patch(
-                "shelfmark.core.utils.transform_cover_url",
+                "shelfmark.core.discover_routes.transform_cover_url",
                 return_value="/api/covers/hardcover_1?url=abc",
             ) as mock_transform,
         ):

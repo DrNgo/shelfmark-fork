@@ -48,9 +48,6 @@ from shelfmark.config.settings import (
 from shelfmark.core import api_key as api_key_module  # module access lets tests monkeypatch the key
 from shelfmark.core import search_deadline
 from shelfmark.core.activity_view_state_service import ActivityViewStateService
-from shelfmark.core.audible_topics import (
-    get_audible_topic_tree as get_audible_topic_tree_service,
-)
 from shelfmark.core.auth_modes import (
     get_auth_check_admin_status,
     is_settings_or_onboarding_path,
@@ -59,8 +56,7 @@ from shelfmark.core.auth_modes import (
 )
 from shelfmark.core.config import config as app_config
 from shelfmark.core.cwa_user_sync import upsert_cwa_user
-from shelfmark.core.discover import ALL_DISCOVER_ROW_KEYS
-from shelfmark.core.discover import get_discover_row as get_discover_row_service
+from shelfmark.core.discover_routes import discover_config, register_discover_routes
 from shelfmark.core.download_history_service import DownloadHistoryService
 from shelfmark.core.external_user_linking import upsert_external_user
 from shelfmark.core.logger import setup_logger
@@ -112,10 +108,6 @@ from shelfmark.core.viewer_redaction import (
 from shelfmark.download import orchestrator as backend
 from shelfmark.download import warmup
 from shelfmark.download.zip_stream import stream_zip
-from shelfmark.metadata_providers.audible_taxonomy import (
-    matching_core_topic_key,
-    public_topic_nodes,
-)
 from shelfmark.release_sources import (
     BrowseRecord,
     Release,
@@ -1438,20 +1430,6 @@ def api_config() -> Response | tuple[Response, int]:
             "",
             user_id=db_user_id,
         )
-        raw_default_discover_topic = app_config.get(
-            "DEFAULT_DISCOVER_TOPIC",
-            [],
-            user_id=db_user_id,
-        )
-        default_discover_topic = (
-            [segment.strip() for segment in raw_default_discover_topic]
-            if isinstance(raw_default_discover_topic, list)
-            and all(
-                isinstance(segment, str) and bool(segment.strip())
-                for segment in raw_default_discover_topic
-            )
-            else []
-        )
         configured_metadata_provider = normalize_optional_text(
             app_config.get(
                 "METADATA_PROVIDER",
@@ -1489,16 +1467,11 @@ def api_config() -> Response | tuple[Response, int]:
             "metadata_search_fields": get_provider_search_fields(metadata_ui_provider),
             "default_release_source": default_release_source,
             "default_release_source_audiobook": default_release_source_audiobook,
-            "default_discover_topic": default_discover_topic,
-            "default_discover_topic_core_key": matching_core_topic_key(
-                str(app_config.get("AUDIBLE_REGION", "us") or "us"),
-                default_discover_topic,
-            ),
+            **discover_config(db_user_id),
             "show_release_source_links": app_config.get("SHOW_RELEASE_SOURCE_LINKS", True),
             "show_combined_selector": app_config.get(
                 "SHOW_COMBINED_SELECTOR", True, user_id=db_user_id
             ),
-            "show_discover_rows": app_config.get("SHOW_DISCOVER_ROWS", True),
             "force_combined_search": app_config.get(
                 "FORCE_COMBINED_SEARCH", False, user_id=db_user_id
             ),
@@ -2916,65 +2889,6 @@ def api_metadata_config() -> Response | tuple[Response, int]:
         return jsonify({"error": str(e)}), 500
 
 
-_DISCOVER_CONTENT_TYPES = {"ebook", "audiobook", "combined"}
-
-
-@app.route("/api/metadata/audible/topics", methods=["GET"])
-@login_required
-def api_audible_topics() -> Response | tuple[Response, int]:
-    tree = get_audible_topic_tree_service()
-    if tree is None:
-        return jsonify({"error": "Audible topics are temporarily unavailable"}), 503
-    return jsonify(
-        {
-            "region": tree.region,
-            "stale": tree.stale,
-            "topics": public_topic_nodes(tree.topics),
-        }
-    )
-
-
-@app.route("/api/discover", methods=["GET"])
-@login_required
-def api_discover() -> Response | tuple[Response, int]:
-    """Return one discover row for the landing page."""
-    if not app_config.get("SHOW_DISCOVER_ROWS", True):
-        return jsonify({"error": "Discover rows are disabled"}), 404
-
-    content_type = request.args.get("content_type", "ebook").strip().lower()
-    row_key = request.args.get("row", "").strip().lower()
-    if content_type not in _DISCOVER_CONTENT_TYPES:
-        return jsonify({"error": f"Invalid content_type: {content_type}"}), 400
-    if row_key not in ALL_DISCOVER_ROW_KEYS:
-        return jsonify({"error": f"Invalid row: {row_key}"}), 400
-
-    db_user_id = get_session_db_user_id(session)
-    row = get_discover_row_service(content_type, row_key, user_id=db_user_id)
-    if row is None:
-        return jsonify({"row": row_key, "books": []})
-
-    from dataclasses import asdict
-
-    from shelfmark.core.utils import transform_cover_url
-
-    books_data = [asdict(book) for book in row.books]
-    for book, book_dict in zip(row.books, books_data, strict=True):
-        _attach_library_ownership(book, book_dict)
-        if book_dict.get("cover_url"):
-            cache_id = f"{book_dict['provider']}_{book_dict['provider_id']}"
-            book_dict["cover_url"] = transform_cover_url(book_dict["cover_url"], cache_id)
-
-    return jsonify(
-        {
-            "row": row.key,
-            "label": row.label,
-            "provider": row.provider,
-            "stale": row.stale,
-            "books": books_data,
-        }
-    )
-
-
 @app.route("/api/metadata/search", methods=["GET"])
 @login_required
 def api_metadata_search() -> Response | tuple[Response, int]:
@@ -3176,6 +3090,9 @@ def _attach_library_ownership(book: Any, book_dict: dict[str, Any]) -> None:
     owned = library_index.ownership(book)
     if owned is not None:
         book_dict["library"] = owned
+
+
+register_discover_routes(app, login_required, _attach_library_ownership)
 
 
 def _session_may_use_provider_account() -> bool:

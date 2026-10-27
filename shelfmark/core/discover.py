@@ -38,17 +38,7 @@ if TYPE_CHECKING:
     from typing import Protocol
 
     from shelfmark.metadata_providers import MetadataProvider
-
-    class _HardcoverDiscoverProvider(Protocol):
-        def is_available(self) -> bool: ...
-
-        def discover_trending(
-            self, limit: int, *, audio_only: bool
-        ) -> list[BookMetadata] | None: ...
-
-        def discover_new_releases(
-            self, limit: int, *, audio_only: bool
-        ) -> list[BookMetadata] | None: ...
+    from shelfmark.metadata_providers.hardcover import HardcoverProvider
 
     class _AudibleDiscoverProvider(Protocol):
         region: str
@@ -116,10 +106,12 @@ def _fetch(
     provider: MetadataProvider, provider_name: str, row_key: str, *, audio_only: bool
 ) -> list[BookMetadata] | None:
     if provider_name == "hardcover":
-        hardcover_provider = cast("_HardcoverDiscoverProvider", provider)
+        from shelfmark.core import discover_hardcover
+
+        hardcover_provider = cast("HardcoverProvider", provider)
         if row_key == "trending":
-            return hardcover_provider.discover_trending(ROW_LIMIT, audio_only=audio_only)
-        return hardcover_provider.discover_new_releases(ROW_LIMIT, audio_only=audio_only)
+            return discover_hardcover.trending(hardcover_provider, ROW_LIMIT, audio_only=audio_only)
+        return discover_hardcover.new_releases(hardcover_provider, ROW_LIMIT, audio_only=audio_only)
     audible_provider = cast("_AudibleDiscoverProvider", provider)
     if row_key == "best_sellers":
         return audible_provider.discover_best_sellers(ROW_LIMIT)
