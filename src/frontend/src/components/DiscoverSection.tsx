@@ -1,8 +1,9 @@
 import { useState } from 'react';
 
 import { useDependencyEffect } from '../hooks/useMountEffect';
-import { getDiscoverRow } from '../services/api';
+import { getDiscoverRow, getMetadataBookInfo } from '../services/api';
 import type { Book, ButtonStateInfo, ContentType } from '../types';
+import { isMetadataBook } from '../types';
 import { transformMetadataToBook } from '../utils/bookTransformers';
 import { coverAspectRatio } from '../utils/coverAspect';
 import type { DiscoverRowState } from '../utils/discoverRows';
@@ -10,6 +11,7 @@ import {
   applyRowError,
   applyRowResponse,
   buildDiscoverRowDefs,
+  contentTypeForDiscoverDetails,
   initialRowStates,
   visibleRows,
 } from '../utils/discoverRows';
@@ -18,13 +20,40 @@ import { LibraryBadge, RequestedBadge } from './shared';
 
 interface DiscoverSectionProps {
   contentType: ContentType | 'combined';
-  standardProviderName: string | null;
-  audiobookProviderName: string | null;
+  /** The configured metadata providers, as App resolves them; rows pick their own. */
+  metadataProvider: string | null;
+  audiobookMetadataProvider: string | null;
+  combinedMetadataProvider: string | null;
   preferredTopicPath: string[];
   preferredCoreTopicKey: string | null;
   openRequestKeys: Set<string>;
   getButtonState: (bookId: string) => ButtonStateInfo;
+  /** Receives the tile's book with full details loaded. */
   onDetails: (book: Book) => void;
+  onShowToast: (message: string, type: 'success' | 'error' | 'info') => void;
+}
+
+// Discover tiles hold Books that are not in search-results state, so details are
+// loaded for the Book itself instead of an id looked up in the results.
+async function loadDetails(book: Book, isCombined: boolean): Promise<Book | null> {
+  if (!isMetadataBook(book)) return null;
+  // See contentTypeForDiscoverDetails (discoverRows.ts) for why this is mode-dependent.
+  const discoverContentType = contentTypeForDiscoverDetails(book, isCombined);
+  const tagged = discoverContentType ? { ...book, content_type: discoverContentType } : book;
+  try {
+    const fullBook = await getMetadataBookInfo(tagged.provider, tagged.provider_id);
+    return {
+      ...tagged,
+      description: fullBook.description || tagged.description,
+      series_id: fullBook.series_id || tagged.series_id,
+      series_name: fullBook.series_name,
+      series_position: fullBook.series_position,
+      series_count: fullBook.series_count,
+    };
+  } catch (error) {
+    console.error('Failed to load book description, using discover data:', error);
+    return tagged;
+  }
 }
 
 const ACTIVE_STATES = new Set(['queued', 'resolving', 'locating', 'downloading', 'complete']);
@@ -79,15 +108,28 @@ const DiscoverTile = ({ book, buttonState, requested, onDetails }: DiscoverTileP
 
 export const DiscoverSection = ({
   contentType,
-  standardProviderName,
-  audiobookProviderName,
+  metadataProvider,
+  audiobookMetadataProvider,
+  combinedMetadataProvider,
   preferredTopicPath,
   preferredCoreTopicKey,
   openRequestKeys,
   getButtonState,
   onDetails,
+  onShowToast,
 }: DiscoverSectionProps) => {
   const [rows, setRows] = useState<DiscoverRowState[]>([]);
+  const isCombined = contentType === 'combined';
+  const audiobookProviderName = audiobookMetadataProvider ?? metadataProvider;
+  let standardProviderName = metadataProvider;
+  if (isCombined) standardProviderName = combinedMetadataProvider ?? metadataProvider;
+  else if (contentType === 'audiobook') standardProviderName = audiobookProviderName;
+
+  const showDetails = async (book: Book) => {
+    const details = await loadDetails(book, isCombined);
+    if (details) onDetails(details);
+    else onShowToast('Failed to load book details', 'error');
+  };
 
   useDependencyEffect(() => {
     const rowDefs = buildDiscoverRowDefs({
@@ -157,7 +199,7 @@ export const DiscoverSection = ({
                   book={book}
                   buttonState={getButtonState(book.id)}
                   requested={isBookRequested(book, openRequestKeys)}
-                  onDetails={onDetails}
+                  onDetails={(tileBook) => void showDetails(tileBook)}
                 />
               ))}
             </div>

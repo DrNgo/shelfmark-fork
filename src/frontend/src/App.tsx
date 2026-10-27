@@ -94,7 +94,6 @@ import {
   completeCombinedSelection,
   retreatCombinedSelection,
 } from './utils/combinedSelection';
-import { contentTypeForDiscoverDetails } from './utils/discoverRows';
 import { wasDownloadQueuedAfterResponseError } from './utils/downloadRecovery';
 import { getDynamicOptionGroup } from './utils/dynamicFieldOptions';
 import { resolveDefaultLanguageCodes } from './utils/languageFilters';
@@ -909,14 +908,6 @@ function App() {
   const effectiveCombinedMode = combinedModeAllowed && (combinedMode || combinedModeLocked);
   const effectiveCombinedState = effectiveCombinedMode ? combinedState : null;
 
-  const singleContentDiscoverProviderName =
-    effectiveContentType === 'audiobook'
-      ? (configuredAudiobookMetadataProvider ?? configuredMetadataProvider)
-      : configuredMetadataProvider;
-  const discoverStandardProviderName = effectiveCombinedMode
-    ? (configuredCombinedMetadataProvider ?? configuredMetadataProvider)
-    : singleContentDiscoverProviderName;
-
   const defaultMetadataProviderForContentType =
     effectiveCombinedMode && configuredCombinedMetadataProvider
       ? configuredCombinedMetadataProvider
@@ -1024,38 +1015,6 @@ function App() {
           showToast('Failed to load book details', 'error');
         }
       }
-    }
-  };
-
-  // Discover tiles hold Books that are not in search-results state, so details
-  // enrichment takes the Book itself instead of an id looked up in `books`.
-  const handleShowDiscoverDetails = async (book: Book): Promise<void> => {
-    // Book.provider/provider_id are optional; isMetadataBook (types/index.ts:356)
-    // narrows them to string. Discover books always satisfy it in practice.
-    if (!isMetadataBook(book)) {
-      showToast('Failed to load book details', 'error');
-      return;
-    }
-    // DiscoverSection only tags books internally for its own library lookup —
-    // it renders (and hands off to onDetails) the untagged row.books entries,
-    // so this is where the tile gets its per-book content_type before the
-    // modal opens. See contentTypeForDiscoverDetails (discoverRows.ts) for
-    // why the gate is mode-dependent.
-    const discoverContentType = contentTypeForDiscoverDetails(book, effectiveCombinedMode);
-    const taggedBook = discoverContentType ? { ...book, content_type: discoverContentType } : book;
-    try {
-      const fullBook = await getMetadataBookInfo(taggedBook.provider, taggedBook.provider_id);
-      setSelectedBook({
-        ...taggedBook,
-        description: fullBook.description || taggedBook.description,
-        series_id: fullBook.series_id || taggedBook.series_id,
-        series_name: fullBook.series_name,
-        series_position: fullBook.series_position,
-        series_count: fullBook.series_count,
-      });
-    } catch (error) {
-      console.error('Failed to load book description, using discover data:', error);
-      setSelectedBook(taggedBook);
     }
   };
 
@@ -2678,15 +2637,15 @@ function App() {
             effectiveSearchMode === 'universal' && (
               <DiscoverSection
                 contentType={effectiveCombinedMode ? 'combined' : effectiveContentType}
-                standardProviderName={discoverStandardProviderName}
-                audiobookProviderName={
-                  configuredAudiobookMetadataProvider ?? configuredMetadataProvider
-                }
+                metadataProvider={configuredMetadataProvider}
+                audiobookMetadataProvider={configuredAudiobookMetadataProvider}
+                combinedMetadataProvider={configuredCombinedMetadataProvider}
                 preferredTopicPath={config.default_discover_topic}
                 preferredCoreTopicKey={config.default_discover_topic_core_key ?? null}
                 openRequestKeys={openRequestKeys}
                 getButtonState={getUniversalActionButtonState}
-                onDetails={(book) => void handleShowDiscoverDetails(book)}
+                onDetails={setSelectedBook}
+                onShowToast={showToast}
               />
             )}
 
