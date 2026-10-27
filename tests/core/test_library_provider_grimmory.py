@@ -28,6 +28,7 @@ def config(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
 def _book(title: str, *, file_type: str = "EPUB", **meta: Any) -> dict[str, Any]:
     return {
+        "id": title,
         "primaryFile": {"bookType": file_type},
         "metadata": {"title": title, "authors": ["Frank Herbert"], **meta},
     }
@@ -37,6 +38,12 @@ def _listing(monkeypatch: pytest.MonkeyPatch, pages: list[list[dict[str, Any]]])
     from shelfmark.grimmory import client
 
     monkeypatch.setattr(client, "booklore_login", lambda cfg: "token")
+    monkeypatch.setattr(grimmory, "_hardcover_ids", {})
+    monkeypatch.setattr(
+        client,
+        "get_book",
+        lambda cfg, token, book_id: {"metadata": {"hardcoverBookId": f"hc-{book_id}"}},
+    )
     monkeypatch.setattr(
         client, "list_books", lambda cfg, token, *, page, size: (pages[page], len(pages))
     )
@@ -71,3 +78,30 @@ def test_an_owned_ebook_is_reported_by_the_library_check(config, monkeypatch):
 
     assert library_index.ownership(owned) == {"ebook": "owned"}
     assert library_index.ownership(other) == {"ebook": None}
+
+
+def test_a_hardcover_id_matches_a_volume_with_a_different_title(config, monkeypatch):
+    # Grimmory names the volume "Overlord, Vol. 5"; Hardcover calls it by its own title.
+    _listing(monkeypatch, [[_book("Overlord, Vol. 5")]])
+    hardcover_book = BookMetadata(
+        provider="hardcover",
+        provider_id="hc-Overlord, Vol. 5",
+        title="The Men of the Kingdom Part I",
+        authors=["Kugane Maruyama"],
+    )
+
+    assert library_index.ownership(hardcover_book) == {"ebook": "owned"}
+
+
+def test_book_details_are_read_once(config, monkeypatch):
+    calls: list[object] = []
+    _listing(monkeypatch, [[_book("Dune")]])
+    from shelfmark.grimmory import client
+
+    real = client.get_book
+    monkeypatch.setattr(client, "get_book", lambda *a, **k: calls.append(a[2]) or real(*a, **k))
+
+    grimmory.GrimmoryLibrary().fetch_entries()
+    grimmory.GrimmoryLibrary().fetch_entries()
+
+    assert calls == ["Dune"]

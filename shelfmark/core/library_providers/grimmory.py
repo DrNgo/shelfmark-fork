@@ -1,9 +1,10 @@
 """Grimmory library provider (fork-only).
 
 Lists the configured Grimmory account's books for upstream's library check, the
-same way the Calibre and Audiobookshelf providers read their libraries. Only the
-paged listing is read: it carries title, authors and ISBNs, which is what the
-matcher uses, and stays cheap enough for the check's ten-minute cache.
+same way the Calibre and Audiobookshelf providers read their libraries. The listing
+carries title, authors and ISBNs. The Hardcover book id, which is what matches a
+volume titled "Overlord, Vol. 5" to Hardcover's "The Men of the Kingdom Part I",
+is only on each book's own record, so that is read once per book and remembered.
 
 Only ebooks are offered. Grimmory can hold a stray audiobook import, and that must
 not mark an ebook search result as owned.
@@ -39,7 +40,12 @@ def _is_audiobook(raw: dict[str, Any]) -> bool:
     return bool(types) and all(t == _AUDIOBOOK_FILE_TYPE for t in types)
 
 
-def book_to_entry(raw: dict[str, Any]) -> LibraryEntry | None:
+# Grimmory book id -> Hardcover book id ("" when it has none), kept across re-indexes
+# so only books added since the last one cost a request.
+_hardcover_ids: dict[object, str] = {}
+
+
+def book_to_entry(raw: dict[str, Any], hardcover_id: str = "") -> LibraryEntry | None:
     """One listed Grimmory book as a matchable entry, or None for an audiobook or no title."""
     metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
     title = str(metadata.get("title") or raw.get("title") or "").strip()
@@ -52,7 +58,7 @@ def book_to_entry(raw: dict[str, Any]) -> LibraryEntry | None:
         frozenset(title_tok | context_tok | set(tokens(str(metadata.get("subtitle") or "")))),
         isbn_variants(metadata.get("isbn13")) | isbn_variants(metadata.get("isbn10")),
         frozenset({str(metadata["asin"]).strip().upper()} if metadata.get("asin") else set()),
-        frozenset(),
+        frozenset({("hardcover", hardcover_id)} if hardcover_id else set()),
         frozenset(title_tok),
         frozenset(context_tok),
     )
@@ -89,7 +95,7 @@ class GrimmoryLibrary:
         return None
 
     def fetch_entries(self) -> list[LibraryEntry]:
-        from shelfmark.grimmory.client import BookloreConfig, booklore_login, list_books
+        from shelfmark.grimmory.client import BookloreConfig, booklore_login, get_book, list_books
 
         booklore_config = BookloreConfig(
             base_url=self._setting("BOOKLORE_HOST").rstrip("/"),
@@ -106,8 +112,14 @@ class GrimmoryLibrary:
                 msg = f"Grimmory listing exceeded the {_MAX_PAGES}-page cap"
                 raise RuntimeError(msg)
             books, total_pages = list_books(booklore_config, token, page=page, size=_PAGE_SIZE)
-            entries.extend(
-                e for raw in books if isinstance(raw, dict) and (e := book_to_entry(raw))
-            )
+            for raw in books:
+                if not isinstance(raw, dict):
+                    continue
+                book_id = raw.get("id")
+                if book_id is not None and book_id not in _hardcover_ids:
+                    detail = get_book(booklore_config, token, book_id)
+                    _hardcover_ids[book_id] = str(detail["metadata"].get("hardcoverBookId") or "")
+                if entry := book_to_entry(raw, _hardcover_ids.get(book_id, "")):
+                    entries.append(entry)
             page += 1
         return entries
