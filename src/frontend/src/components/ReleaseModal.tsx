@@ -46,17 +46,23 @@ import {
 import { coverAspectForContentType } from '../utils/mediaType';
 import { getNestedValue, toComparableText, toStringValue } from '../utils/objectHelpers';
 import { toBookPlanPayload } from '../utils/packReview';
-import { sortReleasesForDisplay } from '../utils/releaseDisplaySort';
 import { getReleaseFormats } from '../utils/releaseFormats';
 import { INITIAL_ENTER_ANIMATION, nextEnterAnimation } from '../utils/releaseModalEnterAnimation';
 import { buildReleaseDownloadPayload, type ReleaseDownloadOptions } from '../utils/releasePayload';
+import {
+  getBookTitleCandidates,
+  getBookAuthorCandidates,
+  sortReleasesByBookMatch,
+} from '../utils/releaseScoring';
 import type { SortState } from '../utils/releaseSort';
 import {
   getSavedSort,
   saveSort,
   clearSort,
   inferDefaultDirection,
+  sortReleases,
   FORMAT_SORT_KEY,
+  sortReleasesByFormat,
 } from '../utils/releaseSort';
 import { BookDownloadButton } from './BookDownloadButton';
 import { BookTargetDropdown } from './BookTargetDropdown';
@@ -66,7 +72,6 @@ import { FormatReviewPanel } from './FormatReviewPanel';
 import { LanguageMultiSelect } from './LanguageMultiSelect';
 import { PackReviewPanel } from './PackReviewPanel';
 import { ReleaseCell } from './ReleaseCell';
-import { ReleaseMatchBadges } from './ReleaseMatchBadges';
 
 // Combined mode configuration for the ReleaseModal
 interface CombinedModeConfig {
@@ -578,7 +583,6 @@ export const ReleaseRow = ({
               release.title
             )}
           </p>
-          <ReleaseMatchBadges release={release} />
           {author && <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">{author}</p>}
         </div>
 
@@ -631,7 +635,6 @@ export const ReleaseRow = ({
               <span className="font-normal text-zinc-500 dark:text-zinc-400"> — {author}</span>
             )}
           </p>
-          <ReleaseMatchBadges release={release} compact />
           {/* Plugin-provided info line (format, size, indexer, seeders, etc.) */}
           {mobileColumns.length > 0 && (
             <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-zinc-500 dark:text-zinc-400">
@@ -921,8 +924,6 @@ const ReleaseModalSession = ({
     manualQuery,
     setManualQuery,
     showManualQuery,
-    manualQueryApplied,
-    canRunManualSearch,
     toggleManualQuery,
     applyCurrentFilters,
     runManualSearch,
@@ -1187,7 +1188,7 @@ const ReleaseModalSession = ({
     const selectedFormat = formatFilter.toLowerCase();
 
     // First, filter
-    const filtered = releases.filter((r) => {
+    let filtered = releases.filter((r) => {
       // Format filtering
       const releaseFormats = getReleaseFormats(r);
 
@@ -1223,14 +1224,19 @@ const ReleaseModalSession = ({
       return true;
     });
 
-    // Then, sort by explicit column/format, or default to the tiered best-match sort
-    return sortReleasesForDisplay(
-      filtered,
-      currentSort,
-      allSortOptions.length > 0,
-      book,
-      releasesBySource[activeTab]?.book,
-    );
+    // Then, sort by explicit column/format, or default to book-title relevance with exact author boost
+    if (currentSort?.key === FORMAT_SORT_KEY && currentSort.value) {
+      filtered = sortReleasesByFormat(filtered, currentSort.value, currentSort.direction);
+    } else if (currentSort && allSortOptions.length > 0) {
+      filtered = sortReleases(filtered, currentSort.key, currentSort.direction);
+    } else {
+      const responseBook = releasesBySource[activeTab]?.book;
+      const titleCandidates = getBookTitleCandidates(book, responseBook);
+      const authorCandidates = getBookAuthorCandidates(book, responseBook);
+      filtered = sortReleasesByBookMatch(filtered, titleCandidates, authorCandidates);
+    }
+
+    return filtered;
   }, [
     releasesBySource,
     activeTab,
@@ -2006,7 +2012,7 @@ const ReleaseModalSession = ({
                       type="button"
                       onClick={toggleManualQuery}
                       className={`hover-surface rounded-full p-2.5 text-zinc-500 transition-colors dark:text-zinc-400 ${
-                        manualQueryApplied ? 'text-emerald-600 dark:text-emerald-400' : ''
+                        manualQuery.trim() ? 'text-emerald-600 dark:text-emerald-400' : ''
                       }`}
                       aria-label="Manual search query"
                       title="Manual query"
@@ -2409,9 +2415,9 @@ const ReleaseModalSession = ({
                   />
                   <button
                     type="submit"
-                    disabled={currentTabLoading || !canRunManualSearch}
+                    disabled={currentTabLoading || !manualQuery.trim()}
                     className={`rounded-lg px-3 py-2 text-sm font-medium text-white transition-colors ${
-                      currentTabLoading || !canRunManualSearch
+                      currentTabLoading || !manualQuery.trim()
                         ? 'cursor-not-allowed bg-emerald-600/60'
                         : 'bg-emerald-600 hover:bg-emerald-700'
                     }`}

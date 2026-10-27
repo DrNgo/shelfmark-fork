@@ -31,22 +31,22 @@ const response = (title: string): ReleasesResponse => ({
 
 describe('releaseCache', () => {
   it('keeps editions of the same work apart', () => {
-    setCachedReleases(germanEdition, 'prowlarr', 'ebook', '', response('Der Weg der Könige'));
+    setCachedReleases(germanEdition, 'prowlarr', 'ebook', response('Der Weg der Könige'));
 
-    expect(getCachedReleases(englishEdition, 'prowlarr', 'ebook', '')).toBeNull();
-    expect(getCachedReleases(germanEdition, 'prowlarr', 'ebook', '')).toEqual(
+    expect(getCachedReleases(englishEdition, 'prowlarr', 'ebook')).toBeNull();
+    expect(getCachedReleases(germanEdition, 'prowlarr', 'ebook')).toEqual(
       response('Der Weg der Könige'),
     );
   });
 
   it('invalidates only the edition it was given', () => {
-    setCachedReleases(germanEdition, 'prowlarr', 'audiobook', '', response('Der Weg der Könige'));
-    setCachedReleases(englishEdition, 'prowlarr', 'audiobook', '', response('The Way of Kings'));
+    setCachedReleases(germanEdition, 'prowlarr', 'audiobook', response('Der Weg der Könige'));
+    setCachedReleases(englishEdition, 'prowlarr', 'audiobook', response('The Way of Kings'));
 
-    invalidateCachedReleases(germanEdition, 'prowlarr', 'audiobook', '');
+    invalidateCachedReleases(germanEdition, 'prowlarr', 'audiobook');
 
-    expect(getCachedReleases(germanEdition, 'prowlarr', 'audiobook', '')).toBeNull();
-    expect(getCachedReleases(englishEdition, 'prowlarr', 'audiobook', '')).toEqual(
+    expect(getCachedReleases(germanEdition, 'prowlarr', 'audiobook')).toBeNull();
+    expect(getCachedReleases(englishEdition, 'prowlarr', 'audiobook')).toEqual(
       response('The Way of Kings'),
     );
   });

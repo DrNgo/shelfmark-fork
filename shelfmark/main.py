@@ -99,7 +99,6 @@ from shelfmark.core.requests_service import (
     reopen_failed_request,
     sync_delivery_states_from_queue_status,
 )
-from shelfmark.core.search_queries import build_ranking_identity, classify_release
 from shelfmark.core.socketio_origins import build_cors_allowed_origins
 from shelfmark.core.user_db import UserDB
 from shelfmark.core.utils import AUDIOBOOK_FORMATS, normalize_base_path
@@ -124,11 +123,9 @@ from shelfmark.release_sources import (
     SourceUnavailableError,
     get_source_display_name,
 )
-from shelfmark.release_sources.irc.parser import ranking_evidence as irc_ranking_evidence
 
 if TYPE_CHECKING:
     from shelfmark.core.models import DownloadTask
-    from shelfmark.core.search_queries import RankingIdentity
     from shelfmark.metadata_providers import BookMetadata, MetadataProvider
 
 logger = setup_logger(__name__)
@@ -1326,55 +1323,6 @@ def _serialize_release(release: Release) -> dict:
             result["extra"] = extra
 
     return result
-
-
-def _release_match_payload(release: Release, identity: RankingIdentity) -> dict[str, object]:
-    """Classify one release against the requested book for the default sort and badges."""
-    extra = release.extra if isinstance(release.extra, dict) else {}
-    # The indexer's own name when a source replaced the title (Prowlarr's MAM bookTitle).
-    name: object = extra.get("release_name")
-    release_author: object = extra.get("author")
-    # IRC: the original result line, whose "author" may really be the series; the author
-    # counts only when the detailed "Author - Title.format" pattern matched.
-    irc = irc_ranking_evidence(extra.get("full_line")) if release.source == "irc" else None
-    if irc is not None:
-        name, release_author = irc
-    else:
-        if release.source == "irc":
-            # No usable result line: the parser's author is a guess, so it counts as missing.
-            release_author = None
-        if not isinstance(name, str) or not name.strip():
-            name = release.title
-    extra_formats = extra.get("formats")
-    formats = [release.format, *(extra_formats if isinstance(extra_formats, list) else ())]
-    return classify_release(
-        name=name,
-        formats=formats,
-        content_type=release.content_type,
-        release_author=release_author,
-        identity=identity,
-    ).to_payload()
-
-
-def _annotate_release_matches(
-    releases_data: list[dict], releases: list[Release], identity: RankingIdentity
-) -> None:
-    """Add ``extra["release_match"]`` to each serialized release.
-
-    Informational only: nothing downstream reads or persists it. A release whose
-    classification fails is left without the key; it never fails the request.
-    """
-    for data, release in zip(releases_data, releases, strict=True):
-        try:
-            payload = _release_match_payload(release, identity)
-        except Exception as exc:  # noqa: BLE001 - one release must never fail the search
-            logger.debug("Release match classification failed for %s: %s", release.source_id, exc)
-            continue
-        extra = data.get("extra")
-        if not isinstance(extra, dict):
-            extra = {}
-            data["extra"] = extra
-        extra["release_match"] = payload
 
 
 register_release_inspect_routes(app, login_required, policy_gate=_release_payload_listing_gate)
@@ -3488,9 +3436,6 @@ def api_releases() -> Response | tuple[Response, int]:
         source_query_filters = None
         is_source_provider = bool(provider) and source_results_are_releases(provider)
 
-        # Set only for an ebook search of a metadata-provider book with no manual query.
-        ranking_identity: RankingIdentity | None = None
-
         if not provider or not book_id:
             if not source_filter or not has_browse_filters:
                 return jsonify({"error": "Parameters 'provider' and 'book_id' are required"}), 400
@@ -3581,21 +3526,6 @@ def api_releases() -> Response | tuple[Response, int]:
                     book.search_title = title_param
                 book.title = title_param
 
-            # Ebook searches rank releases by volume and medium; audiobook searches and
-            # manual queries keep today's order. Built after the title override, so the
-            # identity is the book the modal asked about.
-            if content_type == "ebook" and not manual_query:
-                try:
-                    ranking_identity = build_ranking_identity(
-                        title=book.title,
-                        current_query=book.search_title or book.title,
-                        series_name=book.series_name,
-                        series_position=book.series_position,
-                        authors=book.authors,
-                    )
-                except Exception as exc:  # noqa: BLE001 - ranking must never fail the search
-                    logger.debug("Release match identity failed for %s: %s", book.provider_id, exc)
-
         # Search each source for releases.
         #
         # Under a wall-clock budget: this endpoint is synchronous, and the bypass path it
@@ -3630,8 +3560,6 @@ def api_releases() -> Response | tuple[Response, int]:
 
         # Convert Release objects to dicts
         releases_data = [_serialize_release(release) for release in all_releases]
-        if ranking_identity is not None:
-            _annotate_release_matches(releases_data, all_releases, ranking_identity)
 
         # Get column config from the first source searched
         # Reuse the same instance to get any dynamic data (e.g., online_servers for IRC)

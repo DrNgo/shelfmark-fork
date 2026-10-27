@@ -4,9 +4,7 @@ import type { Book, ReleasesResponse } from '../types';
 export type ReleaseCacheBook = Pick<Book, 'provider' | 'provider_id' | 'title' | 'language'>;
 
 // Module-level cache for release search results
-// Key format: `${provider}:${provider_id}:${language}:${title}:${source}:${contentType}:${queryContext}`,
-// where the query context is '' for the automatic search, else the applied manual query:
-// manual and automatic responses never share an entry, and both stay cached.
+// Key format: `${provider}:${provider_id}:${language}:${title}:${source}:${contentType}`
 // This persists across modal open/close cycles
 const releaseCache = new Map<string, ReleasesResponse>();
 
@@ -14,12 +12,7 @@ const releaseCache = new Map<string, ReleasesResponse>();
 // work ID for "The Way of Kings" and its German translation "Der Weg der Könige" alike -
 // and each edition searches for releases by its own title and language. Keying on the
 // ID alone would serve one edition's cached releases to the other.
-function getCacheKey(
-  book: ReleaseCacheBook,
-  source: string,
-  contentType: string,
-  context: string,
-): string {
+function getCacheKey(book: ReleaseCacheBook, source: string, contentType: string): string {
   return [
     book.provider,
     book.provider_id,
@@ -27,7 +20,6 @@ function getCacheKey(
     book.title,
     source,
     contentType,
-    context,
   ].join(':');
 }
 
@@ -39,9 +31,8 @@ export function getCachedReleases(
   book: ReleaseCacheBook,
   source: string,
   contentType: string,
-  context: string,
 ): ReleasesResponse | null {
-  const key = getCacheKey(book, source, contentType, context);
+  const key = getCacheKey(book, source, contentType);
   const timestamp = cacheTimestamps.get(key);
   const cached = releaseCache.get(key);
 
@@ -69,10 +60,9 @@ export function setCachedReleases(
   book: ReleaseCacheBook,
   source: string,
   contentType: string,
-  context: string,
   data: ReleasesResponse,
 ): void {
-  const key = getCacheKey(book, source, contentType, context);
+  const key = getCacheKey(book, source, contentType);
   releaseCache.set(key, data);
   cacheTimestamps.set(key, Date.now());
 }
@@ -81,9 +71,8 @@ export function invalidateCachedReleases(
   book: ReleaseCacheBook,
   source: string,
   contentType: string,
-  context: string,
 ): void {
-  const key = getCacheKey(book, source, contentType, context);
+  const key = getCacheKey(book, source, contentType);
   releaseCache.delete(key);
   cacheTimestamps.delete(key);
 }
