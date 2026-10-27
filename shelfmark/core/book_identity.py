@@ -9,14 +9,72 @@ without the other drops both rather than mixing ids from different books.
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any
 
 from shelfmark.core.request_helpers import normalize_optional_text
-from shelfmark.library.matching import normalize_isbn
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+_ISBN_SEPARATORS = re.compile(r"[-\s]")
+_ISBN10_SHAPE = re.compile(r"^[0-9]{9}[0-9X]$")
+_ISBN13_SHAPE = re.compile(r"^[0-9]{13}$")
+# Only the "Bookland" EAN prefixes are ISBNs; any other 13-digit EAN can still
+# pass the ISBN-13 check digit.
+_ISBN13_PREFIXES = ("978", "979")
+
+
+def _isbn13_check_digit(body: str) -> str:
+    """Return the check digit for the first twelve digits of an ISBN-13."""
+    total = sum(int(digit) * (1 if index % 2 == 0 else 3) for index, digit in enumerate(body[:12]))
+    return str((10 - total % 10) % 10)
+
+
+def _isbn13_is_valid(candidate: str) -> bool:
+    return _isbn13_check_digit(candidate) == candidate[12]
+
+
+def _isbn10_is_valid(candidate: str) -> bool:
+    total = sum(
+        (10 if char == "X" else int(char)) * (10 - index) for index, char in enumerate(candidate)
+    )
+    return total % 11 == 0
+
+
+def normalize_isbn(value: object) -> str:
+    """Normalize an ISBN to its ISBN-13 form, returning "" for anything unusable.
+
+    ISBN-10 is converted rather than stored alongside: the mapping is lossless
+    and deterministic, so canonicalizing means an ISBN-10 on one side and an
+    ISBN-13 on the other still meet. Check digits are verified because metadata
+    fields routinely carry "N/A" or zero-filled placeholders, and an exact match
+    on junk is still an exact match.
+    """
+    if not isinstance(value, str):
+        return ""
+
+    candidate = _ISBN_SEPARATORS.sub("", value).upper()
+
+    # Zero-filled placeholders satisfy their own check-digit arithmetic, so they
+    # have to be turned away by hand.
+    if not candidate or set(candidate) == {"0"}:
+        return ""
+
+    if _ISBN13_SHAPE.match(candidate):
+        if not candidate.startswith(_ISBN13_PREFIXES):
+            return ""
+        return candidate if _isbn13_is_valid(candidate) else ""
+
+    if _ISBN10_SHAPE.match(candidate):
+        if not _isbn10_is_valid(candidate):
+            return ""
+        body = f"978{candidate[:9]}"
+        return f"{body}{_isbn13_check_digit(body)}"
+
+    return ""
+
 
 # Manual books have no metadata record: their "provider id" names nothing.
 _PROVIDERS_WITHOUT_IDENTITY = frozenset({"manual"})

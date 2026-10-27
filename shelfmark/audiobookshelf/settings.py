@@ -9,17 +9,12 @@ from shelfmark.core.settings_registry import (
     ActionButton,
     CheckboxField,
     HeadingField,
-    NumberField,
     SettingsField,
     TableField,
     register_on_save,
     register_settings,
 )
 from shelfmark.core.utils import normalize_http_url
-from shelfmark.library.providers.audiobookshelf import (
-    LIBRARY_INDEX_ENABLED_KEY,
-    LIBRARY_INDEX_INTERVAL_KEY,
-)
 
 if TYPE_CHECKING:
     from shelfmark.audiobookshelf.client import AudiobookshelfClient, AudiobookshelfLibrary
@@ -242,25 +237,6 @@ def check_audiobook_destinations(current_values: dict[str, Any] | None = None) -
     }
 
 
-def sync_library_index_now(current_values: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Refresh the library index on demand and report what happened.
-
-    Never raises: a settings button that returns a 500 tells the admin nothing
-    about their setup, which is the only thing they are here to find out.
-    """
-    del current_values
-
-    from shelfmark.library import scheduler
-    from shelfmark.library.index import SOURCE_AUDIOBOOKSHELF
-
-    try:
-        result = scheduler.run_sync_now(SOURCE_AUDIOBOOKSHELF)
-    except _SETTINGS_ERRORS as e:
-        return {"success": False, "message": f"Library sync failed: {e!s}"}
-
-    return {"success": result.success, "message": result.message}
-
-
 def on_save_audiobookshelf(values: dict[str, Any]) -> dict[str, Any]:
     """Stamp library names onto destination rows as they are saved.
 
@@ -311,8 +287,7 @@ def audiobookshelf_settings() -> list[SettingsField]:
             title="Audiobookshelf Integration",
             description=(
                 "Read-only access to your Audiobookshelf server, used to name your "
-                "libraries when routing audiobook downloads and to flag books you "
-                "already own. Shelfmark never writes to Audiobookshelf. The server "
+                "libraries when routing audiobook downloads. Shelfmark never writes to Audiobookshelf. The server "
                 "URL and API token are set under General, with the library check."
             ),
             link_url="https://www.audiobookshelf.org",
@@ -322,7 +297,7 @@ def audiobookshelf_settings() -> list[SettingsField]:
             key="AUDIOBOOKSHELF_ENABLED",
             label="Enable Audiobookshelf integration",
             default=False,
-            description="Turn on library-aware routing and duplicate detection.",
+            description="Turn on library-aware audiobook routing.",
         ),
         ActionButton(
             key="test_audiobookshelf",
@@ -362,41 +337,5 @@ def audiobookshelf_settings() -> list[SettingsField]:
             description="Check that every mapped path exists and is writable",
             callback=check_audiobook_destinations,
             show_when={"field": "AUDIOBOOKSHELF_ENABLED", "value": True},
-        ),
-        HeadingField(
-            key="audiobookshelf_library_index_heading",
-            title="Already In Library",
-            description=(
-                "Shelfmark keeps a local index of every book-type Audiobookshelf "
-                "library and flags search results you already own. The flag is "
-                "advisory — re-acquiring a better edition is still one click away."
-            ),
-            show_when={"field": "AUDIOBOOKSHELF_ENABLED", "value": True},
-        ),
-        CheckboxField(
-            key=LIBRARY_INDEX_ENABLED_KEY,
-            label="Flag books already in your library",
-            default=True,
-            description="Turn off to stop indexing and hide the badges.",
-            show_when={"field": "AUDIOBOOKSHELF_ENABLED", "value": True},
-        ),
-        NumberField(
-            key=LIBRARY_INDEX_INTERVAL_KEY,
-            label="Refresh interval (hours)",
-            default=1,
-            min_value=1,
-            max_value=168,
-            description=(
-                "How often the index is rebuilt. Books added to Audiobookshelf "
-                "since the last refresh will not be flagged yet."
-            ),
-            show_when={"field": LIBRARY_INDEX_ENABLED_KEY, "value": True},
-        ),
-        ActionButton(
-            key="sync_audiobookshelf_library_index",
-            label="Sync Library Now",
-            description="Rebuild the index immediately instead of waiting for the next refresh",
-            callback=sync_library_index_now,
-            show_when={"field": LIBRARY_INDEX_ENABLED_KEY, "value": True},
         ),
     ]

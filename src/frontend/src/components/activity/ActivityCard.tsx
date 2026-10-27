@@ -2,7 +2,6 @@ import type { ReactNode } from 'react';
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { useDownloadDestinations } from '../../hooks/useDownloadDestinations';
-import { useLibraryMatches } from '../../hooks/useLibraryMatches';
 import type { RequestRecord } from '../../types';
 import { withBasePath } from '../../utils/basePath';
 import { coverObjectPositionClass, isSquareCover } from '../../utils/coverAspect';
@@ -13,8 +12,6 @@ import {
   resolveSelectedDestinationKey,
   shouldShowDestinationPicker,
 } from '../../utils/downloadDestinations';
-import { hardcoverIdentity, singleBookLookup } from '../../utils/libraryMatches';
-import { InLibraryBadge } from '../shared/InLibraryBadge';
 import { Tooltip } from '../shared/Tooltip';
 import type { ActivityCardAction } from './activityCardModel';
 import { buildActivityCardModel } from './activityCardModel';
@@ -312,36 +309,6 @@ const ReviewInlinePanel = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [destinationKey, setDestinationKey] = useState('');
 
-  // The approving admin is the last person who can catch a duplicate, so the
-  // badge belongs here too — not only on the requester's side.
-  const reviewBookData = asRecord(reviewRecord.book_data);
-  const reviewIdentity = hardcoverIdentity(reviewBookData);
-  const lookupBooks = useMemo(
-    () =>
-      singleBookLookup(
-        `review-${reviewRecord.id}`,
-        toOptionalText(reviewBookData.title),
-        toOptionalText(reviewBookData.author),
-        toOptionalText(reviewBookData.asin),
-        toOptionalText(reviewBookData.isbn_13) ?? toOptionalText(reviewBookData.isbn_10),
-        reviewRecord.content_type,
-        reviewIdentity.provider,
-        reviewIdentity.providerId,
-      ),
-    [
-      reviewRecord.id,
-      reviewRecord.content_type,
-      reviewBookData.title,
-      reviewBookData.author,
-      reviewBookData.asin,
-      reviewBookData.isbn_13,
-      reviewBookData.isbn_10,
-      reviewIdentity.provider,
-      reviewIdentity.providerId,
-    ],
-  );
-  const libraryMatch = useLibraryMatches(lookupBooks)[`review-${reviewRecord.id}`];
-
   const { destinations, defaultName: destinationDefaultName } = useDownloadDestinations(
     reviewRecord.content_type,
   );
@@ -427,8 +394,6 @@ const ReviewInlinePanel = ({
         <DetailField label="Type" value={requestType} />
         {showSourceField && <DetailField label="Source" value={sourceLabel} />}
       </div>
-
-      {libraryMatch && <InLibraryBadge match={libraryMatch} />}
 
       {hasAttachedRelease ? (
         <div className="space-y-2">

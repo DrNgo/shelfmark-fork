@@ -31,7 +31,6 @@ import {
   transformSourceRecordToBook,
 } from '../utils/bookTransformers';
 import type { DownloadDestination, DownloadDestinationList } from '../utils/downloadDestinations';
-import type { LibraryLookupBook, LibraryMatchesResponse } from '../utils/libraryMatches';
 import { isRecord, toStringValue } from '../utils/objectHelpers';
 import type { FulfilAdminRequestBody, RejectAdminRequestBody } from './requestApiHelpers';
 import {
@@ -752,15 +751,6 @@ export const getDownloadDestinations = async (
     default_name?: string;
   }>(`${API_BASE}/download-destinations?content_type=${encodeURIComponent(contentType)}`);
   return { destinations: response.destinations ?? [], defaultName: response.default_name ?? '' };
-};
-
-export const getLibraryMatches = async (
-  books: LibraryLookupBook[],
-): Promise<LibraryMatchesResponse> => {
-  return fetchJSON<LibraryMatchesResponse>(`${API_BASE}/library-matches`, {
-    method: 'POST',
-    body: JSON.stringify({ books }),
-  });
 };
 
 export const rejectAdminRequest = async (

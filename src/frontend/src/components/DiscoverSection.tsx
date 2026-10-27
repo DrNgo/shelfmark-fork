@@ -1,6 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 
-import { useLibraryMatches } from '../hooks/useLibraryMatches';
 import { useDependencyEffect } from '../hooks/useMountEffect';
 import { getDiscoverRow } from '../services/api';
 import type { Book, ButtonStateInfo, ContentType } from '../types';
@@ -11,13 +10,11 @@ import {
   applyRowError,
   applyRowResponse,
   buildDiscoverRowDefs,
-  contentTypeForDiscoverBook,
   initialRowStates,
   visibleRows,
 } from '../utils/discoverRows';
-import type { LibraryMatch } from '../utils/libraryMatches';
 import { isBookRequested } from '../utils/requestedBooks';
-import { InLibraryBadge, RequestedBadge } from './shared';
+import { LibraryBadge, RequestedBadge } from './shared';
 
 interface DiscoverSectionProps {
   contentType: ContentType | 'combined';
@@ -36,17 +33,10 @@ interface DiscoverTileProps {
   book: Book;
   buttonState: ButtonStateInfo;
   requested: boolean;
-  libraryMatch: LibraryMatch | undefined;
   onDetails: (book: Book) => void;
 }
 
-const DiscoverTile = ({
-  book,
-  buttonState,
-  requested,
-  libraryMatch,
-  onDetails,
-}: DiscoverTileProps) => {
+const DiscoverTile = ({ book, buttonState, requested, onDetails }: DiscoverTileProps) => {
   const [imageError, setImageError] = useState(false);
 
   return (
@@ -72,7 +62,7 @@ const DiscoverTile = ({
           </div>
         )}
         <div className="absolute top-1 right-1 flex flex-col items-end gap-1">
-          {libraryMatch && <InLibraryBadge match={libraryMatch} variant="overlay" />}
+          <LibraryBadge library={book.library} overlay />
           {requested && <RequestedBadge variant="overlay" />}
           {ACTIVE_STATES.has(buttonState.state) && (
             <span className="rounded-sm bg-black/70 px-1.5 py-0.5 text-xs text-white">
@@ -138,26 +128,6 @@ export const DiscoverSection = ({
     preferredCoreTopicKey,
   ]);
 
-  const allBooks = useMemo(() => rows.flatMap((row) => row.books ?? []), [rows]);
-  // Record keyed by book.id (buildLibraryLookupPayload uses book.id). The
-  // index is format-aware, so every row can ask; discover tiles carry no
-  // content type of their own, so something has to fill it in per book.
-  // Ebook/audiobook mode is unambiguous — the whole section is one format —
-  // so the section's own type covers every book via defaultContentType.
-  // Combined mode mixes rows with no single type, so each book is tagged
-  // individually from its provider before the lookup ever sees it.
-  const booksForLookup = useMemo(
-    () =>
-      contentType === 'combined'
-        ? allBooks.map((book) => ({ ...book, content_type: contentTypeForDiscoverBook(book) }))
-        : allBooks,
-    [allBooks, contentType],
-  );
-  const libraryMatches = useLibraryMatches(
-    booksForLookup,
-    contentType === 'combined' ? undefined : contentType,
-  );
-
   const rendered = visibleRows(rows);
   if (rendered.length === 0) {
     return null;
@@ -187,7 +157,6 @@ export const DiscoverSection = ({
                   book={book}
                   buttonState={getButtonState(book.id)}
                   requested={isBookRequested(book, openRequestKeys)}
-                  libraryMatch={libraryMatches[book.id]}
                   onDetails={onDetails}
                 />
               ))}

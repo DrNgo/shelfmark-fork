@@ -2,10 +2,8 @@ import { useState } from 'react';
 
 import { useSearchMode } from '../contexts/SearchModeContext';
 import { SORT_OPTIONS } from '../data/filterOptions';
-import { useBothFormatMatches, useLibraryMatches } from '../hooks/useLibraryMatches';
 import { useMediaQuery } from '../hooks/useMediaQuery';
 import type { Book, ButtonStateInfo, SortOption } from '../types';
-import { bothFormatsFor } from '../utils/libraryMatches';
 import { isBookRequested } from '../utils/requestedBooks';
 import { Dropdown } from './Dropdown';
 import { CardView } from './resultsViews/CardView';
@@ -42,14 +40,6 @@ interface ResultsSectionProps {
   resultsSourceUrl?: string;
   /** Identities with a request still awaiting a decision, from the sidebar's records. */
   openRequestKeys?: Set<string>;
-  /**
-   * Content type to assume for books that carry none of their own. The index is
-   * format-aware, so every surface can ask — an ebook result will not inherit a
-   * badge from an audiobook-only holding.
-   */
-  defaultContentType?: string;
-  /** Combined mode acquires both formats, so the lock needs both held. */
-  combinedMode?: boolean;
 }
 
 const NO_OPEN_REQUESTS: Set<string> = new Set();
@@ -74,14 +64,8 @@ export const ResultsSection = ({
   onShowToast,
   resultsSourceUrl,
   openRequestKeys = NO_OPEN_REQUESTS,
-  defaultContentType,
-  combinedMode = false,
 }: ResultsSectionProps) => {
   const { searchMode } = useSearchMode();
-  // One lookup for the whole result set, not one per card.
-  const libraryMatches = useLibraryMatches(books, defaultContentType);
-  // Combined mode only: the same books asked about once per format.
-  const bothFormatMatches = useBothFormatMatches(books, combinedMode);
   const activeViewClasses =
     searchMode === 'universal'
       ? 'bg-emerald-600 text-white hover:bg-emerald-700'
@@ -261,8 +245,6 @@ export const ResultsSection = ({
           getUniversalButtonState={getUniversalButtonState}
           showSeriesPosition={sortValue === 'series_order'}
           onShowToast={onShowToast}
-          libraryMatches={libraryMatches}
-          bothFormatMatches={bothFormatMatches}
           openRequestKeys={openRequestKeys}
         />
       ) : (
@@ -290,8 +272,6 @@ export const ResultsSection = ({
                 animationDelay={animationDelay}
                 showSeriesPosition={sortValue === 'series_order'}
                 onShowToast={onShowToast}
-                libraryMatch={libraryMatches[book.id]}
-                bothFormats={bothFormatsFor(bothFormatMatches, book.id)}
                 isRequested={isBookRequested(book, openRequestKeys)}
               />
             ) : (
@@ -306,8 +286,6 @@ export const ResultsSection = ({
                 animationDelay={animationDelay}
                 showSeriesPosition={sortValue === 'series_order'}
                 onShowToast={onShowToast}
-                libraryMatch={libraryMatches[book.id]}
-                bothFormats={bothFormatsFor(bothFormatMatches, book.id)}
                 isRequested={isBookRequested(book, openRequestKeys)}
               />
             );

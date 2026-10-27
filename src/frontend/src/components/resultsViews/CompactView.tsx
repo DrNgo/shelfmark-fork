@@ -6,15 +6,13 @@ import { getDownloadsCount } from '../../types';
 import { bookSupportsTargets } from '../../utils/bookTargetLoader';
 import { coverObjectPosition, isSquareCover } from '../../utils/coverAspect';
 import { summarizeNameList } from '../../utils/displayFields';
-import { isLockedInLibrary } from '../../utils/libraryMatches';
-import type { FormatMatches, LibraryMatch } from '../../utils/libraryMatches';
 import { BookActionButton } from '../BookActionButton';
 import { BookTargetDropdown } from '../BookTargetDropdown';
 import {
   DisplayFieldBadges,
   DisplayFieldIcon,
-  InLibraryBadge,
   LibraryBadge,
+  isInLibrary,
   RequestedBadge,
 } from '../shared';
 
@@ -32,10 +30,8 @@ interface CompactViewProps {
   animationDelay?: number;
   showSeriesPosition?: boolean;
   onShowToast?: (message: string, type: 'success' | 'error' | 'info') => void;
-  libraryMatch?: LibraryMatch;
   isRequested?: boolean;
   /** Both formats' holdings; set only in combined mode. */
-  bothFormats?: FormatMatches;
 }
 
 export const CompactView = ({
@@ -48,9 +44,7 @@ export const CompactView = ({
   animationDelay = 0,
   showSeriesPosition = false,
   onShowToast,
-  libraryMatch,
   isRequested = false,
-  bothFormats,
 }: CompactViewProps) => {
   const { searchMode } = useSearchMode();
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
@@ -134,10 +128,7 @@ export const CompactView = ({
               #{book.series_position}
             </div>
           )}
-          {/* Fork: the InLibraryBadge below shares this corner and says more. */}
-          {!libraryMatch && (
-            <LibraryBadge library={book.library} overlay className="absolute top-2 right-2 z-10" />
-          )}
+          <LibraryBadge library={book.library} overlay className="absolute top-2 right-2 z-10" />
           {book.preview && !imageError ? (
             <>
               {!imageLoaded && (
@@ -177,10 +168,10 @@ export const CompactView = ({
           {/* Status badges live in a fixed cover-corner slot: they arrive
               asynchronously (library lookup), and here their appearance can
               never reflow the card text. */}
-          {(libraryMatch || isRequested) && (
+          {/* Upstream's LibraryBadge holds this corner when the book is owned. */}
+          {isRequested && !isInLibrary(book.library) && (
             <div className="absolute top-2 right-2 z-10 flex flex-col items-end gap-1">
-              {libraryMatch && <InLibraryBadge match={libraryMatch} variant="overlay" />}
-              {isRequested && <RequestedBadge variant="overlay" />}
+              <RequestedBadge variant="overlay" />
             </div>
           )}
         </div>
@@ -323,7 +314,6 @@ export const CompactView = ({
                   void handleGetReleases(selectedBook);
                 }}
                 isLoadingReleases={isLoadingReleases}
-                isInLibrary={isLockedInLibrary(libraryMatch, bothFormats)}
                 size="sm"
                 className="flex-1"
               />
@@ -337,7 +327,6 @@ export const CompactView = ({
                 void handleGetReleases(selectedBook);
               }}
               isLoadingReleases={isLoadingReleases}
-              isInLibrary={isLockedInLibrary(libraryMatch, bothFormats)}
               size="sm"
               fullWidth
             />

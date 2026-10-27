@@ -2,17 +2,10 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 
 import { useBodyScrollLock } from '../hooks/useBodyScrollLock';
 import { useEscapeKey } from '../hooks/useEscapeKey';
-import { useLibraryMatches } from '../hooks/useLibraryMatches';
 import { useMountEffect } from '../hooks/useMountEffect';
 import { getMetadataBookInfo } from '../services/api';
-import type { Book, CreateRequestPayload } from '../types';
+import type { CreateRequestPayload } from '../types';
 import { coverObjectPositionClass, isSquareCover } from '../utils/coverAspect';
-import {
-  hardcoverIdentity,
-  isHeldInFormat,
-  libraryMatchOwnershipMessage,
-  singleBookLookup,
-} from '../utils/libraryMatches';
 import type { RequestConfirmationPreview } from '../utils/requestConfirmation';
 import {
   applyRequestNoteToPayload,
@@ -22,7 +15,6 @@ import {
   truncateRequestNote,
 } from '../utils/requestConfirmation';
 import { isSourceBackedRequestPayload } from '../utils/requestPayload';
-import { InLibraryBadge } from './shared';
 
 interface RequestConfirmationModalProps {
   payload: CreateRequestPayload | null;
@@ -74,7 +66,6 @@ const getRequestConfirmationSessionKey = (payload: CreateRequestPayload): string
 };
 
 const EMPTY_PAYLOADS: CreateRequestPayload[] = [];
-const EMPTY_LOOKUP_BOOKS: Book[] = [];
 
 export function RequestConfirmationModal({
   payload,
@@ -182,28 +173,6 @@ function RequestConfirmationModalSession({
   });
 
   const preview = enriched ?? basePreview;
-
-  // Asking about one book is cheap, and it is the moment the answer matters
-  // most: the requester finds out before an admin has to.
-  // The preview carries no provider fields; the request's own book data does.
-  const requestIdentity = hardcoverIdentity(payload.book_data);
-  const lookupBooks = useMemo(
-    () =>
-      preview
-        ? singleBookLookup(
-            'request-confirmation',
-            preview.title,
-            preview.author,
-            preview.asin,
-            preview.isbn_13 ?? preview.isbn_10,
-            preview.content_type,
-            requestIdentity.provider,
-            requestIdentity.providerId,
-          )
-        : EMPTY_LOOKUP_BOOKS,
-    [preview, requestIdentity.provider, requestIdentity.providerId],
-  );
-  const libraryMatch = useLibraryMatches(lookupBooks)['request-confirmation'];
 
   if (!preview) return null;
 
@@ -335,19 +304,6 @@ function RequestConfirmationModalSession({
               </div>
             </div>
           </div>
-
-          {libraryMatch && (
-            <div
-              className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-sm ${
-                isHeldInFormat(libraryMatch)
-                  ? 'border-emerald-600/40 bg-emerald-600/10 text-emerald-800 dark:text-emerald-200'
-                  : 'border-slate-400/40 bg-slate-400/10 text-slate-700 dark:text-slate-300'
-              }`}
-            >
-              <InLibraryBadge match={libraryMatch} className="mt-0.5" />
-              <span className="min-w-0">{libraryMatchOwnershipMessage(libraryMatch)}</span>
-            </div>
-          )}
 
           {allowNotes && (
             <div className="space-y-1">

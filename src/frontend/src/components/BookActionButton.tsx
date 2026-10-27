@@ -2,7 +2,6 @@ import type { CSSProperties } from 'react';
 
 import { useSearchMode } from '../contexts/SearchModeContext';
 import type { Book, ButtonStateInfo } from '../types';
-import { applyInLibraryLock } from '../utils/libraryMatches';
 import { BookDownloadButton } from './BookDownloadButton';
 import { BookGetButton } from './BookGetButton';
 
@@ -15,8 +14,6 @@ interface BookActionButtonProps {
   onDownload: (book: Book) => Promise<void>;
   onGetReleases: (book: Book) => void;
   isLoadingReleases?: boolean;
-  /** Already in an Audiobookshelf library, so there is nothing to acquire. */
-  isInLibrary?: boolean;
   size?: ButtonSize;
   variant?: ButtonVariant;
   fullWidth?: boolean;
@@ -30,7 +27,6 @@ export function BookActionButton({
   onDownload,
   onGetReleases,
   isLoadingReleases,
-  isInLibrary = false,
   size,
   variant = 'default',
   fullWidth,
@@ -38,17 +34,13 @@ export function BookActionButton({
   style,
 }: BookActionButtonProps) {
   const { searchMode } = useSearchMode();
-  // Applied here rather than in either button so both search modes block the
-  // same way — a book you already own is no more worth downloading directly
-  // than it is worth browsing releases for.
-  const effectiveButtonState = applyInLibraryLock(buttonState, isInLibrary);
 
   if (searchMode === 'universal') {
     return (
       <BookGetButton
         book={book}
         onGetReleases={onGetReleases}
-        buttonState={effectiveButtonState}
+        buttonState={buttonState}
         isLoading={isLoadingReleases}
         size={size}
         variant={variant}
@@ -61,14 +53,14 @@ export function BookActionButton({
 
   return (
     <BookDownloadButton
-      buttonState={effectiveButtonState}
+      buttonState={buttonState}
       onDownload={() => onDownload(book)}
       size={size}
       variant={variant === 'default' ? 'primary' : 'icon'}
       fullWidth={fullWidth}
       className={className}
       style={style}
-      ariaLabel={effectiveButtonState.text}
+      ariaLabel={buttonState.text}
     />
   );
 }

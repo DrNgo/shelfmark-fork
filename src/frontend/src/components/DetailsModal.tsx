@@ -1,21 +1,13 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { useBodyScrollLock } from '../hooks/useBodyScrollLock';
 import { useEscapeKey } from '../hooks/useEscapeKey';
-import { useBothFormatMatches, useLibraryMatches } from '../hooks/useLibraryMatches';
 import { useMountEffect } from '../hooks/useMountEffect';
 import type { Book, ButtonStateInfo } from '../types';
 import { isMetadataBook } from '../types';
 import { bookSupportsTargets } from '../utils/bookTargetLoader';
-import { isSquareCover } from '../utils/coverAspect';
 import { isUserCancelledError } from '../utils/errors';
-import {
-  applyInLibraryLock,
-  bothFormatsFor,
-  isLockedInLibrary,
-  singleBookLookup,
-} from '../utils/libraryMatches';
 import { BookTargetDropdown } from './BookTargetDropdown';
 import { LibraryBadge, isInLibrary } from './shared';
 
@@ -28,15 +20,6 @@ interface DetailsModalProps {
   buttonState: ButtonStateInfo;
   showReleaseSourceLinks?: boolean;
   onShowToast?: (message: string, type: 'success' | 'error' | 'info') => void;
-  /**
-   * Fills in for a book that carries no content_type of its own — no Book in
-   * the search path sets it, so without this the lookup always falls back to
-   * "ebook" and an owned audiobook never locks here, even though the grid
-   * card it was opened from already does.
-   */
-  defaultContentType?: string;
-  /** Combined mode acquires both formats, so the lock needs both held. */
-  combinedMode?: boolean;
 }
 
 interface DetailsModalAutoCloseProps {
@@ -63,8 +46,6 @@ export const DetailsModal = ({
   buttonState,
   showReleaseSourceLinks = true,
   onShowToast,
-  defaultContentType,
-  combinedMode = false,
 }: DetailsModalProps) => {
   const [isQueuing, setIsQueuing] = useState(false);
   const [isClosing, setIsClosing] = useState(false);
@@ -79,37 +60,6 @@ export const DetailsModal = ({
 
   useBodyScrollLock(Boolean(book));
   useEscapeKey(Boolean(book), handleClose);
-
-  // The grid's in-library lock lives in BookActionButton, which this modal
-  // bypasses with its own footer button — so without its own lookup, details
-  // was the one door left open to re-acquiring a book already held.
-  const lookupBooks = useMemo(
-    () =>
-      singleBookLookup(
-        `details-${book?.id ?? ''}`,
-        book?.title,
-        book?.author,
-        book?.asin,
-        book?.isbn_13 ?? book?.isbn_10,
-        book?.content_type ?? defaultContentType,
-        book?.provider,
-        book?.provider_id,
-      ),
-    [
-      book?.id,
-      book?.title,
-      book?.author,
-      book?.asin,
-      book?.isbn_13,
-      book?.isbn_10,
-      book?.content_type,
-      book?.provider,
-      book?.provider_id,
-      defaultContentType,
-    ],
-  );
-  const libraryMatch = useLibraryMatches(lookupBooks)[`details-${book?.id ?? ''}`];
-  const bothFormatMatches = useBothFormatMatches(lookupBooks, combinedMode);
 
   const hasBookTargets = Boolean(book && isMetadataBook(book) && bookSupportsTargets(book));
 
@@ -135,17 +85,13 @@ export const DetailsModal = ({
 
   // Determine if this is a metadata book (Universal mode) vs a release (Direct Download)
   const isMetadata = isMetadataBook(book);
-  const effectiveButtonState = applyInLibraryLock(
-    buttonState,
-    isLockedInLibrary(libraryMatch, bothFormatsFor(bothFormatMatches, `details-${book.id}`)),
-  );
   const showBookSourceLink = Boolean(book.source_url) && (isMetadata || showReleaseSourceLinks);
   const metadataActionText =
-    isMetadata && effectiveButtonState.state === 'download' && effectiveButtonState.text === 'Get'
+    isMetadata && buttonState.state === 'download' && buttonState.text === 'Get'
       ? 'Find Downloads'
-      : effectiveButtonState.text;
+      : buttonState.text;
   const downloadButtonClassName = (() => {
-    if (effectiveButtonState.state === 'blocked') {
+    if (buttonState.state === 'blocked') {
       return 'bg-gray-500';
     }
     return isMetadata ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-sky-700 hover:bg-sky-800';
@@ -186,9 +132,9 @@ export const DetailsModal = ({
   const providerDisplay =
     book.provider_display_name ||
     (book.provider ? book.provider.charAt(0).toUpperCase() + book.provider.slice(1) : '');
-  const isSquare = isSquareCover(book.cover_aspect);
+  const isSquareCover = book.cover_aspect === 'square';
   const artworkMaxHeight = 'calc(90vh - 220px)';
-  const artworkMaxWidth = isSquare
+  const artworkMaxWidth = isSquareCover
     ? 'min(45vw, 400px, calc(90vh - 220px))'
     : 'min(45vw, 520px, calc((90vh - 220px) / 1.6))';
   const additionalInfo =
@@ -474,15 +420,13 @@ export const DetailsModal = ({
                     void handleDownload();
                   }}
                   disabled={
-                    isMetadata
-                      ? effectiveButtonState.state === 'blocked'
-                      : effectiveButtonState.state !== 'download'
+                    isMetadata ? buttonState.state === 'blocked' : buttonState.state !== 'download'
                   }
                   className={`rounded-lg px-5 py-2 text-sm font-medium text-white transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                     downloadButtonClassName
                   }`}
                 >
-                  {isMetadata ? metadataActionText : effectiveButtonState.text}
+                  {isMetadata ? metadataActionText : buttonState.text}
                 </button>
               </div>
             </div>

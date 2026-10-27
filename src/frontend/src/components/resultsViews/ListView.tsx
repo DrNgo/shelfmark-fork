@@ -8,18 +8,10 @@ import { getFormatColor, getLanguageColor } from '../../utils/colorMaps';
 import type { CoverAspect } from '../../utils/coverAspect';
 import { coverObjectPositionClass, isSquareCover } from '../../utils/coverAspect';
 import { summarizeNameList } from '../../utils/displayFields';
-import { bothFormatsFor, isLockedInLibrary } from '../../utils/libraryMatches';
-import type { BothFormatMatches, LibraryMatch } from '../../utils/libraryMatches';
 import { isBookRequested } from '../../utils/requestedBooks';
 import { BookActionButton } from '../BookActionButton';
 import { BookTargetDropdown } from '../BookTargetDropdown';
-import {
-  DisplayFieldIcon,
-  DisplayFieldBadge,
-  InLibraryBadge,
-  LibraryBadge,
-  RequestedBadge,
-} from '../shared';
+import { DisplayFieldIcon, DisplayFieldBadge, LibraryBadge, RequestedBadge } from '../shared';
 
 interface ListViewProps {
   books: Book[];
@@ -30,12 +22,9 @@ interface ListViewProps {
   getUniversalButtonState: (bookId: string) => ButtonStateInfo;
   showSeriesPosition?: boolean;
   onShowToast?: (message: string, type: 'success' | 'error' | 'info') => void;
-  libraryMatches?: Record<string, LibraryMatch>;
   openRequestKeys?: Set<string>;
-  bothFormatMatches?: BothFormatMatches | null;
 }
 
-const NO_LIBRARY_MATCHES: Record<string, LibraryMatch> = {};
 const NO_OPEN_REQUESTS: Set<string> = new Set();
 
 const getKeyedDisplayFields = (fields: DisplayField[]) => {
@@ -109,9 +98,7 @@ export const ListView = ({
   getUniversalButtonState,
   showSeriesPosition = false,
   onShowToast,
-  libraryMatches = NO_LIBRARY_MATCHES,
   openRequestKeys = NO_OPEN_REQUESTS,
-  bothFormatMatches = null,
 }: ListViewProps) => {
   const { searchMode } = useSearchMode();
   const [detailsLoadingId, setDetailsLoadingId] = useState<string | null>(null);
@@ -221,9 +208,6 @@ export const ListView = ({
                       </span>
                     )}
                     <span className="truncate">{book.title || 'Untitled'}</span>
-                    {libraryMatches[book.id] && (
-                      <InLibraryBadge match={libraryMatches[book.id]} className="shrink-0" />
-                    )}
                     {isBookRequested(book, openRequestKeys) && (
                       <RequestedBadge className="shrink-0" />
                     )}
@@ -232,9 +216,7 @@ export const ListView = ({
                     {book.author || 'Unknown author'}
                     {book.year && <span className="sm:hidden"> • {book.year}</span>}
                   </p>
-                  {!libraryMatches[book.id] && (
-                    <LibraryBadge library={book.library} className="mt-0.5" />
-                  )}
+                  <LibraryBadge library={book.library} className="mt-0.5" />
                 </div>
 
                 {/* Mobile universal mode info */}
@@ -387,10 +369,6 @@ export const ListView = ({
                       void handleGetReleases(selectedBook);
                     }}
                     isLoadingReleases={releasesLoadingId === book.id}
-                    isInLibrary={isLockedInLibrary(
-                      libraryMatches[book.id],
-                      bothFormatsFor(bothFormatMatches, book.id),
-                    )}
                     variant="icon"
                     size="md"
                   />

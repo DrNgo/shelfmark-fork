@@ -112,7 +112,6 @@ from shelfmark.core.viewer_redaction import (
 from shelfmark.download import orchestrator as backend
 from shelfmark.download import warmup
 from shelfmark.download.zip_stream import stream_zip
-from shelfmark.library.scheduler import start_library_index_sync
 from shelfmark.metadata_providers.audible_taxonomy import (
     matching_core_topic_key,
     public_topic_nodes,
@@ -302,10 +301,6 @@ if user_db is not None and download_history_service is not None:
 
 # Start download coordinator
 backend.start()
-
-# Start the Audiobookshelf library index refresher. It idles until
-# Audiobookshelf is both enabled and configured, so this is safe unconditionally.
-start_library_index_sync()
 
 # Start the Hardcover wishlist sync + auto-download scheduler (in-process daemon).
 if user_db is not None:
@@ -697,10 +692,8 @@ if user_db is not None:
         from shelfmark.core.activity_routes import register_activity_routes
         from shelfmark.core.destination_routes import register_destination_routes
         from shelfmark.core.request_routes import register_request_routes
-        from shelfmark.library.routes import register_library_routes
 
         register_destination_routes(app, resolve_auth_mode=_resolve_auth_mode_for_routes)
-        register_library_routes(app, resolve_auth_mode=_resolve_auth_mode_for_routes)
         register_request_routes(
             app,
             user_db,
@@ -2965,7 +2958,8 @@ def api_discover() -> Response | tuple[Response, int]:
     from shelfmark.core.utils import transform_cover_url
 
     books_data = [asdict(book) for book in row.books]
-    for book_dict in books_data:
+    for book, book_dict in zip(row.books, books_data, strict=True):
+        _attach_library_ownership(book, book_dict)
         if book_dict.get("cover_url"):
             cache_id = f"{book_dict['provider']}_{book_dict['provider_id']}"
             book_dict["cover_url"] = transform_cover_url(book_dict["cover_url"], cache_id)

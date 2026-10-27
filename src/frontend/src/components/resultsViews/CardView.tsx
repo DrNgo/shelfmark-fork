@@ -5,11 +5,9 @@ import type { Book, ButtonStateInfo } from '../../types';
 import { getDownloadsCount } from '../../types';
 import { bookSupportsTargets } from '../../utils/bookTargetLoader';
 import { coverAspectRatio } from '../../utils/coverAspect';
-import { isLockedInLibrary } from '../../utils/libraryMatches';
-import type { FormatMatches, LibraryMatch } from '../../utils/libraryMatches';
 import { BookActionButton } from '../BookActionButton';
 import { BookTargetDropdown } from '../BookTargetDropdown';
-import { DisplayFieldBadges, InLibraryBadge, LibraryBadge, RequestedBadge } from '../shared';
+import { DisplayFieldBadges, LibraryBadge, isInLibrary, RequestedBadge } from '../shared';
 
 const SkeletonLoader = () => (
   <div className="h-full w-full animate-pulse bg-linear-to-r from-gray-300 via-gray-200 to-gray-300 dark:from-gray-700 dark:via-gray-600 dark:to-gray-700" />
@@ -24,10 +22,8 @@ interface CardViewProps {
   animationDelay?: number;
   showSeriesPosition?: boolean;
   onShowToast?: (message: string, type: 'success' | 'error' | 'info') => void;
-  libraryMatch?: LibraryMatch;
   isRequested?: boolean;
   /** Both formats' holdings; set only in combined mode. */
-  bothFormats?: FormatMatches;
 }
 
 export const CardView = ({
@@ -39,9 +35,7 @@ export const CardView = ({
   animationDelay = 0,
   showSeriesPosition = false,
   onShowToast,
-  libraryMatch,
   isRequested = false,
-  bothFormats,
 }: CardViewProps) => {
   const { searchMode } = useSearchMode();
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
@@ -109,10 +103,7 @@ export const CardView = ({
               #{book.series_position}
             </div>
           )}
-          {/* Fork: the InLibraryBadge below shares this corner and says more. */}
-          {!libraryMatch && (
-            <LibraryBadge library={book.library} overlay className="absolute top-2 right-2 z-10" />
-          )}
+          <LibraryBadge library={book.library} overlay className="absolute top-2 right-2 z-10" />
           {book.preview && !imageError ? (
             <>
               {!imageLoaded && (
@@ -152,10 +143,10 @@ export const CardView = ({
           {/* Status badges live in a fixed cover-corner slot: they arrive
               asynchronously (library lookup), and here their appearance can
               never reflow the card text. */}
-          {(libraryMatch || isRequested) && (
+          {/* Upstream's LibraryBadge holds this corner when the book is owned. */}
+          {isRequested && !isInLibrary(book.library) && (
             <div className="absolute top-2 right-2 z-10 flex flex-col items-end gap-1">
-              {libraryMatch && <InLibraryBadge match={libraryMatch} variant="overlay" />}
-              {isRequested && <RequestedBadge variant="overlay" />}
+              <RequestedBadge variant="overlay" />
             </div>
           )}
         </div>
@@ -276,7 +267,6 @@ export const CardView = ({
               void handleGetReleases(selectedBook);
             }}
             isLoadingReleases={isLoadingReleases}
-            isInLibrary={isLockedInLibrary(libraryMatch, bothFormats)}
             size="sm"
             className="flex-1"
           />
@@ -291,7 +281,6 @@ export const CardView = ({
           void handleGetReleases(selectedBook);
         }}
         isLoadingReleases={isLoadingReleases}
-        isInLibrary={isLockedInLibrary(libraryMatch, bothFormats)}
         className="hidden rounded-none sm:flex"
         fullWidth
         style={{

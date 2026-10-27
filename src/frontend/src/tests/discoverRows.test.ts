@@ -11,7 +11,6 @@ import {
   initialRowStates,
   visibleRows,
 } from '../utils/discoverRows';
-import { buildLibraryLookupPayload } from '../utils/libraryMatches';
 
 const book = (id: string): Book => ({ id, title: `Book ${id}`, author: 'A' });
 
@@ -223,20 +222,6 @@ describe('contentTypeForDiscoverBook', () => {
 
   it('classifies a book with no provider at all as ebook', () => {
     expect(contentTypeForDiscoverBook(book('1'))).toBe('ebook');
-  });
-
-  it('reaches the library lookup payload — the exact wiring DiscoverSection uses in combined mode', () => {
-    const audiobookTile: Book = { ...book('1'), provider: 'audible' };
-    const ebookTile: Book = { ...book('2'), provider: 'hardcover' };
-    const booksForLookup: Book[] = [
-      { ...audiobookTile, content_type: contentTypeForDiscoverBook(audiobookTile) },
-      { ...ebookTile, content_type: contentTypeForDiscoverBook(ebookTile) },
-    ];
-
-    const payload = buildLibraryLookupPayload(booksForLookup);
-
-    expect(payload.find((entry) => entry.id === '1')?.content_type).toBe('audiobook');
-    expect(payload.find((entry) => entry.id === '2')?.content_type).toBe('ebook');
   });
 });
 

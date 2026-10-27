@@ -1,32 +1,17 @@
-"""Grimmory connection and library-index settings."""
-
-from typing import Any
+"""Grimmory connection and library-check settings."""
 
 from shelfmark.config.booklore_settings import check_booklore_connection
+from shelfmark.core.library_providers.grimmory import ENABLED_KEY
 from shelfmark.core.settings_registry import (
     ActionButton,
     CheckboxField,
     HeadingField,
-    NumberField,
     PasswordField,
     SettingsField,
     TextField,
     register_settings,
 )
 from shelfmark.grimmory.client import BOOKLORE_DISPLAY_NAME
-from shelfmark.library.index import SOURCE_GRIMMORY
-from shelfmark.library.providers.grimmory import (
-    LIBRARY_INDEX_ENABLED_KEY,
-    LIBRARY_INDEX_INTERVAL_KEY,
-)
-from shelfmark.library.scheduler import run_sync_now
-
-
-def sync_grimmory_library_index(current_values: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Rebuild the Grimmory slice of the index on demand."""
-    del current_values
-    result = run_sync_now(SOURCE_GRIMMORY)
-    return {"success": result.success, "message": result.message}
 
 
 @register_settings(
@@ -92,36 +77,17 @@ def grimmory_settings() -> list[SettingsField]:
             key="grimmory_library_index_heading",
             title="Already In Library",
             description=(
-                f"Shelfmark keeps a local index of your {BOOKLORE_DISPLAY_NAME} library and "
-                "flags ebook search results you already own. The flag is advisory — "
-                "re-acquiring a better edition is still one click away."
+                f"Shelfmark checks your {BOOKLORE_DISPLAY_NAME} library and marks ebook "
+                "search results you already own; Hardcover sync and automatic downloads "
+                "skip them."
             ),
             show_when={"field": "BOOKLORE_ENABLED", "value": True},
         ),
         CheckboxField(
-            key=LIBRARY_INDEX_ENABLED_KEY,
+            key=ENABLED_KEY,
             label="Flag ebooks already in your library",
             default=True,
-            description="Turn off to stop indexing and hide the badges.",
+            description="Turn off to stop checking this library.",
             show_when={"field": "BOOKLORE_ENABLED", "value": True},
-        ),
-        NumberField(
-            key=LIBRARY_INDEX_INTERVAL_KEY,
-            label="Refresh interval (hours)",
-            default=1,
-            min_value=1,
-            max_value=168,
-            description=(
-                f"How often the index is rebuilt. Books added to {BOOKLORE_DISPLAY_NAME} "
-                "since the last refresh will not be flagged yet."
-            ),
-            show_when={"field": LIBRARY_INDEX_ENABLED_KEY, "value": True},
-        ),
-        ActionButton(
-            key="sync_grimmory_library_index",
-            label="Sync Library Now",
-            description="Rebuild the index immediately instead of waiting for the next refresh",
-            callback=sync_grimmory_library_index,
-            show_when={"field": LIBRARY_INDEX_ENABLED_KEY, "value": True},
         ),
     ]

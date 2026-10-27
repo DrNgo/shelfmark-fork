@@ -1925,8 +1925,6 @@ How long to keep cached search results before they expire.
 |----------|-------------|------|---------|
 | `AUDIOBOOKSHELF_ENABLED` | Turn on library-aware routing and duplicate detection. | boolean | `false` |
 | `AUDIOBOOK_DESTINATIONS` | Only libraries with a path can be chosen when approving a request. Skip a library to keep it out of the picker. | string | _empty list_ |
-| `AUDIOBOOKSHELF_LIBRARY_INDEX_ENABLED` | Turn off to stop indexing and hide the badges. | boolean | `true` |
-| `AUDIOBOOKSHELF_INDEX_INTERVAL_HOURS` | How often the index is rebuilt. Books added to Audiobookshelf since the last refresh will not be flagged yet. | number | `1` |
 
 <details>
 <summary>Detailed descriptions</summary>
@@ -1949,27 +1947,6 @@ Only libraries with a path can be chosen when approving a request. Skip a librar
 - **Type:** string
 - **Default:** _empty list_
 
-#### `AUDIOBOOKSHELF_LIBRARY_INDEX_ENABLED`
-
-**Flag books already in your library**
-
-Turn off to stop indexing and hide the badges.
-
-- **Type:** boolean
-- **Default:** `true`
-
-#### `AUDIOBOOKSHELF_INDEX_INTERVAL_HOURS`
-
-**Refresh interval (hours)**
-
-How often the index is rebuilt. Books added to Audiobookshelf since the last refresh will not be flagged yet.
-
-- **Type:** number
-- **Default:** `1`
-- **Constraints:** min: 1, max: 168
-
-</details>
-
 ## Grimmory
 
 | Variable | Description | Type | Default |
@@ -1978,8 +1955,7 @@ How often the index is rebuilt. Books added to Audiobookshelf since the last ref
 | `BOOKLORE_HOST` | Base URL of your Grimmory instance | string | _none_ |
 | `BOOKLORE_USERNAME` | Grimmory account username. What this account can see is what gets indexed — a non-admin only sees its assigned libraries. | string | _none_ |
 | `BOOKLORE_PASSWORD` | Grimmory account password | string (secret) | _none_ |
-| `BOOKLORE_LIBRARY_INDEX_ENABLED` | Turn off to stop indexing and hide the badges. | boolean | `true` |
-| `BOOKLORE_INDEX_INTERVAL_HOURS` | How often the index is rebuilt. Books added to Grimmory since the last refresh will not be flagged yet. | number | `1` |
+| `BOOKLORE_LIBRARY_INDEX_ENABLED` | Turn off to stop checking this library. | boolean | `true` |
 
 <details>
 <summary>Detailed descriptions</summary>
@@ -2027,22 +2003,10 @@ Grimmory account password
 
 **Flag ebooks already in your library**
 
-Turn off to stop indexing and hide the badges.
+Turn off to stop checking this library.
 
 - **Type:** boolean
 - **Default:** `true`
-
-#### `BOOKLORE_INDEX_INTERVAL_HOURS`
-
-**Refresh interval (hours)**
-
-How often the index is rebuilt. Books added to Grimmory since the last refresh will not be flagged yet.
-
-- **Type:** number
-- **Default:** `1`
-- **Constraints:** min: 1, max: 168
-
-</details>
 
 ## Download Clients
 
