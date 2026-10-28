@@ -1,8 +1,8 @@
-"""/api/releases hands the request's content type to the search plan, and reports a
-search that was cut short.
+"""/api/releases hands the request's content type to the source, and reports a search
+that was cut short.
 
-The fallback ladder is ebook-only, and the plan can only know which kind of search it
-is building if the endpoint tells it. A source that ran out of time keeps what it found;
+The fallback ladder is ebook-only, and the source can only know which kind of search it
+is running if the endpoint tells it. A source that ran out of time keeps what it found;
 `search_info` tells the caller those releases are partial.
 """
 
@@ -12,9 +12,6 @@ import importlib
 from unittest.mock import patch
 
 import pytest
-
-import shelfmark.core.release_search as release_search
-import shelfmark.core.search_plan as search_plan
 
 
 @pytest.fixture(scope="module")
@@ -45,7 +42,7 @@ class _Source:
     ("query_content_type", "expected"),
     [("ebook", "ebook"), ("audiobook", "audiobook"), (None, "ebook")],
 )
-def test_the_plan_is_built_for_the_requested_content_type(
+def test_the_source_searches_for_the_requested_content_type(
     client, main_module, query_content_type, expected
 ):
     with client.session_transaction() as sess:
@@ -54,11 +51,11 @@ def test_the_plan_is_built_for_the_requested_content_type(
         sess["db_user_id"] = 7
 
     seen: list[object] = []
-    real_build = search_plan.build_release_search_plan
 
-    def _spy(*args, **kwargs):
-        seen.append(kwargs.get("content_type"))
-        return real_build(*args, **kwargs)
+    class _Spy(_Source):
+        def search(self, book, plan, *, expand_search=False, content_type="ebook"):
+            seen.append(content_type)
+            return []
 
     query = {"provider": "manual", "book_id": "abc", "title": "Dune"}
     if query_content_type is not None:
@@ -66,12 +63,11 @@ def test_the_plan_is_built_for_the_requested_content_type(
 
     with (
         patch.object(main_module, "get_auth_mode", return_value="none"),
-        patch.object(release_search, "build_release_search_plan", _spy),
         patch(
             "shelfmark.release_sources.list_available_sources",
             return_value=[{"name": "prowlarr", "enabled": True}],
         ),
-        patch("shelfmark.release_sources.get_source", return_value=_Source()),
+        patch("shelfmark.release_sources.get_source", return_value=_Spy()),
         patch("shelfmark.release_sources.source_results_are_releases", return_value=False),
     ):
         resp = client.get("/api/releases", query_string=query)

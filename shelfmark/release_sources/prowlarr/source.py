@@ -13,14 +13,12 @@ if TYPE_CHECKING:
     from shelfmark.metadata_providers import BookMetadata
     from shelfmark.release_sources.prowlarr.mam import MamSearchOptions
 
-from shelfmark.core import search_deadline
 from shelfmark.core.author_match import AUTHOR_UNKNOWN, author_affinity
 from shelfmark.core.config import config
 from shelfmark.core.languages import normalize_language
 from shelfmark.core.logger import setup_logger
 from shelfmark.core.request_helpers import coerce_int, normalize_optional_text
 from shelfmark.core.search_plan import ReleaseSearchVariant
-from shelfmark.core.search_queries import any_identity_hit
 from shelfmark.core.utils import AUDIOBOOK_FORMATS as CORE_AUDIOBOOK_FORMATS
 from shelfmark.core.utils import DEFAULT_EBOOK_FORMATS, normalize_format_list, normalize_http_url
 from shelfmark.release_sources import (
@@ -38,6 +36,7 @@ from shelfmark.release_sources import (
     SourceUnavailableError,
     register_source,
 )
+from shelfmark.release_sources.fallback_ladder import plan_fallbacks, run_prowlarr_fallbacks
 from shelfmark.release_sources.prowlarr.api import (
     CONNECT_TIMEOUT_SECONDS,
     IndexerSeedSettings,
@@ -416,11 +415,6 @@ def _search_budget_seconds(indexer_timeout: int) -> float:
     )
 
 
-# Fallback queries (shelfmark.core.search_queries) may send each indexer at most this
-# many requests per search, auto-expanded retries included.
-FALLBACK_REQUESTS_PER_INDEXER = 4
-
-
 @dataclass(frozen=True)
 class _RequestLog:
     """One Torznab request, logged at INFO once its outcome is known."""
@@ -459,9 +453,7 @@ class _IndexerSearchOutcome:
     failed: int = 0
     skipped: int = 0
     last_error: str | None = None
-    # A fallback pass stopped because the budget left could not cover another request.
-    deadline_reached: bool = False
-    # A mandatory pass ran past the search deadline; results so far are still in here.
+    # A pass ran past the search deadline; results so far are still in here.
     timed_out: bool = False
 
 
@@ -1271,44 +1263,34 @@ class ProwlarrSource(ReleaseSource):
                 if (parsed_id := _coerce_indexer_id(indexer.get("id"))) is not None
             }
             failed_indexers: set[int] = set()
-            fallback_requests: dict[int, int] = {}
-            # Failed fallback requests as "<indexer>: <outcome>", for one warning per search.
-            fallback_failures: list[str] = []
-            # A fallback request is only started when it can finish: connect + read.
-            request_seconds = CONNECT_TIMEOUT_SECONDS + client.indexer_timeout
-            # Seconds left when a fallback could not start for lack of budget.
-            budget_left_at_skip: float | None = None
 
-            def fallback_targets(cats: list[int] | None) -> list[int]:
-                """Indexers a fallback request may go to, from the snapshot taken above.
-
-                No network call: an indexer that failed during this search or has used
-                its cap is left out before anything is sent.
-                """
-                if indexer_ids is not None:
-                    candidates = list(indexer_ids)
-                else:
-                    candidates = [
-                        parsed_id
-                        for indexer in enabled_indexers
-                        if _indexer_supports_search_categories(indexer, cats)
-                        and (parsed_id := _coerce_indexer_id(indexer.get("id"))) is not None
-                    ]
-                return [
-                    indexer_id
-                    for indexer_id in candidates
-                    if indexer_id not in failed_indexers
-                    and indexer_id not in disabled_indexers
-                    and fallback_requests.get(indexer_id, 0) < FALLBACK_REQUESTS_PER_INDEXER
-                ]
+            def search_indexer(
+                indexer_id: int, query: str, cats: list[int] | None, *, rung: str, expanded: bool
+            ) -> list[dict] | ProwlarrSearchError:
+                """Send one Torznab request and log it; a failure is returned, not raised."""
+                request = _RequestLog(
+                    query=query,
+                    indexer=indexer_names.get(indexer_id, str(indexer_id)),
+                    categories=cats,
+                    rung=rung,
+                    expanded=expanded,
+                )
+                try:
+                    raw = client.torznab_search(
+                        indexer_id=indexer_id,
+                        query=query,
+                        categories=cats,
+                        search_type="book",
+                    )
+                except ProwlarrSearchError as e:
+                    failed_indexers.add(indexer_id)
+                    request.log("rate-limited" if e.rate_limited else "failed", 0)
+                    return e
+                request.log("ok" if raw else "empty", len(raw))
+                return raw
 
             def search_indexers(
-                query: str,
-                cats: list[int] | None,
-                *,
-                rung: str,
-                expanded: bool = False,
-                targets: list[int] | None = None,
+                query: str, cats: list[int] | None, *, rung: str, expanded: bool = False
             ) -> _IndexerSearchOutcome:
                 """Search indexers with given categories via Torznab/Newznab.
 
@@ -1320,22 +1302,11 @@ class ProwlarrSource(ReleaseSource):
                 author still decides ordering below, where a spelling difference
                 costs a release its position rather than its existence.
 
-                ``targets`` marks a fallback pass: those indexers only, each request
-                counted against the indexer's cap and sent only while the remaining
-                budget still covers a whole request (connect plus indexer timeout) -
-                past that it is skipped, never raised, so what was already found is kept.
-
-                A mandatory pass that runs past the deadline stops with ``timed_out``
-                set instead of raising, so results from indexers already asked survive.
+                A pass that runs past the deadline stops with ``timed_out`` set instead
+                of raising, so results from indexers already asked survive.
                 """
-                nonlocal budget_left_at_skip
                 outcome = _IndexerSearchOutcome(results=[])
-                fallback = targets is not None
-                target_indexer_ids = (
-                    targets
-                    if targets is not None
-                    else self._get_search_indexer_ids(client, indexer_ids, cats)
-                )
+                target_indexer_ids = self._get_search_indexer_ids(client, indexer_ids, cats)
                 if not target_indexer_ids:
                     return outcome
 
@@ -1343,44 +1314,18 @@ class ProwlarrSource(ReleaseSource):
                     if indexer_id in disabled_indexers:
                         outcome.skipped += 1
                         continue
-                    if fallback:
-                        remaining = search_deadline.remaining_seconds(deadline)
-                        if remaining < request_seconds:
-                            outcome.deadline_reached = True
-                            budget_left_at_skip = max(remaining, 0.0)
-                            break
-                        fallback_requests[indexer_id] = fallback_requests.get(indexer_id, 0) + 1
-                    elif _timed_out():
+                    if _timed_out():
                         outcome.timed_out = True
                         break
                     outcome.attempted += 1
-                    request = _RequestLog(
-                        query=query,
-                        indexer=indexer_names.get(indexer_id, str(indexer_id)),
-                        categories=cats,
-                        rung=rung,
-                        expanded=expanded,
-                    )
-                    try:
-                        raw = client.torznab_search(
-                            indexer_id=indexer_id,
-                            query=query,
-                            categories=cats,
-                            search_type="book",
-                        )
-                    except ProwlarrSearchError as e:
+                    raw = search_indexer(indexer_id, query, cats, rung=rung, expanded=expanded)
+                    if isinstance(raw, ProwlarrSearchError):
                         # One unreachable indexer must not sink the others, but it
                         # is not "no results" either - record it so the caller can
                         # report a failed search instead of an empty one.
                         outcome.failed += 1
-                        outcome.last_error = str(e)
-                        failed_indexers.add(indexer_id)
-                        failure = "rate-limited" if e.rate_limited else "failed"
-                        request.log(failure, 0)
-                        if fallback:
-                            fallback_failures.append(f"{request.indexer}: {failure}")
+                        outcome.last_error = str(raw)
                         continue
-                    request.log("ok" if raw else "empty", len(raw))
                     if raw:
                         outcome.results.extend(raw)
 
@@ -1393,24 +1338,10 @@ class ProwlarrSource(ReleaseSource):
             skipped_searches = 0
             last_search_error: str | None = None
 
-            def add_results(
-                outcome: _IndexerSearchOutcome, *, count_failures: bool = True
-            ) -> list[dict]:
-                """Fold one pass into the totals; return the results it newly added.
-
-                Only mandatory passes count towards the "N of M indexer searches
-                failed" error; a failed fallback request only takes its indexer out
-                of the ladder (and is logged).
-                """
-                nonlocal attempted_searches, failed_searches, skipped_searches, last_search_error
-                if count_failures:
-                    attempted_searches += outcome.attempted
-                    failed_searches += outcome.failed
-                    skipped_searches += outcome.skipped
-                    last_search_error = outcome.last_error or last_search_error
-
+            def add_results(rows: list[dict]) -> list[dict]:
+                """Keep the rows not seen yet; return them."""
                 added: list[dict] = []
-                for r in outcome.results:
+                for r in rows:
                     key = _result_dedup_key(r)
                     if key is not None:
                         if key in seen_keys:
@@ -1420,27 +1351,18 @@ class ProwlarrSource(ReleaseSource):
                     added.append(r)
                 return added
 
-            def has_identity_hit(found: list[dict]) -> bool:
-                return any_identity_hit(
-                    (r.get("title") for r in found), plan.identity, content_type=content_type
-                )
-
-            mandatory_variants = [v for v in variants if not v.fallback]
-            fallback_variants = [v for v in variants if v.fallback]
-
-            # Mandatory variants run exactly as before; a timeout among them now keeps
-            # what was already found - including earlier indexers in the same pass -
-            # instead of discarding it (raised below if nothing was found).
+            # A timeout keeps what was already found - including earlier indexers in
+            # the same pass - instead of discarding it (raised below if nothing was found).
             mandatory_timeout: TimeoutError | None = None
-            for idx, variant in enumerate(mandatory_variants, start=1):
+            for idx, variant in enumerate(variants, start=1):
                 if _timed_out():
                     mandatory_timeout = TimeoutError(timeout_message)
                     break
                 query = variant.title
                 rung = f"mandatory {idx}"
 
-                if len(mandatory_variants) > 1:
-                    logger.debug("Prowlarr query %s/%s: '%s'", idx, len(mandatory_variants), query)
+                if len(variants) > 1:
+                    logger.debug("Prowlarr query %s/%s: '%s'", idx, len(variants), query)
 
                 outcome = search_indexers(query=query, cats=categories, rung=rung)
 
@@ -1473,107 +1395,46 @@ class ProwlarrSource(ReleaseSource):
                         outcome.timed_out = expanded.timed_out
                         self.last_search_type = "expanded"
 
-                add_results(outcome)
+                attempted_searches += outcome.attempted
+                failed_searches += outcome.failed
+                skipped_searches += outcome.skipped
+                last_search_error = outcome.last_error or last_search_error
+                add_results(outcome.results)
                 if outcome.timed_out:
                     mandatory_timeout = TimeoutError(timeout_message)
                     break
             if mandatory_timeout is not None:
                 logger.warning("Prowlarr search timed out: %s", mandatory_timeout)
 
-            # Fallbacks run only while nothing found so far is the requested book, and
-            # stop at the first rung that finds it. Failed indexers sit them out.
-            fallback_stop = "not planned"
-            fallback_rungs_run = 0
-            if fallback_variants:
-                if mandatory_timeout is not None:
-                    fallback_stop = "deadline"
-                elif has_identity_hit(all_results):
-                    fallback_stop = "hit"
-                else:
-                    fallback_stop = "exhausted"
-            ladder = fallback_variants if fallback_stop == "exhausted" else []
-            for idx, variant in enumerate(ladder, start=1):
-                query = variant.title
-                rung = f"fallback {idx}"
-                cats = categories
-                targets = fallback_targets(cats)
-                if not targets and cats:
-                    # No category-compatible indexer can take this rung, but others may:
-                    # send it to them unrestricted rather than stopping the ladder.
-                    cats = None
-                    targets = fallback_targets(None)
-                if not targets:
-                    # Every indexer has failed during this search or used its cap.
-                    fallback_stop = "cap"
-                    break
-                outcome = search_indexers(
-                    query=query,
-                    cats=cats,
-                    rung=rung,
-                    # Not an auto-expand retry: the rung's only send to these indexers.
-                    expanded=False,
-                    targets=targets,
-                )
-                if not outcome.attempted:
-                    fallback_stop = "deadline"
-                    break
-                fallback_rungs_run += 1
-
-                # Expansion goes only to indexers still eligible, so a failed one is
-                # never asked twice; a healthy one that answered empty still is.
-                if (
-                    not outcome.results
-                    and not outcome.deadline_reached
-                    and cats
-                    and auto_expand_enabled
-                ):
-                    expand_targets = fallback_targets(None)
-                    if expand_targets:
-                        expanded = search_indexers(
-                            query=query,
-                            cats=None,
-                            rung=rung,
-                            expanded=True,
-                            targets=expand_targets,
-                        )
-                        outcome.results = expanded.results
-                        outcome.attempted += expanded.attempted
-                        outcome.failed += expanded.failed
-                        outcome.last_error = expanded.last_error or outcome.last_error
-                        outcome.deadline_reached = expanded.deadline_reached
-                        if expanded.attempted:
-                            self.last_search_type = "expanded"
-
-                if has_identity_hit(add_results(outcome, count_failures=False)):
-                    fallback_stop = "hit"
-                    break
-                if outcome.deadline_reached:
-                    fallback_stop = "deadline"
-                    break
-
-            self.last_search_incomplete = fallback_stop == "deadline"
-            # Routine outcomes at INFO; no ladder at all is DEBUG noise, and a ladder
-            # skipped for lack of time is worth a warning.
-            if fallback_stop == "not planned":
-                log_summary = logger.debug
-            elif fallback_stop == "deadline":
-                log_summary = logger.warning
-            else:
-                log_summary = logger.info
-            log_summary(
-                "Prowlarr fallbacks: ran=%s stop=%s rungs=%s/%s requests=%s",
-                "yes" if fallback_rungs_run else "no",
-                fallback_stop,
-                fallback_rungs_run,
-                len(fallback_variants),
-                sum(fallback_requests.values()),
+            # Fork: fallback queries (shelfmark/release_sources/fallback_ladder.py).
+            ladder = run_prowlarr_fallbacks(
+                plan_fallbacks(book, plan, content_type),
+                content_type=content_type,
+                found=all_results,
+                timed_out=mandatory_timeout is not None,
+                categories=categories,
+                auto_expand=auto_expand_enabled,
+                candidates=lambda cats: (
+                    list(indexer_ids)
+                    if indexer_ids is not None
+                    else [
+                        parsed_id
+                        for indexer in enabled_indexers
+                        if _indexer_supports_search_categories(indexer, cats)
+                        and (parsed_id := _coerce_indexer_id(indexer.get("id"))) is not None
+                    ]
+                ),
+                excluded=lambda: failed_indexers | disabled_indexers.keys(),
+                names=indexer_names,
+                send=search_indexer,
+                add=add_results,
+                deadline=deadline,
+                request_seconds=CONNECT_TIMEOUT_SECONDS + client.indexer_timeout,
+                search_budget=search_budget,
             )
-            if fallback_failures:
-                logger.warning(
-                    "Prowlarr: %s fallback request(s) failed, not counted as a failed search (%s)",
-                    len(fallback_failures),
-                    "; ".join(fallback_failures),
-                )
+            if ladder.expanded:
+                self.last_search_type = "expanded"
+            self.last_search_incomplete = ladder.incomplete_message is not None
 
             if failed_searches:
                 logger.warning(
@@ -1731,18 +1592,8 @@ class ProwlarrSource(ReleaseSource):
                 msg = f"every indexer is disabled by Prowlarr after recent failures (until {until})"
                 raise SourceUnavailableError(msg)
             # Cut short before every fallback ran: not a completed "no releases".
-            if not results and fallback_stop == "deadline":
-                if budget_left_at_skip is not None:
-                    msg = (
-                        "search incomplete: not enough time left to try fallback queries "
-                        f"(needs up to {int(request_seconds)}s, {int(budget_left_at_skip)}s left)"
-                    )
-                else:
-                    msg = (
-                        "search incomplete: ran out of time before every fallback query ran "
-                        f"({int(search_budget)}s budget)"
-                    )
-                raise SourceUnavailableError(msg)
+            if not results and ladder.incomplete_message:
+                raise SourceUnavailableError(ladder.incomplete_message)
             return results
 
     def is_available(self) -> bool:

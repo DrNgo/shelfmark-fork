@@ -116,5 +116,4 @@ def test_plan_receives_filters_and_user_id(monkeypatch: pytest.MonkeyPatch) -> N
         "indexers": ["idx"],
         "source_filters": None,
         "user_id": 42,
-        "content_type": "ebook",
     }

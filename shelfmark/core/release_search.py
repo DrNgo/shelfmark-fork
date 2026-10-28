@@ -58,7 +58,6 @@ def search_source_releases(
             indexers=indexers,
             source_filters=source_filters,
             user_id=user_id,
-            content_type=content_type,
         )
 
         if plan.source_filters is not None:

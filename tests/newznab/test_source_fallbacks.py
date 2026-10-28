@@ -6,15 +6,14 @@ import logging
 
 import pytest
 
+import shelfmark.release_sources.fallback_ladder as fallback_ladder
 import shelfmark.release_sources.newznab.source as newznab_source
 from shelfmark.core.search_plan import build_release_search_plan
 from shelfmark.metadata_providers import BookMetadata
 from shelfmark.release_sources import SourceUnavailableError
+from shelfmark.release_sources.fallback_ladder import FALLBACK_REQUESTS_PER_CONNECTION
 from shelfmark.release_sources.newznab.api import NewznabSearchError
-from shelfmark.release_sources.newznab.source import (
-    FALLBACK_REQUESTS_PER_CONNECTION,
-    NewznabSource,
-)
+from shelfmark.release_sources.newznab.source import NewznabSource
 
 DXD5 = "High School DxD (Light Novel), Vol. 5: Hellcat of the Underworld Training Camp"
 RUNG_1 = "High School DxD Vol. 5"
@@ -122,25 +121,21 @@ def _search(
     monkeypatch.setattr(newznab_source, "NewznabClient", lambda url, _key: by_url[url])
 
     book = book or _dxd5()
-    plan = build_release_search_plan(
-        book, languages=["en"], indexers=indexers, content_type="ebook"
-    )
+    plan = build_release_search_plan(book, languages=["en"], indexers=indexers)
     return (source or NewznabSource()).search(book, plan, content_type="ebook")
 
 
 def _info_lines(monkeypatch) -> list[str]:
     lines: list[str] = []
-    monkeypatch.setattr(
-        newznab_source.logger, "info", lambda message, *args: lines.append(message % args)
-    )
+    for log in (newznab_source.logger, fallback_ladder.logger):
+        monkeypatch.setattr(log, "info", lambda message, *args: lines.append(message % args))
     return lines
 
 
 def _level_lines(monkeypatch, level: str) -> list[str]:
     lines: list[str] = []
-    monkeypatch.setattr(
-        newznab_source.logger, level, lambda message, *args: lines.append(message % args)
-    )
+    for log in (newznab_source.logger, fallback_ladder.logger):
+        monkeypatch.setattr(log, level, lambda message, *args: lines.append(message % args))
     return lines
 
 
@@ -156,7 +151,7 @@ def all_logs():
             records.append(logging.Formatter().format(record))
 
     handler = _Capture(level=logging.DEBUG)
-    loggers = [newznab_source.logger, newznab_api.logger]
+    loggers = [newznab_source.logger, newznab_api.logger, fallback_ladder.logger]
     previous = [lg.level for lg in loggers]
     for lg in loggers:
         lg.setLevel(logging.DEBUG)

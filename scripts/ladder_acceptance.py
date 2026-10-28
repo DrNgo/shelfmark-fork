@@ -225,20 +225,22 @@ def run_books(
     from shelfmark.core import search_deadline
     from shelfmark.core.search_plan import build_release_search_plan
     from shelfmark.core.search_queries import build_search_identity, is_identity_hit
+    from shelfmark.release_sources.fallback_ladder import plan_fallbacks
     from shelfmark.release_sources.prowlarr.source import ProwlarrSource
 
     results: list[BookResult] = []
     for row in books:
         book = endpoint_book(*row)
-        plan = build_release_search_plan(book, languages=["en"], content_type="ebook")
-        identity = plan.identity or build_search_identity(
+        plan = build_release_search_plan(book, languages=["en"])
+        fallbacks = plan_fallbacks(book, plan, "ebook")
+        identity = fallbacks.identity or build_search_identity(
             title=book.title,
             current_query=book.search_title or book.title,
             series_name=book.series_name,
             series_position=book.series_position,
         )
 
-        fallback_titles = frozenset(v.title for v in plan.title_variants if v.fallback)
+        fallback_titles = frozenset(fallbacks.queries)
         client = _CountingClient(client_factory(), fallback_titles)
         source = ProwlarrSource()
         error: str | None = None
@@ -273,7 +275,7 @@ def run_books(
             BookResult(
                 title=book.title,
                 requests=client.requests,
-                fallback_variants=sum(1 for v in plan.title_variants if v.fallback),
+                fallback_variants=len(fallbacks.queries),
                 fallback_requests=client.fallback_requests,
                 elapsed=elapsed,
                 releases=[release.title for release in releases],

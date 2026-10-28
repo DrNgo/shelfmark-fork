@@ -14,10 +14,8 @@ if TYPE_CHECKING:
     from shelfmark.core.search_plan import ReleaseSearchPlan
     from shelfmark.metadata_providers import BookMetadata
 
-from shelfmark.core import search_deadline
 from shelfmark.core.config import config
 from shelfmark.core.logger import setup_logger
-from shelfmark.core.search_queries import any_identity_hit
 from shelfmark.core.utils import normalize_http_url
 from shelfmark.release_sources import (
     ColumnAlign,
@@ -33,6 +31,7 @@ from shelfmark.release_sources import (
     SourceUnavailableError,
     register_source,
 )
+from shelfmark.release_sources.fallback_ladder import plan_fallbacks, run_newznab_fallbacks
 from shelfmark.release_sources.newznab.api import (
     NewznabClient,
     NewznabSearchError,
@@ -58,13 +57,6 @@ _DEFAULT_BOOK_CATS = [7000]
 # Reuse the same timeout constant as Prowlarr.
 NEWZNAB_SEARCH_TIMEOUT_SECONDS = _SEARCH_TIMEOUT
 
-# Fallback queries (shelfmark.core.search_queries) may send each connection at most
-# this many requests per search, auto-expanded retries included.
-FALLBACK_REQUESTS_PER_CONNECTION = 4
-
-# The client timeout assumed when a client reports no usable one.
-_DEFAULT_REQUEST_TIMEOUT_SECONDS = 30.0
-
 
 @dataclass(frozen=True)
 class _NamedClient:
@@ -73,19 +65,6 @@ class _NamedClient:
     name: str
     connection_id: str
     client: NewznabClient
-
-
-def _request_timeout(client: object) -> float:
-    """The longest one request on ``client`` may take: connect plus read.
-
-    ``NewznabClient`` passes its single ``timeout`` to requests as a scalar, which
-    requests applies to the connect and to the read separately - so a request can
-    take up to twice that value.
-    """
-    timeout = getattr(client, "timeout", None)
-    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
-        timeout = _DEFAULT_REQUEST_TIMEOUT_SECONDS
-    return 2 * float(timeout)
 
 
 def _redact(connection: _NamedClient, text: object) -> str:
@@ -97,14 +76,6 @@ def _redact(connection: _NamedClient, text: object) -> str:
 def _redacted_traceback(connection: _NamedClient, e: BaseException) -> str:
     """The exception's traceback for the log, with API keys redacted."""
     return _redact(connection, "".join(traceback.format_exception(e)).rstrip())
-
-
-@dataclass
-class _LadderProgress:
-    """What one connection's fallback ladder has sent so far (survives an exception)."""
-
-    rungs: int = 0
-    requests: int = 0
 
 
 def _search_once(
@@ -456,9 +427,7 @@ class NewznabSource(ReleaseSource):
             logger.warning("Newznab not configured - skipping search")
             return []
 
-        variants = [v for v in plan.title_variants if v.title]
-        queries = [v.title for v in variants if not v.fallback]
-        fallback_queries = [v.title for v in variants if v.fallback]
+        queries = [v.title for v in plan.title_variants if v.title]
 
         if not queries and plan.isbn_candidates:
             queries = list(plan.isbn_candidates)
@@ -482,23 +451,13 @@ class NewznabSource(ReleaseSource):
 
         seen_keys: set = set()
         all_results: list[dict] = []
-        cut_short = False
-        # A mandatory request ran past the deadline (as opposed to a fallback that could
-        # not start for lack of budget, recorded below as (needed, left) seconds).
+        # A request ran past the deadline: results, if any, are partial.
         timed_out = False
-        budget_skip: tuple[float, float] | None = None
-        # Failed mandatory requests: these decide whether an empty search was a failure.
+        # Failed requests: these decide whether an empty search was a failure.
         errors: list[str] = []
-        # Failed fallback requests only end their connection's ladder (and are logged);
-        # the search they were extra to still completed.
-        fallback_errors: list[str] = []
 
         def add_results(connection: _NamedClient, raw: list[dict]) -> list[dict]:
-            """Label and keep one response; return the rows it newly kept that are shown.
-
-            Only those can stop the ladder: a repeated GUID was already judged, and a
-            row the plan.indexers filter drops is never shown.
-            """
+            """Label and keep one response; return the rows it newly kept that are shown."""
             retained: list[dict] = []
             for raw_result in raw:
                 r = dict(raw_result)
@@ -518,60 +477,8 @@ class NewznabSource(ReleaseSource):
                     retained.append(r)
             return retained
 
-        def has_identity_hit(rows: list[dict]) -> bool:
-            # Only rows that survive the plan.indexers filter can stop the ladder.
-            return any_identity_hit(
-                (r.get("title") for r in rows), plan.identity, content_type=content_type
-            )
-
-        def run_fallbacks(
-            connection: _NamedClient, found: list[dict], progress: _LadderProgress
-        ) -> str:
-            """Run this connection's ladder and return the stop reason.
-
-            ``progress`` counts rungs and requests as they are sent, so the summary is
-            right even when the ladder ends in an exception. A rung counts once its
-            first request is sent.
-            """
-            if has_identity_hit(found):
-                return "hit"
-            timeout = _request_timeout(connection.client)
-
-            def request(query: str, cats: list[int] | None, idx: int) -> list[dict] | str:
-                nonlocal cut_short, budget_skip
-                if progress.requests >= FALLBACK_REQUESTS_PER_CONNECTION:
-                    return "cap"
-                remaining = search_deadline.remaining_seconds(deadline)
-                if remaining < timeout:
-                    cut_short = True
-                    budget_skip = (timeout, max(remaining, 0.0))
-                    return "deadline"
-                progress.requests += 1
-                progress.rungs = max(progress.rungs, idx)
-                raw = _search_once(
-                    connection,
-                    query,
-                    cats,
-                    rung=f"fallback {idx}",
-                    errors=fallback_errors,
-                    expanded=cats is None and bool(categories),
-                )
-                return "failed" if raw is None else raw
-
-            for idx, query in enumerate(fallback_queries, start=1):
-                raw = request(query, categories, idx)
-                if isinstance(raw, str):
-                    return raw
-                if not raw and categories and auto_expand:
-                    raw = request(query, None, idx)
-                    if isinstance(raw, str):
-                        return raw
-                if has_identity_hit(add_results(connection, raw)):
-                    return "hit"
-            return "exhausted"
-
-        # Every connection's mandatory requests run before any fallback, so one
-        # connection's ladder can never spend the budget another's mandatory search needs.
+        # Every connection's queries run before any fallback, so one connection's
+        # ladder can never spend the budget another's search needs.
         answered: list[tuple[_NamedClient, list[dict], bool]] = []
         try:
             for connection in clients:
@@ -642,53 +549,20 @@ class NewznabSource(ReleaseSource):
 
         except TimeoutError as e:
             logger.warning("Newznab search timed out: %s", e)
-            cut_short = True
             timed_out = True
 
-        for connection, found, failed in answered:
-            progress = _LadderProgress()
-            if not fallback_queries:
-                stop = "not planned"
-            elif failed:
-                # A failed connection gets no further fallback requests.
-                stop = "failed"
-            else:
-                try:
-                    stop = run_fallbacks(connection, found, progress)
-                except Exception as e:  # noqa: BLE001 - a fallback must not end the search
-                    # Extra to a search that already completed: ends this ladder only.
-                    # Not logger.exception: the raw traceback text may carry the API key.
-                    logger.error(  # noqa: TRY400
-                        "Newznab fallback search failed for %s:\n%s",
-                        connection.name,
-                        _redacted_traceback(connection, e),
-                    )
-                    fallback_errors.append(f"{connection.name}: {_redact(connection, e)}")
-                    stop = "failed"
-            # Routine outcomes at INFO; no ladder at all is DEBUG noise, and a ladder
-            # skipped for lack of time is worth a warning.
-            if stop == "not planned":
-                log_summary = logger.debug
-            elif stop == "deadline":
-                log_summary = logger.warning
-            else:
-                log_summary = logger.info
-            log_summary(
-                "Newznab [%s] fallbacks: ran=%s stop=%s rungs=%s/%s requests=%s",
-                connection.name,
-                "yes" if progress.rungs else "no",
-                stop,
-                progress.rungs,
-                len(fallback_queries),
-                progress.requests,
-            )
-
-        if fallback_errors:
-            logger.warning(
-                "Newznab: %d fallback request(s) failed, not counted as a failed search (%s)",
-                len(fallback_errors),
-                "; ".join(fallback_errors[-3:]),
-            )
+        # Fork: fallback queries (shelfmark/release_sources/fallback_ladder.py).
+        fallback_incomplete = run_newznab_fallbacks(
+            plan_fallbacks(book, plan, content_type),
+            content_type=content_type,
+            answered=answered,
+            categories=categories,
+            auto_expand=auto_expand,
+            send=_search_once,
+            add=add_results,
+            redact=_redact,
+            deadline=deadline,
+        )
 
         results = [_newznab_result_to_release(r, content_type, categories) for r in all_results]
         if selected_indexers is not None:
@@ -718,22 +592,17 @@ class NewznabSource(ReleaseSource):
                 # Not "no releases": some of the indexers never answered.
                 msg = f"{len(errors)} Newznab search(es) failed ({'; '.join(errors[-3:])})"
                 raise SourceUnavailableError(msg)
-            if cut_short:
+            if timed_out:
                 # Ran out of time before every query ran: not a completed "no releases".
-                if budget_skip is not None and not timed_out:
-                    needed, left = budget_skip
-                    msg = (
-                        "Newznab search incomplete: not enough time left to try fallback "
-                        f"queries (needs up to {int(needed)}s, {int(left)}s left)"
-                    )
-                else:
-                    msg = (
-                        "Newznab search incomplete: ran out of time "
-                        f"({int(NEWZNAB_SEARCH_TIMEOUT_SECONDS)}s budget)"
-                    )
+                msg = (
+                    "Newznab search incomplete: ran out of time "
+                    f"({int(NEWZNAB_SEARCH_TIMEOUT_SECONDS)}s budget)"
+                )
                 raise SourceUnavailableError(msg)
+            if fallback_incomplete:
+                raise SourceUnavailableError(fallback_incomplete)
 
-        self.last_search_incomplete = cut_short
+        self.last_search_incomplete = timed_out or fallback_incomplete is not None
         return results
 
     def is_available(self) -> bool:

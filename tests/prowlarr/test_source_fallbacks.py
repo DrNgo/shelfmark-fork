@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import pytest
 
+import shelfmark.release_sources.fallback_ladder as fallback_ladder
 import shelfmark.release_sources.prowlarr.source as prowlarr_source
 from shelfmark.core.search_plan import build_release_search_plan
 from shelfmark.metadata_providers import BookMetadata
 from shelfmark.release_sources import SourceUnavailableError
+from shelfmark.release_sources.fallback_ladder import FALLBACK_REQUESTS_PER_INDEXER
 from shelfmark.release_sources.prowlarr.api import ProwlarrSearchError
-from shelfmark.release_sources.prowlarr.source import FALLBACK_REQUESTS_PER_INDEXER, ProwlarrSource
+from shelfmark.release_sources.prowlarr.source import ProwlarrSource
 
 DXD5 = "High School DxD (Light Novel), Vol. 5: Hellcat of the Underworld Training Camp"
 RUNG_1 = "High School DxD Vol. 5"
@@ -143,23 +145,21 @@ def _search(monkeypatch, client, *, book=None, languages=("en",), auto_expand=Fa
     source = source or ProwlarrSource()
     monkeypatch.setattr(source, "_get_client", lambda: client)
     book = book or _dxd5()
-    plan = build_release_search_plan(book, languages=list(languages), content_type="ebook")
+    plan = build_release_search_plan(book, languages=list(languages))
     return source.search(book, plan, content_type="ebook")
 
 
 def _info_lines(monkeypatch) -> list[str]:
     lines: list[str] = []
-    monkeypatch.setattr(
-        prowlarr_source.logger, "info", lambda message, *args: lines.append(message % args)
-    )
+    for log in (prowlarr_source.logger, fallback_ladder.logger):
+        monkeypatch.setattr(log, "info", lambda message, *args: lines.append(message % args))
     return lines
 
 
 def _level_lines(monkeypatch, level: str) -> list[str]:
     lines: list[str] = []
-    monkeypatch.setattr(
-        prowlarr_source.logger, level, lambda message, *args: lines.append(message % args)
-    )
+    for log in (prowlarr_source.logger, fallback_ladder.logger):
+        monkeypatch.setattr(log, level, lambda message, *args: lines.append(message % args))
     return lines
 
 
