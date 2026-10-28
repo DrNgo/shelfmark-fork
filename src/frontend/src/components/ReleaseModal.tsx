@@ -191,6 +191,8 @@ interface ReleaseModalProps {
   // ebooks, Audiobookshelf for audiobooks). Admin-only — the server strips the
   // key from anyone else's download payload.
   canChooseDestination?: boolean;
+  // The library already picked on the request's approve panel, preselected here.
+  initialDestinationKey?: string;
   // Combined mode (ebook + audiobook in one transaction)
   combinedMode?: CombinedModeConfig | null;
 }
@@ -854,6 +856,7 @@ const ReleaseModalSession = ({
   showReleaseSourceLinks = true,
   onShowToast,
   canChooseDestination = false,
+  initialDestinationKey = '',
   combinedMode = null,
   isClosing,
   animateEnter,
@@ -865,7 +868,7 @@ const ReleaseModalSession = ({
       : supportedFormats;
   const [isRequestingBook, setIsRequestingBook] = useState(false);
   const [selectedRelease, setSelectedRelease] = useState<Release | null>(null);
-  const [destinationKey, setDestinationKey] = useState('');
+  const [destinationKey, setDestinationKey] = useState(initialDestinationKey);
   // Multi-book packs: `multiBook` is the manual header toggle (heuristic split for
   // releases we can't inspect); `packReview` holds an inspected pack awaiting approval.
   const [multiBook, setMultiBook] = useState(false);

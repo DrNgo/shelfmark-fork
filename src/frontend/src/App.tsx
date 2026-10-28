@@ -1900,7 +1900,12 @@ function App() {
   );
 
   const handleBrowseFulfilDownload = useCallback(
-    async (book: Book, release: Release, releaseContentType: ContentType) => {
+    async (
+      book: Book,
+      release: Release,
+      releaseContentType: ContentType,
+      options?: ReleaseDownloadOptions,
+    ) => {
       if (!fulfillingRequest) {
         return;
       }
@@ -1911,7 +1916,8 @@ function App() {
           buildReleaseDataFromMetadataRelease(book, release, toContentType(releaseContentType)),
           undefined,
           undefined,
-          fulfillingRequest.destinationKey,
+          // The release window's picker starts from the approve panel's choice.
+          options?.destinationKey,
         );
         await refreshActivitySnapshot();
         showToast(`Request approved: ${book.title || 'Untitled'}`, 'success');
@@ -2751,11 +2757,11 @@ function App() {
               isRequestMode={isBrowseFulfilMode || activeReleaseBook?.provider === 'manual'}
               showReleaseSourceLinks={config?.show_release_source_links !== false}
               onShowToast={showToast}
-              // Admins only, because the server drops anyone else's key. Not in
-              // browse-to-fulfil either: that detour already carries the library
-              // chosen on the approve panel, and a second picker here would be a
-              // second source of truth for one download.
-              canChooseDestination={requestRoleIsAdmin && !isBrowseFulfilMode}
+              // Admins only, because the server drops anyone else's key. In
+              // browse-to-fulfil it starts from the library chosen on the approve
+              // panel, and what is picked here is what the approval sends.
+              canChooseDestination={requestRoleIsAdmin}
+              initialDestinationKey={fulfillingRequest?.destinationKey}
               combinedMode={
                 effectiveCombinedState
                   ? {
