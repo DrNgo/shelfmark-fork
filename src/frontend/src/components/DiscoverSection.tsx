@@ -62,21 +62,33 @@ interface DiscoverTileProps {
   book: Book;
   buttonState: ButtonStateInfo;
   requested: boolean;
+  isLoading: boolean;
   onDetails: (book: Book) => void;
 }
 
-const DiscoverTile = ({ book, buttonState, requested, onDetails }: DiscoverTileProps) => {
+const DiscoverTile = ({
+  book,
+  buttonState,
+  requested,
+  isLoading,
+  onDetails,
+}: DiscoverTileProps) => {
   const [imageError, setImageError] = useState(false);
 
   return (
     <button
       type="button"
       onClick={() => onDetails(book)}
-      className="w-32 flex-none snap-start text-left"
+      disabled={isLoading}
+      aria-busy={isLoading}
+      className="group w-32 flex-none cursor-pointer snap-start rounded-lg text-left focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:outline-none disabled:cursor-wait"
       title={book.title}
     >
       {/* Audiobook art is square; portrait would letterbox it (same rule as CardView). */}
-      <div className="relative w-32" style={{ aspectRatio: coverAspectRatio(book.cover_aspect) }}>
+      <div
+        className="relative w-32 transition-transform duration-200 group-hover:-translate-y-1 group-active:scale-95"
+        style={{ aspectRatio: coverAspectRatio(book.cover_aspect) }}
+      >
         {book.preview && !imageError ? (
           <img
             src={book.preview}
@@ -90,6 +102,16 @@ const DiscoverTile = ({ book, buttonState, requested, onDetails }: DiscoverTileP
             {book.title}
           </div>
         )}
+        {/* Same cues as CardView: a light veil on hover, a spinner while details load. */}
+        <div
+          className={`pointer-events-none absolute inset-0 flex items-center justify-center rounded-lg transition-colors duration-200 ${
+            isLoading ? 'bg-black/40' : 'bg-white/0 group-hover:bg-white/15'
+          }`}
+        >
+          {isLoading && (
+            <div className="h-6 w-6 animate-spin rounded-full border-2 border-white border-t-transparent" />
+          )}
+        </div>
         <div className="absolute top-1 right-1 flex flex-col items-end gap-1">
           <LibraryBadge library={book.library} overlay />
           {requested && <RequestedBadge variant="overlay" />}
@@ -100,7 +122,7 @@ const DiscoverTile = ({ book, buttonState, requested, onDetails }: DiscoverTileP
           )}
         </div>
       </div>
-      <div className="mt-1 truncate text-sm">{book.title}</div>
+      <div className="mt-1 truncate text-sm group-hover:underline">{book.title}</div>
       <div className="truncate text-xs opacity-70">{book.author || ''}</div>
     </button>
   );
@@ -125,10 +147,18 @@ export const DiscoverSection = ({
   if (isCombined) standardProviderName = combinedMetadataProvider ?? metadataProvider;
   else if (contentType === 'audiobook') standardProviderName = audiobookProviderName;
 
+  const [loadingBookId, setLoadingBookId] = useState<string | null>(null);
+
   const showDetails = async (book: Book) => {
-    const details = await loadDetails(book, isCombined);
-    if (details) onDetails(details);
-    else onShowToast('Failed to load book details', 'error');
+    if (loadingBookId) return;
+    setLoadingBookId(book.id);
+    try {
+      const details = await loadDetails(book, isCombined);
+      if (details) onDetails(details);
+      else onShowToast('Failed to load book details', 'error');
+    } finally {
+      setLoadingBookId(null);
+    }
   };
 
   useDependencyEffect(() => {
@@ -199,6 +229,7 @@ export const DiscoverSection = ({
                   book={book}
                   buttonState={getButtonState(book.id)}
                   requested={isBookRequested(book, openRequestKeys)}
+                  isLoading={loadingBookId === book.id}
                   onDetails={(tileBook) => void showDetails(tileBook)}
                 />
               ))}
