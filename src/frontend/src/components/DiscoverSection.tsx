@@ -81,14 +81,13 @@ const DiscoverTile = ({
       onClick={() => onDetails(book)}
       disabled={isLoading}
       aria-busy={isLoading}
-      className="group w-32 flex-none cursor-pointer snap-start rounded-lg text-left focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:outline-none disabled:cursor-wait"
+      // Same hover as a search-result card (CardView): the panel and its shadow fade in.
+      // The negative margin keeps the cover where it was without the padding.
+      className="group -m-1.5 w-[140px] flex-none cursor-pointer snap-start rounded-xl p-1.5 text-left transition-[background-color,box-shadow] duration-300 hover:bg-(--bg-soft) hover:shadow-[0_10px_30px_rgba(0,0,0,0.15)] focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:outline-hidden disabled:cursor-wait"
       title={book.title}
     >
       {/* Audiobook art is square; portrait would letterbox it (same rule as CardView). */}
-      <div
-        className="relative w-32 transition-transform duration-200 group-hover:-translate-y-1 group-active:scale-95"
-        style={{ aspectRatio: coverAspectRatio(book.cover_aspect) }}
-      >
+      <div className="relative w-32" style={{ aspectRatio: coverAspectRatio(book.cover_aspect) }}>
         {book.preview && !imageError ? (
           <img
             src={book.preview}
@@ -102,16 +101,12 @@ const DiscoverTile = ({
             {book.title}
           </div>
         )}
-        {/* Same cues as CardView: a light veil on hover, a spinner while details load. */}
-        <div
-          className={`pointer-events-none absolute inset-0 flex items-center justify-center rounded-lg transition-colors duration-200 ${
-            isLoading ? 'bg-black/40' : 'bg-white/0 group-hover:bg-white/15'
-          }`}
-        >
-          {isLoading && (
-            <div className="h-6 w-6 animate-spin rounded-full border-2 border-white border-t-transparent" />
-          )}
-        </div>
+        {/* The search-result card's details spinner (CardView), in the same corner. */}
+        {isLoading && (
+          <span className="absolute right-2 bottom-2 flex h-8 w-8 items-center justify-center rounded-full bg-white/95 shadow-lg dark:bg-neutral-800/95">
+            <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+          </span>
+        )}
         <div className="absolute top-1 right-1 flex flex-col items-end gap-1">
           <LibraryBadge library={book.library} overlay />
           {requested && <RequestedBadge variant="overlay" />}
@@ -122,7 +117,7 @@ const DiscoverTile = ({
           )}
         </div>
       </div>
-      <div className="mt-1 truncate text-sm group-hover:underline">{book.title}</div>
+      <div className="mt-1 truncate text-sm">{book.title}</div>
       <div className="truncate text-xs opacity-70">{book.author || ''}</div>
     </button>
   );
@@ -222,7 +217,8 @@ export const DiscoverSection = ({
               ))}
             </div>
           ) : (
-            <div className="flex snap-x gap-4 overflow-x-auto pb-2">
+            // Room for the hover shadow, which the scroll container would otherwise clip.
+            <div className="-mx-3 -mt-2 -mb-6 flex snap-x scroll-px-3 gap-4 overflow-x-auto px-3 pt-2 pb-8">
               {row.books.map((book) => (
                 <DiscoverTile
                   key={book.id}
